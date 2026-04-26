@@ -23,6 +23,20 @@ export function createWebTransport({ baseUrl = '' } = {}) {
       if (!res.ok) return { ok: false };
       return res.json();
     },
+    async thinkStatus() {
+      const res = await fetch(`${baseUrl}/api/think`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    },
+    async setThink(on) {
+      const res = await fetch(`${baseUrl}/api/think`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ on: !!on }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    },
     run(sessionId, prompt) {
       const url = `${baseUrl}/api/run?sid=${encodeURIComponent(sessionId)}`;
       fetch(url, {

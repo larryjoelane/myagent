@@ -1,5 +1,5 @@
 // Entry point — runs after vendor scripts (xterm, addon-fit) and shell.js.
-// Uses globals (window.Terminal, window.FitAddon, window.MyAgent.TerminalShell)
+// Uses globals (window.Terminal, window.FitAddon, window.MyAgent.*)
 // because Electron's file:// loader doesn't resolve bare or relative ESM
 // imports reliably across versions. This also keeps the renderer trivially
 // portable to a static-served web app later (no build step required).
@@ -7,9 +7,6 @@
 (function () {
   const transport = window.transport;
 
-  // xterm.js UMD attaches its export differently across versions:
-  //   - some builds set window.Terminal directly
-  //   - others namespace it under window.xterm.Terminal
   const Terminal =
     window.Terminal ||
     (window.xterm && window.xterm.Terminal) ||
@@ -27,27 +24,47 @@
     return;
   }
 
-  const term = new Terminal({
+  const TERM_OPTS = {
     fontFamily: "'Cascadia Code', Consolas, Menlo, monospace",
     fontSize: 13,
     cursorBlink: true,
-    theme: {
-      background: '#1e1e1e',
-      foreground: '#dcdcdc',
-      cursor: '#dcdcdc',
-    },
-  });
+    theme: { background: '#1e1e1e', foreground: '#dcdcdc', cursor: '#dcdcdc' },
+  };
 
-  if (FitAddon) {
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.open(document.getElementById('terminal'));
-    fit.fit();
-    window.addEventListener('resize', () => fit.fit());
-  } else {
-    term.open(document.getElementById('terminal'));
+  function makeTerminal(host) {
+    const term = new Terminal(TERM_OPTS);
+    let fit = null;
+    if (FitAddon) {
+      fit = new FitAddon();
+      term.loadAddon(fit);
+    }
+    term.open(host);
+    if (fit) fit.fit();
+    return { term, fit };
   }
 
+  // Build the main pane immediately.
+  const mainHost = document.querySelector('.pane[data-pane="main"] .pane-host');
+  const extraHost = document.querySelector('.pane[data-pane="extra"] .pane-host');
+  const mainPaneEl = document.querySelector('.pane[data-pane="main"]');
+  const extraPaneEl = document.querySelector('.pane[data-pane="extra"]');
+
+  const main = makeTerminal(mainHost);
+
+  const manager = new window.MyAgent.PaneManager({
+    transport,
+    panes: {
+      main: { term: main.term, fit: main.fit, el: mainPaneEl, paneId: 'main' },
+      extra: { term: null, fit: null, el: extraPaneEl, paneId: 'extra', host: extraHost, makeTerminal },
+    },
+    Terminal,
+    FitAddon,
+  });
+
+  // Resize handling: refit whatever pane(s) are visible.
+  window.addEventListener('resize', () => manager.refitAll());
+
+  // Health badge wired off the main transport (agent stays in main pane).
   const statusEl = document.getElementById('status');
   async function refreshHealth() {
     try {
@@ -67,7 +84,6 @@
     }
   }
 
-  const shell = new window.MyAgent.TerminalShell({ term, transport });
-  shell.start();
+  manager.start();
   refreshHealth();
 })();

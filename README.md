@@ -94,6 +94,137 @@ Environment variables read by the runner (`src/core/runners/ollama.js`):
 
 ---
 
+## SFT pipeline (turning Claude Code sessions into training data)
+
+**SFT** stands for **Supervised Fine-Tuning** — the standard technique for teaching a base model your conversation style by showing it labeled `(input → desired output)` examples. Trainers like Hugging Face TRL, axolotl, unsloth, and the OpenAI fine-tuning API all consume SFT-shaped data.
+
+When you run `claude` inside a `/shell new` pane, Claude Code records the full conversation (every user turn, every assistant turn with tool calls and tool results, plus model + token metadata) to `~/.claude/projects/<project>/<sessionId>.jsonl`. That's a runtime trace, not a training file. The SFT pipeline turns those traces into datasets you can feed to a fine-tuner.
+
+The pipeline is three stages: **export → label → build**. Each is a separate npm script.
+
+### Stage 1: Export
+
+```bash
+npm run sft:export
+```
+
+Reads every JSONL under `~/.claude/projects/*/`, reconstructs the linear conversation thread (following `parentUuid` chains, dropping sidechain sub-agent traces), and writes one canonical record per session to `.myagent/sft/conversations/<sessionId>.jsonl`. Idempotent — re-run any time to pick up new sessions.
+
+| Flag | Effect |
+|---|---|
+| `--sessions=ID,ID` | Only export specific session IDs |
+| `--sidechains` | Include sub-agent traces (off by default; usually noise) |
+
+The canonical format is **Anthropic-native** — `{role, content: [...blocks]}` with `text`, `tool_use`, and `tool_result` blocks preserved verbatim. This is intentionally lossless; format conversion happens at build time.
+
+### Stage 2: Label
+
+We use **strict turn-level labeling**: every turn requires an explicit label, or it's excluded from the dataset. There is no conversation-level fallback. Unlabeled turns (including Claude Code's auto-injected `<local-command-*>` echoes) are silently dropped.
+
+First, see what's in a session:
+
+```bash
+npm run sft:label -- show <sessionId>
+```
+
+Output looks like:
+```
+  0 [unlabeled]   user      write a brief outline of a second brain architecture
+  1 [unlabeled]   assistant # Second Brain Architecture ## 1. Capture Layer ...
+  2 [unlabeled]   user      <local-command-caveat>...
+```
+
+Then label specific turns:
+
+```bash
+npm run sft:label -- <sessionId> 1 --quality good --tags writing,outline
+npm run sft:label -- <sessionId> 5 --quality bad --note "hallucinated the API"
+npm run sft:label -- <sessionId> 7 --quality prefer
+```
+
+| Flag | Required | Values |
+|---|---|---|
+| `--quality` | yes | `good`, `bad`, `skip`, `prefer` |
+| `--tags` | no | comma-separated free-form tags (e.g. `tool-use,fast`) |
+| `--note` | no | free-form note for your own reference |
+
+Review what you've labeled for a session:
+
+```bash
+npm run sft:label -- list <sessionId>
+```
+
+Labels live in `.myagent/sft/labels.ndjson` — one row per label event, append-only, hand-editable. Most-recent row wins per `(conversationId, turnIndex)`, so relabeling just appends a new row.
+
+### Stage 3: Build
+
+```bash
+npm run sft:build
+```
+
+Reads canonical conversations + labels, applies filters, formats for the target trainer, and writes `.myagent/sft/dataset-<timestamp>.jsonl`. Defaults: `--quality good,prefer`, `--format anthropic`, conversation mode.
+
+| Flag | Effect |
+|---|---|
+| `--quality good,prefer` | Which `quality` values to include (default: `good,prefer`) |
+| `--tags a,b` | Require **all** listed tags on a turn (intersection filter) |
+| `--format anthropic` | Verbatim Anthropic blocks (default; lossless) |
+| `--format openai` | OpenAI chat shape: `{messages: [{role, content}]}`, with `tool_calls` and `role: "tool"` |
+| `--format hf` | Hugging Face / ShareGPT shape: `{conversations: [{from, value}]}`, flat text |
+| `--pairs` | One row per labeled assistant turn (`{prompt, completion}`), instead of full conversations |
+| `--out path/to/file.jsonl` | Explicit output path (otherwise a timestamped name in `.myagent/sft/`) |
+| `--test-split 0.2` | Hold out a fraction (or `20%`) of conversations for a test set; emits `*.train.jsonl` + `*.test.jsonl` |
+| `--seed sft-default` | Seed for the deterministic split (default: `sft-default`); change to reshuffle |
+
+Output filename includes a timestamp so old datasets aren't overwritten. Re-run whenever your labels change.
+
+#### Train / test split
+
+`--test-split` holds out a fraction of **conversations** (not turns) for evaluation. The split is deterministic by `(seed, conversationId)` — same seed always produces the same split, so re-running with new labels keeps the test set stable. Splitting at the conversation level prevents leakage: turns from the same `claude` session share style and context, so if turn 3 ended up in train and turn 7 in test you'd be measuring memorization, not generalization.
+
+```bash
+npm run sft:build -- --test-split 0.2 --format openai
+# → dataset-<stamp>.train.jsonl  (~80% of conversations)
+# → dataset-<stamp>.test.jsonl   (~20% of conversations)
+```
+
+Without `--test-split`, the build writes a single file as before. With it, both train and test files are written using the same filters and format.
+
+### Typical workflow
+
+```bash
+# After a Claude session, refresh the canonical exports:
+npm run sft:export
+
+# Curate a session turn-by-turn:
+npm run sft:label -- show 4a01e75b-1bb7-42ce-a6f4-09c221ee74e6
+npm run sft:label -- 4a01e75b-1bb7-42ce-a6f4-09c221ee74e6 12 --quality good
+npm run sft:label -- 4a01e75b-1bb7-42ce-a6f4-09c221ee74e6 18 --quality good --tags refactor
+
+# Produce a training dataset for an OpenAI-compatible trainer, with 20% held out for testing:
+npm run sft:build -- --format openai --pairs --test-split 0.2
+```
+
+The output `.jsonl` is what you hand to your trainer. Each line is one training example.
+
+> **Why `--`?** npm needs the `--` separator to forward flags to the underlying script instead of consuming them itself. `npm run sft:export` works without it because that script takes no required args.
+
+### Layout produced
+
+```
+.myagent/sft/
+  conversations/
+    <sessionId>.jsonl      # canonical, Anthropic-native, one per Claude session
+  labels.ndjson            # append-only, hand-editable
+  dataset-<timestamp>.jsonl              # default: single file
+  dataset-<timestamp>.train.jsonl        # with --test-split
+  dataset-<timestamp>.test.jsonl         # with --test-split
+```
+
+The full design and rationale (granularity, schema, storage, script split, canonical format) is in [`docs/decisions/0006-sft-pipeline.md`](docs/decisions/0006-sft-pipeline.md).
+
+---
+
 ## Relevant links
 
 **Model:**

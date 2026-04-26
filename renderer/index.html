@@ -14,7 +14,14 @@
       <span id="status" class="status status--unknown">checking…</span>
       <span class="model" id="model-label">SmolLM3-3B (Ollama)</span>
     </header>
-    <div id="terminal"></div>
+    <div id="split">
+      <div class="pane pane--focused" data-pane="main">
+        <div class="pane-host"></div>
+      </div>
+      <div class="pane pane--hidden" data-pane="extra">
+        <div class="pane-host"></div>
+      </div>
+    </div>
     <script src="./vendor/xterm.js"></script>
     <script src="./vendor/addon-fit.js"></script>
     <script src="./shell.js"></script>
