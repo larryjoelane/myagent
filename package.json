@@ -1,0 +1,17 @@
+{
+  "name": "myagent",
+  "version": "0.1.0",
+  "description": "Local coding agent powered by SmolLM3-3B via Ollama, with an xterm.js terminal UI",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "start:web": "node web/server.js"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0"
+  },
+  "devDependencies": {
+    "electron": "^41.3.0"
+  }
+}
