@@ -45,9 +45,9 @@
 
   // Build the main pane immediately.
   const mainHost = document.querySelector('.pane[data-pane="main"] .pane-host');
-  const extraHost = document.querySelector('.pane[data-pane="extra"] .pane-host');
   const mainPaneEl = document.querySelector('.pane[data-pane="main"]');
   const extraPaneEl = document.querySelector('.pane[data-pane="extra"]');
+  const tabsHost = document.getElementById('tabs-host');
 
   const main = makeTerminal(mainHost);
 
@@ -55,7 +55,9 @@
     transport,
     panes: {
       main: { term: main.term, fit: main.fit, el: mainPaneEl, paneId: 'main' },
-      extra: { term: null, fit: null, el: extraPaneEl, paneId: 'extra', host: extraHost, makeTerminal },
+      // The extra pane now owns N tabs. Manager creates per-tab hosts
+      // inside `tabsHost` on demand; no single shared host.
+      extra: { el: extraPaneEl, tabsHost, makeTerminal },
     },
     Terminal,
     FitAddon,
@@ -64,26 +66,5 @@
   // Resize handling: refit whatever pane(s) are visible.
   window.addEventListener('resize', () => manager.refitAll());
 
-  // Health badge wired off the main transport (agent stays in main pane).
-  const statusEl = document.getElementById('status');
-  async function refreshHealth() {
-    try {
-      const h = await transport.health();
-      if (h.ok) {
-        statusEl.textContent = `ollama ${h.version || ''}`.trim();
-        statusEl.className = 'status status--ok';
-      } else {
-        statusEl.textContent = h.reason ? `ollama: ${h.reason}` : 'ollama down';
-        statusEl.className = 'status status--down';
-      }
-      return h;
-    } catch (err) {
-      statusEl.textContent = `ollama: ${err && err.message ? err.message : 'down'}`;
-      statusEl.className = 'status status--down';
-      return { ok: false };
-    }
-  }
-
   manager.start();
-  refreshHealth();
 })();

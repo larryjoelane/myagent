@@ -48,6 +48,11 @@ class SessionLog {
     this.path = path.join(dir, `session-${stamp}.ndjson`);
     // Append mode so a crash mid-write keeps prior entries on disk.
     this.stream = fs.createWriteStream(this.path, { flags: 'a' });
+    // Swallow stream errors — late writes during shutdown can otherwise
+    // bubble up as "write after end" unhandled errors. Logging must
+    // never crash the app.
+    this.stream.on('error', () => { /* ignore */ });
+    this.closed = false;
     // Raw PTY byte streams, one per pane. Lazily created on first openRaw().
     this.rawStreams = new Map();
     this.append('session-start', { pid: process.pid, cwd: process.cwd() });
@@ -67,6 +72,7 @@ class SessionLog {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const file = path.join(this.dir, `pty-${pane}-${stamp}.raw`);
     const stream = fs.createWriteStream(file, { flags: 'a' });
+    stream.on('error', () => { /* ignore late writes during shutdown */ });
     this.rawStreams.set(pane, stream);
     return file;
   }
@@ -74,7 +80,7 @@ class SessionLog {
   rawOut(paneId, raw) {
     if (!raw) return;
     const stream = this.rawStreams.get(paneId || 'main');
-    if (!stream) return;
+    if (!stream || stream.writableEnded) return;
     try {
       stream.write(typeof raw === 'string' ? Buffer.from(raw, 'utf8') : raw);
     } catch { /* logging must never crash the app */ }
@@ -89,6 +95,11 @@ class SessionLog {
   }
 
   append(kind, fields = {}, pane = null) {
+    // Drop silently if close() already ran. Without this guard, late
+    // events during app shutdown (PTY exits firing after `before-quit`
+    // calls close()) write to an ended stream and surface as
+    // "write after end" errors.
+    if (this.closed || this.stream.writableEnded) return;
     const entry = {
       ts: new Date().toISOString(),
       pane,
@@ -121,7 +132,9 @@ class SessionLog {
   }
 
   close() {
+    if (this.closed) return;
     this.append('session-end', {});
+    this.closed = true;
     try { this.stream.end(); } catch { /* ignore */ }
     for (const [, s] of this.rawStreams) {
       try { s.end(); } catch { /* ignore */ }

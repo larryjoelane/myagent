@@ -11,15 +11,25 @@
   <body>
     <header class="topbar">
       <span class="title">MyAgent</span>
-      <span id="status" class="status status--unknown">checking…</span>
-      <span class="model" id="model-label">SmolLM3-3B (Ollama)</span>
+      <nav class="commands" aria-label="Commands">
+        <button id="cmd-new-shell" class="cmd-btn" type="button"
+                title="Open side terminal pane (Ctrl+Shift+T)">New Shell</button>
+        <button id="cmd-close-pane" class="cmd-btn" type="button"
+                title="Close side pane (Ctrl+Shift+W)" disabled>Close Pane</button>
+      </nav>
     </header>
     <div id="split">
       <div class="pane pane--focused" data-pane="main">
         <div class="pane-host"></div>
       </div>
+      <div id="splitter" class="splitter splitter--hidden" role="separator"
+           aria-orientation="vertical" aria-label="Resize panes" tabindex="0"></div>
       <div class="pane pane--hidden" data-pane="extra">
-        <div class="pane-host"></div>
+        <div class="tabs" id="tabs">
+          <div class="tabs__list" id="tabs-list" role="tablist"></div>
+          <button class="tabs__add" id="tabs-add" type="button" title="New shell tab (Ctrl+Shift+T)">+</button>
+        </div>
+        <div class="tabs-host" id="tabs-host"></div>
       </div>
     </div>
     <script src="./vendor/xterm.js"></script>

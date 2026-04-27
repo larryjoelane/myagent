@@ -52,6 +52,85 @@ function listMemoryMd(projectDir) {
   return { dir: memDir, files };
 }
 
+// Scan every JSONL under a project dir and produce session summaries in
+// the same shape claudeSessionScan emits. Used by the final sweep so the
+// index's session table reflects the full history, not just whatever
+// happened in the latest PTY window.
+function scanAllProjectSessions(projectDir) {
+  let names;
+  try {
+    names = fs.readdirSync(projectDir);
+  } catch { return []; }
+  const summaries = [];
+  for (const n of names) {
+    if (!n.endsWith('.jsonl')) continue;
+    const full = path.join(projectDir, n);
+    const s = summarizeJsonl(full);
+    if (s) summaries.push(s);
+  }
+  return summaries;
+}
+
+// Parse a JSONL, accumulating the metadata we surface in the index. Same
+// shape as claudeSessionScan.summarizeJsonl — duplicated here to keep the
+// module dependency-free and avoid a circular import.
+function summarizeJsonl(filePath) {
+  let text;
+  try { text = fs.readFileSync(filePath, 'utf8'); } catch { return null; }
+  const lines = text.split('\n');
+  const summary = {
+    file: filePath,
+    sessionId: null,
+    model: null,
+    permissionMode: null,
+    version: null,
+    gitBranch: null,
+    cwd: null,
+    firstTimestamp: null,
+    lastTimestamp: null,
+    userTurns: 0,
+    assistantTurns: 0,
+    toolUses: 0,
+    usage: {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+    },
+  };
+  for (const line of lines) {
+    if (!line) continue;
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+    if (entry.sessionId && !summary.sessionId) summary.sessionId = entry.sessionId;
+    if (entry.permissionMode && !summary.permissionMode) summary.permissionMode = entry.permissionMode;
+    if (entry.version && !summary.version) summary.version = entry.version;
+    if (entry.gitBranch && !summary.gitBranch) summary.gitBranch = entry.gitBranch;
+    if (entry.cwd && !summary.cwd) summary.cwd = entry.cwd;
+    if (entry.timestamp) {
+      if (!summary.firstTimestamp) summary.firstTimestamp = entry.timestamp;
+      summary.lastTimestamp = entry.timestamp;
+    }
+    if (entry.type === 'user') summary.userTurns += 1;
+    if (entry.type === 'assistant') {
+      summary.assistantTurns += 1;
+      const msg = entry.message || {};
+      if (msg.model && !summary.model) summary.model = msg.model;
+      const u = msg.usage || {};
+      summary.usage.inputTokens += u.input_tokens || 0;
+      summary.usage.outputTokens += u.output_tokens || 0;
+      summary.usage.cacheCreationInputTokens += u.cache_creation_input_tokens || 0;
+      summary.usage.cacheReadInputTokens += u.cache_read_input_tokens || 0;
+      if (Array.isArray(msg.content)) {
+        for (const block of msg.content) {
+          if (block && block.type === 'tool_use') summary.toolUses += 1;
+        }
+      }
+    }
+  }
+  return summary;
+}
+
 // Copy src → dst only if mtime differs (cheap idempotency).
 function copyIfChanged(src, dst) {
   let srcStat;
@@ -181,6 +260,10 @@ function pathToFileUri(p) {
 
 // Mirror one project. Copies memory .md files (mtime-gated) and writes the
 // _index.md. Returns { project, copied, indexed }.
+//
+// If `sessions` is empty/undefined, we backfill with every JSONL we can
+// find under that project dir so the index's session table reflects the
+// full history (not just sessions captured in the current PTY window).
 function mirrorProject({ projectName, projectFull, outRoot, sessions }) {
   const { files } = listMemoryMd(projectFull);
   const dstProjectDir = path.join(outRoot, projectName);
@@ -190,14 +273,19 @@ function mirrorProject({ projectName, projectFull, outRoot, sessions }) {
     if (copyIfChanged(src, dst)) copied += 1;
   }
 
+  let finalSessions = sessions || [];
+  if (finalSessions.length === 0) {
+    finalSessions = scanAllProjectSessions(projectFull);
+  }
+
   // Pull cwd from the most recent session if we have one.
-  const projectCwd = (sessions && sessions[0] && sessions[0].cwd) || null;
+  const projectCwd = (finalSessions[0] && finalSessions[0].cwd) || null;
 
   const indexBody = renderIndex({
     project: projectName,
     projectCwd,
     memoryFiles: files,
-    sessions: sessions || [],
+    sessions: finalSessions,
   });
   fs.mkdirSync(dstProjectDir, { recursive: true });
   fs.writeFileSync(path.join(dstProjectDir, '_index.md'), indexBody, 'utf8');
@@ -205,16 +293,27 @@ function mirrorProject({ projectName, projectFull, outRoot, sessions }) {
   return { project: projectName, copied, indexed: true, memoryCount: files.length };
 }
 
-// Walk every project, mirror memory + write index. `sessionsByProject` maps
-// project-dir-name → array of summary objects from claudeSessionScan.
+// Walk every project, mirror memory + write index. `sessionsByProject`
+// maps project-dir-name → array of summary objects (from claudeSessionScan
+// or our local scanner). When a project has no entry in the map, we
+// backfill via mirrorProject's full-history scan.
+//
+// We always run mirrorProject for every project that has *either* memory
+// files OR any JSONLs, so the final-sweep call (with sessionsByProject={})
+// produces a complete index for everything ever seen.
 function mirrorAll({ outRoot, sessionsByProject = {} }) {
   fs.mkdirSync(outRoot, { recursive: true });
   const results = [];
   for (const { name, full } of listProjectDirs()) {
-    // Skip projects with no memory dir AND no sessions to record.
     const { files } = listMemoryMd(full);
     const sessions = sessionsByProject[name] || [];
-    if (files.length === 0 && sessions.length === 0) continue;
+    // Skip projects that have no memory AND no JSONLs at all — nothing
+    // to index. Cheap dir read, no JSON parsing.
+    let hasJsonl = false;
+    try {
+      hasJsonl = fs.readdirSync(full).some((n) => n.endsWith('.jsonl'));
+    } catch { /* ignore */ }
+    if (files.length === 0 && sessions.length === 0 && !hasJsonl) continue;
     try {
       results.push(mirrorProject({
         projectName: name,

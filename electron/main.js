@@ -1,10 +1,10 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const pty = require('@lydell/node-pty');
 const { Agent } = require('../src/core/agent');
-const { OllamaRunner } = require('../src/core/runners/ollama');
+const { createRunner, REGISTRY } = require('../src/core/runners');
 const { runToolLoop } = require('../src/core/toolLoop');
 const { SessionLog } = require('../src/core/sessionLog');
 const { snapshotBefore, summarizeWindow } = require('../src/core/claudeSessionScan');
@@ -16,8 +16,19 @@ const SESSIONS_DIR = path.join(PROJECT_ROOT, '.myagent', 'sessions');
 // Obsidian-friendly memory mirror: per-project memory + session index.
 const MEMORIES_DIR = path.join(SESSIONS_DIR, 'memories');
 
-// One shared runner so /think toggles persist across prompts.
-const runner = new OllamaRunner();
+// Runner cache keyed by `${runnerName}::${model}`. Lazy — no runner is
+// constructed (and no Ollama / model service is touched) until an
+// `agent:*` IPC actually arrives. The renderer no longer calls these on
+// startup; the agent UI was removed and will be rebuilt later.
+const runnerCache = new Map();
+function getRunner({ runnerName = 'ollama', model } = {}) {
+  const key = `${runnerName}::${model || ''}`;
+  if (!runnerCache.has(key)) {
+    const opts = model ? { model } : {};
+    runnerCache.set(key, createRunner(runnerName, opts));
+  }
+  return runnerCache.get(key);
+}
 
 // One log file per app launch. Captures everything that hits the
 // terminals (agent + every PTY pane). Lives in .myagent/ which is
@@ -30,6 +41,51 @@ const sessionLog = new SessionLog({ dir: SESSIONS_DIR });
 // always creates a fresh one for that key.
 const ptys = new Map();
 const ptyKey = (contentsId, paneId) => `${contentsId}:${paneId || 'main'}`;
+
+// Application menu. Replaces Electron's default so we can add a DevTools
+// toggle for the renderer (Ctrl+Shift+I or View → Toggle Developer Tools).
+function buildMenu() {
+  const isMac = process.platform === 'darwin';
+  const template = [
+    ...(isMac ? [{ role: 'appMenu' }] : []),
+    {
+      label: 'File',
+      submenu: [isMac ? { role: 'close' } : { role: 'quit' }],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' }, { role: 'redo' }, { type: 'separator' },
+        { role: 'cut' }, { role: 'copy' }, { role: 'paste' },
+        { role: 'selectAll' },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload' },
+        { role: 'forceReload' },
+        {
+          label: 'Toggle Developer Tools',
+          accelerator: isMac ? 'Alt+Cmd+I' : 'Ctrl+Shift+I',
+          click: (_item, win) => {
+            const target = win || BrowserWindow.getFocusedWindow();
+            target?.webContents.toggleDevTools();
+          },
+        },
+        { type: 'separator' },
+        { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
+      ],
+    },
+    {
+      label: 'Window',
+      submenu: [{ role: 'minimize' }, { role: 'close' }],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -55,29 +111,34 @@ function createWindow() {
   });
 }
 
-ipcMain.handle('agent:health', async () => runner.health());
+// Health/think-status/set-think target the runner the renderer last used
+// for this session. The renderer passes runnerName + model on every call
+// so the main process is stateless w.r.t. which runner is "current."
+ipcMain.handle('agent:health', async (_e, opts = {}) => getRunner(opts).health());
 
-ipcMain.handle('agent:think-status', async () => ({
-  think: runner.think,
-  capabilities: runner.capabilities,
-  model: runner.model,
-}));
-
-ipcMain.handle('agent:set-think', async (_e, on) => {
-  const result = await runner.setThink(on);
-  return { ...result, capabilities: runner.capabilities, model: runner.model };
+ipcMain.handle('agent:think-status', async (_e, opts = {}) => {
+  const r = getRunner(opts);
+  return { think: r.think, capabilities: r.capabilities, model: r.model };
 });
 
-ipcMain.on('agent:run', async (event, { sessionId, prompt }) => {
+ipcMain.handle('agent:set-think', async (_e, { on, ...opts } = {}) => {
+  const r = getRunner(opts);
+  const result = await r.setThink(on);
+  return { ...result, capabilities: r.capabilities, model: r.model };
+});
+
+// List installed runners so the renderer can validate /agent --runner X.
+ipcMain.handle('agent:runners', async () => Object.keys(REGISTRY));
+
+ipcMain.on('agent:run', async (event, { sessionId, prompt, runnerName, model } = {}) => {
   const send = (channel, payload) =>
     event.sender.send(channel, { sessionId, ...payload });
 
-  // Agent always runs in the main pane today. If we ever route it to
-  // another pane, plumb the paneId through this handler.
   const PANE = 'main';
   sessionLog.text('agent-in', prompt, PANE);
 
   try {
+    const runner = getRunner({ runnerName, model });
     const agent = new Agent({ runner });
 
     const { truncated, reason } = await runToolLoop({
@@ -220,17 +281,42 @@ ipcMain.on('pty:kill', (event, { paneId } = {}) => {
   }
 });
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  buildMenu();
+  createWindow();
+});
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-app.on('before-quit', () => {
-  try {
-    // Final markdown sweep — picks up any projects whose memory changed
-    // outside of a captured PTY window.
-    mirrorAll({ outRoot: MEMORIES_DIR, sessionsByProject: {} });
-  } catch { /* ignore */ }
-  try { sessionLog.close(); } catch { /* ignore */ }
+// Set to true after the deferred shutdown so we don't loop on the
+// before-quit event when app.quit() resumes.
+let shutdownDone = false;
+app.on('before-quit', (ev) => {
+  if (shutdownDone) return;
+  ev.preventDefault();
+  // Kill any live PTYs first so their onExit handlers run while the
+  // session log + raw streams are still open. Without this, the PTYs
+  // are torn down by the OS *after* sessionLog.close(), and the late
+  // pty-exit / pty-agent-summary writes hit an ended stream ("write
+  // after end") and the memory mirror they trigger never lands.
+  for (const [key, term] of ptys) {
+    try { term.kill(); } catch { /* ignore */ }
+    ptys.delete(key);
+  }
+  // Give the PTY onExit handlers a moment to fire — they emit the final
+  // pty-exit / pty-agent-summary lines and refresh the memory mirror
+  // for sessions that were still running. 250ms is enough on Windows
+  // ConPTY in practice without making quit feel laggy.
+  setTimeout(() => {
+    try {
+      // Final memory sweep — picks up any projects whose memory changed
+      // outside of a captured PTY window.
+      mirrorAll({ outRoot: MEMORIES_DIR, sessionsByProject: {} });
+    } catch { /* ignore */ }
+    try { sessionLog.close(); } catch { /* ignore */ }
+    shutdownDone = true;
+    app.quit();
+  }, 250);
 });

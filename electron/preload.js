@@ -25,10 +25,15 @@ function emit(event, msg) {
 
 contextBridge.exposeInMainWorld('transport', {
   kind: 'electron',
-  health: () => ipcRenderer.invoke('agent:health'),
-  thinkStatus: () => ipcRenderer.invoke('agent:think-status'),
-  setThink: (on) => ipcRenderer.invoke('agent:set-think', on),
-  run: (sessionId, prompt) => ipcRenderer.send('agent:run', { sessionId, prompt }),
+  // All agent calls accept an optional { runnerName, model } so the
+  // renderer can target a specific runner+model picked via /agent flags.
+  // Without those, the main process uses defaults (Ollama + env model).
+  health: (opts) => ipcRenderer.invoke('agent:health', opts || {}),
+  thinkStatus: (opts) => ipcRenderer.invoke('agent:think-status', opts || {}),
+  setThink: (on, opts) => ipcRenderer.invoke('agent:set-think', { on, ...(opts || {}) }),
+  runners: () => ipcRenderer.invoke('agent:runners'),
+  run: (sessionId, prompt, opts) =>
+    ipcRenderer.send('agent:run', { sessionId, prompt, ...(opts || {}) }),
   on: (event, fn) => {
     if (!listeners.has(event)) listeners.set(event, new Set());
     listeners.get(event).add(fn);

@@ -21,18 +21,31 @@ html, body {
 
 .title { font-weight: 600; }
 
-.status {
-  padding: 2px 8px;
-  border-radius: 3px;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+.commands {
+  display: flex;
+  gap: 6px;
+  margin-left: 8px;
 }
-.status--unknown { background: #555; color: #ddd; }
-.status--ok      { background: #1f6f3a; color: #d4f5dc; }
-.status--down    { background: #7a1f1f; color: #f5d4d4; }
-
-.model { margin-left: auto; opacity: 0.7; font-size: 12px; }
+.cmd-btn {
+  background: #3a3a3a;
+  color: #ddd;
+  border: 1px solid #4a4a4a;
+  border-radius: 3px;
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 80ms ease, border-color 80ms ease;
+}
+.cmd-btn:hover:not(:disabled) {
+  background: #4a4a4a;
+  border-color: #569cd6;
+}
+.cmd-btn:active:not(:disabled) { background: #2d2d2d; }
+.cmd-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 
 #split {
   position: absolute;
@@ -46,13 +59,22 @@ html, body {
 }
 
 .pane {
+  /* When the extra pane is hidden, the main pane fills #split (flex-grow).
+     When both are visible, the splitter drag sets explicit width via JS,
+     and we disable grow so widths stay where the user dragged them. */
   flex: 1 1 0;
-  min-width: 0;
+  min-width: 80px;
   padding: 6px;
   border-left: 2px solid transparent;
   position: relative;
   overflow: hidden;
 }
+.pane[data-pane="extra"] {
+  display: flex;
+  flex-direction: column;
+  padding: 0;            /* tab bar + host fill the pane edge-to-edge */
+}
+.pane[data-pane="extra"].pane--hidden { display: none; }
 .pane:first-child {
   border-left: 2px solid transparent;
   border-right: 1px solid #3c3c3c;
@@ -61,6 +83,86 @@ html, body {
   width: 100%;
   height: 100%;
 }
+
+/* Tab bar inside the extra pane. Hosts one button per open shell tab,
+   plus a `+` to add another. Only the active tab's xterm is visible. */
+.tabs {
+  display: flex;
+  align-items: stretch;
+  background: #252525;
+  border-bottom: 1px solid #3c3c3c;
+  flex: 0 0 auto;
+  overflow-x: auto;
+}
+.tabs__list {
+  display: flex;
+  flex: 1 1 auto;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-family: 'Cascadia Code', Consolas, Menlo, monospace;
+  font-size: 12px;
+  color: #aaa;
+  background: transparent;
+  border: none;
+  border-right: 1px solid #3c3c3c;
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 200px;
+  transition: background 80ms ease, color 80ms ease;
+}
+.tab:hover { background: #2d2d2d; color: #ddd; }
+.tab--active {
+  background: #1e1e1e;
+  color: #ddd;
+  box-shadow: inset 0 -2px 0 #569cd6;
+}
+.tab__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tab__close {
+  background: transparent;
+  border: none;
+  color: #777;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  border-radius: 2px;
+}
+.tab__close:hover { background: #4a4a4a; color: #fff; }
+.tabs__add {
+  background: transparent;
+  border: none;
+  color: #aaa;
+  cursor: pointer;
+  font-size: 16px;
+  font-family: inherit;
+  padding: 0 12px;
+  flex: 0 0 auto;
+}
+.tabs__add:hover { background: #2d2d2d; color: #ddd; }
+
+/* Shared host area for all tab terminals; each tab creates its own
+   .tab-host inside, only the active one has display: block. */
+.tabs-host {
+  flex: 1 1 auto;
+  position: relative;
+  min-height: 0;       /* required so xterm canvas can shrink */
+}
+.tab-host {
+  position: absolute;
+  inset: 6px;          /* match the original .pane padding so xterm has breathing room */
+  display: none;
+}
+.tab-host--active { display: block; }
 .pane--focused {
   border-left-color: #569cd6;
 }
@@ -71,3 +173,29 @@ html, body {
 .pane--hidden {
   display: none;
 }
+
+/* Splitter — thin draggable bar between panes. Visible only when the
+   extra pane is open. Cursor changes to col-resize on hover. */
+.splitter {
+  flex: 0 0 6px;
+  background: #2d2d2d;
+  cursor: col-resize;
+  position: relative;
+  user-select: none;
+  transition: background 80ms ease;
+}
+.splitter:hover,
+.splitter.splitter--dragging {
+  background: #569cd6;
+}
+.splitter--hidden {
+  display: none;
+}
+/* Body cursor lock during drag so the cursor stays col-resize even if the
+   pointer briefly leaves the splitter element. */
+body.is-resizing,
+body.is-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
