@@ -72,6 +72,10 @@ contextBridge.exposeInMainWorld('transport', {
     send: (body) => ipcRenderer.invoke('worker:send', body || {}),
     close: (body) => ipcRenderer.invoke('worker:close', body || {}),
     rename: (body) => ipcRenderer.invoke('worker:rename', body || {}),
+    // Tools available to a worker (semantic kind only — claude/shell
+    // return {ok:false}). Used by the renderer to drive slash-command
+    // autocomplete.
+    listTools: (id) => ipcRenderer.invoke('worker:list-tools', { id }),
   },
   // Native dialogs + persisted settings, used by the spawn UX.
   dialog: {

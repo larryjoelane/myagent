@@ -20,6 +20,13 @@
     settings: { defaultMirror: true, toolDetails: 'collapsed' },
     thinkingWorkers: new Set(),
     pendingCwd: null,     // user's chosen cwd for the next spawn
+    // Tool list per worker id, fetched on spawn for kinds that
+    // expose a toolkit (semantic). Drives slash-command autocomplete.
+    // The toolkit is currently immutable per spawn — if that changes,
+    // refetch on a `worker:tools-changed` event.
+    toolsByWorker: new Map(),
+    // Selected index in the slash popup, for keyboard navigation.
+    slashSelected: 0,
   };
 
   function rootEl() { return $('agent-manager'); }
@@ -68,19 +75,31 @@
     return '…/' + parts.slice(-2).join('/');
   }
 
+  // Sync the cwd label on every spawn entry point. There are two
+  // pickers in the UI:
+  //   - empty-state picker (shown before the first worker exists)
+  //   - settings-drawer picker (shown once workers are attached so
+  //     users don't have to close everything just to change cwd)
+  // Both write to the same `state.pendingCwd`, so both labels need
+  // to reflect the current value after every change.
   async function renderEmptyCwd() {
-    const btnText = $('am-empty-cwd-text');
-    if (!btnText) return;
     if (!state.pendingCwd) {
-      // Pull the persisted default so the button reflects what spawn would use.
       try {
         const r = await transport.settings.get('lastCwd');
         state.pendingCwd = r.value || null;
       } catch { /* ignore */ }
     }
-    btnText.textContent = state.pendingCwd ? shortenPath(state.pendingCwd) : '(repo root)';
-    const btn = $('am-empty-cwd');
-    if (btn && state.pendingCwd) btn.title = state.pendingCwd;
+    const label = state.pendingCwd ? shortenPath(state.pendingCwd) : '(repo root)';
+    const tooltip = state.pendingCwd || '(repo root)';
+    for (const [textId, btnId] of [
+      ['am-empty-cwd-text', 'am-empty-cwd'],
+      ['am-spawn-cwd-text', 'am-spawn-cwd'],
+    ]) {
+      const t = $(textId);
+      if (t) t.textContent = label;
+      const b = $(btnId);
+      if (b) b.title = tooltip;
+    }
   }
 
   async function pickCwd() {
@@ -195,6 +214,7 @@
       closeBtn.textContent = 'Close';
       closeBtn.addEventListener('click', async () => {
         await transport.workers.close({ id: w.id });
+        state.toolsByWorker.delete(w.id);
         await refreshAll();
       });
       row.appendChild(closeBtn);
@@ -215,6 +235,15 @@
     const r = await transport.workers.spawn({ kind, cwd: state.pendingCwd || undefined });
     if (!r.ok) { pushBubble('system', `spawn failed: ${r.error || 'unknown'}`); return; }
     state.currentTarget = r.id;
+    // Cache the worker's toolkit for slash autocomplete. Only semantic
+    // workers expose tools; for other kinds the call returns ok:false
+    // and we just skip (popup will not appear).
+    try {
+      const tr = await transport.workers.listTools(r.id);
+      if (tr && tr.ok && Array.isArray(tr.tools)) {
+        state.toolsByWorker.set(r.id, tr.tools);
+      }
+    } catch { /* ignore — autocomplete just won't show */ }
     await refreshAll();
   }
 
@@ -692,6 +721,128 @@
     chatEl().scrollTop = chatEl().scrollHeight;
   }
 
+  // Semantic agent results (and help / no-match) render as a structured
+  // card inside the assistant bubble: header with the tool name + Copy,
+  // then the body. Long bodies (>12 lines) start collapsed at ~6 lines
+  // with a "Show more" toggle. Each turn gets its own card; the bubble
+  // closes at chat:turn-end so the next semantic chunk lands in a fresh
+  // bubble (avoids the "results pile into the last bubble" bug).
+  const SEMANTIC_COLLAPSE_LINES = 6;
+  const SEMANTIC_COLLAPSE_THRESHOLD = 12;
+
+  function renderSemanticResult(msg) {
+    const entry = ensureOpenAssistantBubble(msg.agentId);
+    const raw = String(msg.text || '');
+    // Strip the `[Tool Name]\n` annotation the driver prepends, if any —
+    // we render the tool name in the card header instead. This keeps
+    // the body pristine for copying.
+    const headerMatch = raw.match(/^\[([^\]\n]+)\]\n/);
+    const headerName = headerMatch ? headerMatch[1] : labelForKind(msg.kind);
+    const body = headerMatch ? raw.slice(headerMatch[0].length) : raw;
+
+    const card = document.createElement('div');
+    card.className = 'semantic-card';
+    card.dataset.kind = msg.kind || '';
+    if (msg.toolId) card.dataset.toolId = msg.toolId;
+
+    const header = document.createElement('div');
+    header.className = 'semantic-card__header';
+    const name = document.createElement('span');
+    name.className = 'semantic-card__name';
+    name.textContent = headerName;
+    header.appendChild(name);
+
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'semantic-card__copy';
+    copyBtn.type = 'button';
+    copyBtn.title = 'Copy result text';
+    copyBtn.textContent = 'Copy';
+    copyBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      copyTextToClipboard(body, copyBtn);
+    });
+    header.appendChild(copyBtn);
+    card.appendChild(header);
+
+    const bodyEl = document.createElement('pre');
+    bodyEl.className = 'semantic-card__body';
+    bodyEl.textContent = body;
+    card.appendChild(bodyEl);
+
+    // Auto-collapse long bodies. Toggle is wired on the header (clicking
+    // the name region — the Copy button stops propagation above).
+    const lineCount = body.split('\n').length;
+    if (lineCount > SEMANTIC_COLLAPSE_THRESHOLD) {
+      card.classList.add('semantic-card--collapsible');
+      card.classList.add('semantic-card--collapsed');
+      bodyEl.style.setProperty('--semantic-collapse-lines', String(SEMANTIC_COLLAPSE_LINES));
+      const toggle = document.createElement('button');
+      toggle.className = 'semantic-card__toggle';
+      toggle.type = 'button';
+      toggle.textContent = `Show all ${lineCount} lines`;
+      toggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const nowExpanded = card.classList.toggle('semantic-card--collapsed') === false;
+        toggle.textContent = nowExpanded
+          ? 'Collapse'
+          : `Show all ${lineCount} lines`;
+      });
+      card.appendChild(toggle);
+      // Also let the user toggle by clicking the header name region.
+      header.addEventListener('click', (e) => {
+        if (e.target === copyBtn) return;
+        const nowExpanded = card.classList.toggle('semantic-card--collapsed') === false;
+        toggle.textContent = nowExpanded
+          ? 'Collapse'
+          : `Show all ${lineCount} lines`;
+      });
+    }
+
+    entry.bodyEl.appendChild(card);
+    entry.lastTextNode = null;
+    chatEl().scrollTop = chatEl().scrollHeight;
+  }
+
+  function labelForKind(kind) {
+    if (kind === 'semantic-help') return 'Help';
+    if (kind === 'semantic-no-match') return 'No match';
+    if (kind === 'semantic-slash') return 'Slash';
+    return 'Result';
+  }
+
+  // Copy with a quick visual confirmation. Falls back to execCommand
+  // when the Clipboard API isn't available (older Electron, file://).
+  async function copyTextToClipboard(text, button) {
+    let ok = false;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        ok = true;
+      }
+    } catch { /* fall through */ }
+    if (!ok) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+      } catch { ok = false; }
+    }
+    if (button) {
+      const original = button.textContent;
+      button.textContent = ok ? 'Copied' : 'Failed';
+      button.classList.add(ok ? 'semantic-card__copy--ok' : 'semantic-card__copy--err');
+      setTimeout(() => {
+        button.textContent = original;
+        button.classList.remove('semantic-card__copy--ok', 'semantic-card__copy--err');
+      }, 1200);
+    }
+  }
+
   function renderToolResult(msg) {
     // Find the card with matching tool_use_id. If the chat is mid-render
     // and the use card hasn't appeared yet, append a standalone result.
@@ -887,15 +1038,115 @@
 
   // --- Mention popup ------------------------------------------------------
 
-  function updateMentionPopup() {
+  // Single dispatcher: figure out whether the textarea is in slash-
+  // command mode, mention mode, or neither, and render accordingly.
+  // Slash mode wins when the input begins with `/`; the slash command
+  // is only valid at column 0 of the textarea (matches what the
+  // SemanticDriver's parseSlash() accepts).
+  function updateInputPopup() {
     const input = inputEl();
     const popup = mentionEl();
     const text = input.value;
     const cursor = input.selectionStart || 0;
     const before = text.slice(0, cursor);
+
+    // Slash mode: only when `/` is the very first character of the
+    // textarea AND the active worker is semantic (others have no
+    // toolkit to autocomplete from).
+    if (text.startsWith('/')) {
+      const tools = currentWorkerTools();
+      if (tools && tools.length > 0) {
+        renderSlashPopup(input, popup, text);
+        return;
+      }
+    }
+
+    // @-mention mode (existing behavior).
     const m = before.match(/(?:^|\s)@(\S*)$/);
-    if (!m) { popup.classList.add('mention-popup--hidden'); return; }
-    const prefix = m[1].toLowerCase();
+    if (!m) { hidePopup(popup); return; }
+    renderMentionPopup(input, popup, before, cursor, text, m[1].toLowerCase());
+  }
+
+  function currentWorkerTools() {
+    const w = workerById(state.currentTarget);
+    if (!w || w.kind !== 'semantic') return null;
+    return state.toolsByWorker.get(w.id) || null;
+  }
+
+  function hidePopup(popup) {
+    popup.classList.add('mention-popup--hidden');
+    state.slashSelected = 0;
+  }
+
+  function renderSlashPopup(input, popup, text) {
+    // Parse `/cmd args` out of the start of the input. The user is
+    // typing the cmd portion; everything after the first space is
+    // the args (we don't rewrite that on accept).
+    const m = text.match(/^\/([a-zA-Z0-9_-]*)/);
+    const typedCmd = (m && m[1]) ? m[1].toLowerCase() : '';
+    const tools = state.toolsByWorker.get(state.currentTarget) || [];
+
+    // Always show /help even though it's not a tool id — it's a real
+    // slash command in the SemanticDriver. Synthesize an entry.
+    const entries = [
+      { id: 'help', name: 'Help', description: 'List all tools or show help for one.' },
+      ...tools,
+    ];
+    const matches = entries.filter((t) => t.id.toLowerCase().includes(typedCmd));
+
+    popup.innerHTML = '';
+    if (matches.length === 0) {
+      const item = document.createElement('div');
+      item.className = 'mention-item';
+      item.style.color = 'var(--text-faint)';
+      item.style.fontStyle = 'italic';
+      item.textContent = `no slash commands match "/${typedCmd}"`;
+      popup.appendChild(item);
+      popup.classList.remove('mention-popup--hidden');
+      return;
+    }
+
+    // Clamp the selection index to the matches we just rebuilt.
+    if (state.slashSelected >= matches.length) state.slashSelected = matches.length - 1;
+    if (state.slashSelected < 0) state.slashSelected = 0;
+
+    matches.forEach((t, i) => {
+      const item = document.createElement('div');
+      item.className = 'mention-item mention-item--slash';
+      if (i === state.slashSelected) item.classList.add('mention-item--active');
+      const head = document.createElement('div');
+      head.className = 'mention-item__head';
+      head.textContent = `/${t.id}`;
+      const sub = document.createElement('div');
+      sub.className = 'mention-item__sub';
+      // First sentence of the description — keep the row tight.
+      sub.textContent = (t.description || '').split(/(?<=\.)\s/)[0].slice(0, 90);
+      item.appendChild(head);
+      if (sub.textContent) item.appendChild(sub);
+      item.dataset.index = String(i);
+      item.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        acceptSlash(input, popup, text, t.id);
+      });
+      popup.appendChild(item);
+    });
+    popup.classList.remove('mention-popup--hidden');
+  }
+
+  function acceptSlash(input, popup, text, toolId) {
+    // Replace just the leading `/cmd`, keep any trailing args + space.
+    const rest = text.replace(/^\/[a-zA-Z0-9_-]*/, '');
+    const next = `/${toolId}${rest.length === 0 ? ' ' : rest}`;
+    input.value = next;
+    input.focus();
+    // Cursor goes to the end of the inserted command (before any args
+    // the user already had typed) so they can immediately type args.
+    const cursor = `/${toolId}`.length + (rest.length === 0 ? 1 : 0);
+    input.setSelectionRange(cursor, cursor);
+    hidePopup(popup);
+  }
+
+  function renderMentionPopup(input, popup, before, cursor, text, prefix) {
     const matches = state.workers.filter((w) => w.name.toLowerCase().includes(prefix));
     popup.innerHTML = '';
     if (matches.length === 0) {
@@ -925,6 +1176,9 @@
     popup.classList.remove('mention-popup--hidden');
   }
 
+  // Backwards-compat shim — old call sites still reference this name.
+  function updateMentionPopup() { updateInputPopup(); }
+
   // --- Wire-up -----------------------------------------------------------
 
   function init() {
@@ -938,7 +1192,11 @@
 
     $('am-empty-spawn-claude')?.addEventListener('click', () => spawnWorker('claude'));
     $('am-empty-spawn-shell')?.addEventListener('click', () => spawnWorker('shell'));
+    $('am-empty-spawn-semantic')?.addEventListener('click', () => spawnWorker('semantic'));
     $('am-empty-cwd')?.addEventListener('click', () => pickCwd());
+    // Settings-drawer cwd picker — same handler, different button.
+    // Both write to state.pendingCwd; renderEmptyCwd() syncs both labels.
+    $('am-spawn-cwd')?.addEventListener('click', () => pickCwd());
 
     // Settings-drawer spawn buttons — the way to add workers once
     // the empty state is gone.
@@ -952,11 +1210,53 @@
     $('am-spawn-shell')?.addEventListener('click', async () => {
       await spawnWorker('shell');
     });
+    $('am-spawn-semantic')?.addEventListener('click', async () => {
+      await spawnWorker('semantic');
+    });
 
     $('am-send')?.addEventListener('click', () => send().catch(() => {}));
     const input = inputEl();
     if (input) {
       input.addEventListener('keydown', (e) => {
+        // Slash-popup keyboard navigation. Active only when the popup
+        // is visible AND the textarea begins with `/`. We treat any
+        // other state as "popup not for me" and fall through to normal
+        // textarea behavior (so Enter still sends, etc.).
+        const popup = mentionEl();
+        const slashOpen = !popup.classList.contains('mention-popup--hidden')
+          && input.value.startsWith('/');
+        if (slashOpen) {
+          const items = popup.querySelectorAll('.mention-item--slash');
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            hidePopup(popup);
+            return;
+          }
+          if (items.length > 0 && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+            e.preventDefault();
+            const dir = e.key === 'ArrowDown' ? 1 : -1;
+            state.slashSelected = (state.slashSelected + dir + items.length) % items.length;
+            updateInputPopup();
+            return;
+          }
+          if (items.length > 0 && (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey))) {
+            e.preventDefault();
+            const sel = items[state.slashSelected];
+            const idx = Number(sel?.dataset.index || 0);
+            // Re-derive the entries the same way renderSlashPopup does.
+            const tools = state.toolsByWorker.get(state.currentTarget) || [];
+            const entries = [
+              { id: 'help' },
+              ...tools,
+            ];
+            const m = input.value.match(/^\/([a-zA-Z0-9_-]*)/);
+            const typed = (m && m[1]) ? m[1].toLowerCase() : '';
+            const matches = entries.filter((t) => t.id.toLowerCase().includes(typed));
+            const pick = matches[idx];
+            if (pick) acceptSlash(input, popup, input.value, pick.id);
+            return;
+          }
+        }
         if (e.key === 'Enter' && !e.shiftKey) {
           e.preventDefault();
           send().catch(() => {});
@@ -964,7 +1264,10 @@
       });
       input.addEventListener('input', () => {
         autoGrow(input);
-        updateMentionPopup();
+        // Reset selection when the input changes — we can't carry an
+        // index across a different filter result set sensibly.
+        state.slashSelected = 0;
+        updateInputPopup();
       });
       input.addEventListener('blur', () => {
         setTimeout(() => mentionEl().classList.add('mention-popup--hidden'), 100);
@@ -1067,16 +1370,22 @@
         renderWorkers();
       },
       'chat:chunk': (msg) => {
-        if (msg.kind === 'text' || msg.kind === 'shell-output' || !msg.kind) {
+        const isSemantic = typeof msg.kind === 'string' && msg.kind.startsWith('semantic-');
+        if (isSemantic) {
+          renderSemanticResult(msg);
+          return;
+        }
+        const isPlainText =
+          !msg.kind ||
+          msg.kind === 'text' ||
+          msg.kind === 'shell-output' ||
+          msg.kind === 'thinking';
+        if (isPlainText) {
           appendToOpenBubble(msg.agentId, msg.text || '');
         } else if (msg.kind === 'tool-use') {
           renderToolUseCard(msg);
         } else if (msg.kind === 'tool-result') {
           renderToolResult(msg);
-        } else if (msg.kind === 'thinking') {
-          // Thinking blocks render dimmer than regular text. Just
-          // append for now; richer rendering can come later.
-          appendToOpenBubble(msg.agentId, msg.text || '');
         }
       },
       'chat:turn-end': (msg) => {

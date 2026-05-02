@@ -68,7 +68,20 @@
                     title="Spawn another Claude worker">+ Claude</button>
             <button id="am-spawn-shell" class="cmd-btn cmd-btn--small" type="button"
                     title="Spawn another shell">+ Shell</button>
+            <button id="am-spawn-semantic" class="cmd-btn cmd-btn--small" type="button"
+                    title="Spawn a semantic-routing agent (in-process, no LLM)">+ Semantic</button>
           </span>
+        </div>
+        <!-- Shared cwd picker for the spawn buttons above. The empty
+             state has its own picker; this one fills the same role
+             once at least one worker exists, so users aren't forced
+             to close all workers to change directory. -->
+        <div class="am-setting-row am-setting-row--cwd">
+          <span class="am-setting-row__label">Working dir</span>
+          <button id="am-spawn-cwd" class="agent-manager__empty-cwd-button" type="button"
+                  title="Click to choose a different folder for the next spawn">
+            <span id="am-spawn-cwd-text">…</span>
+          </button>
         </div>
         <div id="am-workers-detail"></div>
       </div>
@@ -76,10 +89,10 @@
       <!-- Always-visible worker chip strip (only shown when workers exist). -->
       <div class="agent-manager__workers" id="am-workers" aria-label="Attached workers"></div>
 
-      <!-- Empty state — shown when no workers exist. Spawn a claude
-           worker (default) or a shell worker. -->
+      <!-- Empty state — shown when no workers exist. Spawn any of the
+           supported worker kinds. -->
       <div id="am-empty-state" class="agent-manager__empty">
-        <h2 class="agent-manager__empty-title">Drive Claude from here</h2>
+        <h2 class="agent-manager__empty-title">Drive Agentic workers from here</h2>
         <p class="agent-manager__empty-body">
           Spawn a worker and send prompts from this pane. Responses stream back here automatically.
         </p>
@@ -89,6 +102,10 @@
           </button>
           <button id="am-empty-spawn-shell" class="cmd-btn" type="button">
             + Open shell
+          </button>
+          <button id="am-empty-spawn-semantic" class="cmd-btn" type="button"
+                  title="Spawn a semantic-routing agent (in-process, no LLM)">
+            + Spawn Semantic worker
           </button>
         </div>
         <div class="agent-manager__empty-cwd">

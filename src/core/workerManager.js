@@ -24,6 +24,9 @@ class WorkerManager {
     if (!factories || typeof factories.claude !== 'function' || typeof factories.shell !== 'function') {
       throw new Error('WorkerManager: factories.claude and factories.shell are required');
     }
+    // Other factories (semantic, future agent types) are optional —
+    // spawnX() methods check before calling and return a clean error
+    // if the kind isn't registered.
     if (typeof onEvent !== 'function') throw new Error('WorkerManager: onEvent is required');
     this.factories = factories;
     this.onEvent = onEvent;
@@ -64,6 +67,17 @@ class WorkerManager {
     });
   }
 
+  async spawnSemantic({ name, cwd } = {}) {
+    if (typeof this.factories.semantic !== 'function') {
+      throw new Error('semantic agent type is not available (no factories.semantic)');
+    }
+    return this._spawn({
+      kind: 'semantic',
+      name: name || this._nextSemanticName(),
+      driverOpts: { cwd },
+    });
+  }
+
   send({ to, text }) {
     const target = this._resolve(to);
     if (!target) {
@@ -77,7 +91,19 @@ class WorkerManager {
     // before sending. Provider runs async; we don't block the
     // response path on it. If it fails or returns empty, the send
     // proceeds with the original text unchanged.
-    if (this.contextProvider) {
+    //
+    // Two cases skip auto-context entirely:
+    //   - Slash commands (`/cmd ...`): explicit user intent. Prepending
+    //     a "relevant past context" preamble would disqualify the
+    //     slash parser (which requires `^/`) AND pollute the input the
+    //     tool sees. The user typed a command; honor it verbatim.
+    //   - Semantic workers: they route by literal cosine similarity
+    //     between the user's prompt and tool descriptions. A preamble
+    //     full of prior chat noise wrecks the routing. Auto-context is
+    //     designed for Claude-style generative workers.
+    const isSlash = /^\s*\/[a-z]/i.test(text);
+    const skipAutoContext = isSlash || target.kind === 'semantic';
+    if (this.contextProvider && !skipAutoContext) {
       this._sendWithContext(target, text);
     } else {
       target.channel.send(text);
@@ -133,6 +159,24 @@ class WorkerManager {
     return { ok: true, id, name: trimmed };
   }
 
+  // Surface a worker's tool list when the driver has one (currently
+  // only SemanticDriver). Returns null for kinds that don't expose
+  // tools, so the renderer can decide whether to show autocomplete.
+  // Each entry: { id, name, description, usage? }
+  listTools(id) {
+    const w = this.workers.get(id);
+    if (!w) return null;
+    const driver = w.channel?.driver;
+    const kit = driver?.toolkit;
+    if (!kit || typeof kit.list !== 'function') return null;
+    return kit.list().map((t) => ({
+      id: t.id,
+      name: t.name,
+      description: t.description || '',
+      usage: Array.isArray(t.usage) ? t.usage : [],
+    }));
+  }
+
   async close(id) {
     const w = this.workers.get(id);
     if (!w) return;
@@ -154,6 +198,15 @@ class WorkerManager {
       if (!used.has(candidate)) return candidate;
     }
     return `Worker ${Date.now()}`;
+  }
+
+  _nextSemanticName() {
+    const used = new Set([...this.workers.values()].map((w) => w.name));
+    for (let i = 1; i < 1000; i++) {
+      const candidate = `Semantic ${i}`;
+      if (!used.has(candidate)) return candidate;
+    }
+    return `Semantic ${Date.now()}`;
   }
 
   async _spawn({ kind, name, driverOpts }) {

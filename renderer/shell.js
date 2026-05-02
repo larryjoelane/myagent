@@ -617,13 +617,26 @@
       this.openTab({}).catch(() => { /* manager logs internally */ });
     }
 
-    // Close the currently active tab. When the last tab closes, the
-    // extra pane goes back into hidden mode (matches the prior behavior
-    // of /shell new + close-extra).
+    // Close the currently visible tab. We resolve "current" in two
+    // steps to handle the case where the user has clicked inside a
+    // tab's content (xterm canvas, browser view) — those clicks don't
+    // bubble up to the tab strip, so the user perceives a different
+    // tab as "active" than `activeTabId` reflects:
+    //   1. If document.activeElement lives inside one of our tabs'
+    //      hostEl, that's the tab we close (DOM focus wins).
+    //   2. Otherwise fall back to `activeTabId` (the last-activated
+    //      tab — what the visible tab-strip highlight shows).
     cmdClosePane() {
       if (this.tabs.length === 0) return;
-      const active = this.tabs.find((t) => t.paneId === this.activeTabId);
-      if (active) this.closeTab(active.paneId);
+      const focusEl = document.activeElement;
+      let target = null;
+      if (focusEl) {
+        target = this.tabs.find((t) => t.hostEl && t.hostEl.contains(focusEl)) || null;
+      }
+      if (!target) {
+        target = this.tabs.find((t) => t.paneId === this.activeTabId) || null;
+      }
+      if (target) this.closeTab(target.paneId);
     }
 
 
@@ -687,6 +700,13 @@
       hostEl.className = 'tab-host';
       hostEl.dataset.paneId = paneId;
       hostEl.dataset.kind = 'shell';
+      // Clicks/focus inside the tab's content should also mark it
+      // active, so Close-pane targets what the user is looking at.
+      // mousedown beats click here — xterm captures click on its
+      // canvas, but mousedown still bubbles.
+      hostEl.addEventListener('mousedown', () => {
+        if (this.activeTabId !== paneId) this.activateTab(paneId);
+      });
       tabsHost.appendChild(hostEl);
 
       const tabEl = document.createElement('div');
@@ -771,6 +791,9 @@
       hostEl.className = 'tab-host';
       hostEl.dataset.paneId = paneId;
       hostEl.dataset.kind = 'browser';
+      hostEl.addEventListener('mousedown', () => {
+        if (this.activeTabId !== paneId) this.activateTab(paneId);
+      });
       tabsHost.appendChild(hostEl);
 
       const tabEl = document.createElement('div');

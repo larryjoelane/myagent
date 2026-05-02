@@ -17,6 +17,7 @@ const { ClaudeDriver } = require('../src/core/drivers/claudeDriver');
 const { ShellDriver } = require('../src/core/drivers/shellDriver');
 const { AppSettings } = require('../src/core/appSettings');
 const { BrowserManager } = require('../src/core/browserManager');
+const { buildSemanticDriverFactory } = require('../src/core/semantic');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const OUTPUT_DIR = path.join(PROJECT_ROOT, 'project-output');
@@ -133,6 +134,30 @@ async function autoContextProvider({ text }) {
   }
 }
 
+// Semantic driver factory — built lazily so the MiniLM model isn't
+// loaded into the main process until the user actually spawns a
+// semantic worker. The embedder module is required only here, then
+// passed in; the factory closes over it so all semantic spawns share
+// one model load.
+let semanticFactory = null;
+function getSemanticFactory() {
+  if (semanticFactory) return semanticFactory;
+  const embedderModule = require('../src/core/embedder');
+  semanticFactory = buildSemanticDriverFactory({
+    embedder: { embed: (text) => embedderModule.embed(text) },
+    // Hand the indexHost's search through so the memory-search tool
+    // talks to the same SQLite index every other piece of the app uses.
+    search: (opts) => indexHost.search(opts),
+    // memory-store tool writes to the same index (mirrors the existing
+    // /memory/store HTTP route + memory:store IPC handler).
+    store: (body) => indexHost.storeMemory(body),
+    // Sandbox root for grep / read-file / git-log. Restricting to
+    // PROJECT_ROOT means the agent can't pivot to /etc or another repo.
+    root: PROJECT_ROOT,
+  });
+  return semanticFactory;
+}
+
 // WorkerManager owns spawn/list/send/close for chat-driven agents and
 // shells. It hands forwarded events to broadcastChat so any open
 // AgentManager renderer sees them. Memory mirror lives inside the
@@ -142,6 +167,9 @@ const workerManager = new WorkerManager({
   factories: {
     claude: (opts) => new ClaudeDriver({ ...opts, cwd: opts.cwd || PROJECT_ROOT }),
     shell:  (opts) => new ShellDriver({ ...opts, cwd: opts.cwd || PROJECT_ROOT }),
+    // Trampoline through getSemanticFactory so model load is deferred
+    // until first spawn (saves ~3s + ~25MB on app startup).
+    semantic: (opts) => getSemanticFactory()({ ...opts, cwd: opts.cwd || PROJECT_ROOT }),
   },
   onEvent: (name, payload) => broadcastChat(name, payload),
   memoryStore: { store: (body) => indexHost.storeMemory(body) },
@@ -475,11 +503,20 @@ ipcMain.handle('agent:rename', async (_e, body = {}) => {
 
 ipcMain.handle('worker:spawn', async (_e, body = {}) => {
   try {
-    const kind = body.kind === 'shell' ? 'shell' : 'claude';
+    const kind = body.kind === 'shell'    ? 'shell'
+               : body.kind === 'semantic' ? 'semantic'
+                                          : 'claude';
     const cwd = body.cwd || appSettings.get('lastCwd') || PROJECT_ROOT;
-    const result = kind === 'shell'
-      ? await workerManager.spawnShell({ name: body.name, cwd })
-      : await workerManager.spawnWorker({ name: body.name, cwd, permissionMode: body.permissionMode });
+    let result;
+    if (kind === 'shell') {
+      result = await workerManager.spawnShell({ name: body.name, cwd });
+    } else if (kind === 'semantic') {
+      result = await workerManager.spawnSemantic({ name: body.name, cwd });
+    } else {
+      result = await workerManager.spawnWorker({
+        name: body.name, cwd, permissionMode: body.permissionMode,
+      });
+    }
     // Remember this cwd as the new default for the next spawn.
     if (cwd) appSettings.set('lastCwd', cwd);
     return { ok: true, ...result };
@@ -515,6 +552,16 @@ ipcMain.handle('settings:set', (_e, { key, value } = {}) => {
 });
 
 ipcMain.handle('worker:list', () => ({ ok: true, workers: workerManager.list() }));
+
+// Tool list for a single worker (semantic only today). Returns
+// {ok:true, tools:[...]} or {ok:false, error} when the worker
+// doesn't exist / has no toolkit. Renderer uses this to drive
+// the slash-command autocomplete popup.
+ipcMain.handle('worker:list-tools', (_e, body = {}) => {
+  const tools = workerManager.listTools(body.id);
+  if (!tools) return { ok: false, error: 'no toolkit for worker' };
+  return { ok: true, tools };
+});
 
 ipcMain.handle('worker:send', (_e, body = {}) => {
   workerManager.send({ to: body.to, text: body.text });

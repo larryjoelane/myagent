@@ -4,7 +4,7 @@
 // memoryStore) so tests don't touch real claude/shell/SQLite.
 
 const { WorkerManager } = require('../src/core/workerManager');
-const { eq, ok, contains, eventually } = require('./assert');
+const { eq, ok, contains, eventually, deepEq } = require('./assert');
 
 // Fake driver — same shape WorkerChannel expects.
 class FakeDriver {
@@ -25,11 +25,12 @@ class FakeDriver {
 function fakeFactories() {
   // Each factory returns a fresh FakeDriver instance and stashes a
   // reference so tests can drive it.
-  const created = { claude: [], shell: [] };
+  const created = { claude: [], shell: [], semantic: [] };
   return {
     factories: {
       claude: (opts) => { const d = new FakeDriver({ ...opts, kind: 'claude' }); created.claude.push(d); return d; },
       shell: (opts) => { const d = new FakeDriver({ ...opts, kind: 'shell' }); created.shell.push(d); return d; },
+      semantic: (opts) => { const d = new FakeDriver({ ...opts, kind: 'semantic' }); created.semantic.push(d); return d; },
     },
     created,
   };
@@ -317,6 +318,90 @@ function run(t) {
     mgr.send({ to: a.id, text: 'plain prompt' });
     await new Promise((r) => setImmediate(r));
     eq(created.claude[0].sent[0], 'plain prompt', 'no provider = unchanged');
+  });
+
+  t.test('slash commands bypass auto-context (preamble would break parseSlash)', async () => {
+    const { factories, created } = fakeFactories();
+    let providerCalled = 0;
+    const contextProvider = async () => {
+      providerCalled++;
+      return { preamble: '[Relevant past context — use if helpful]\n\n', usedHits: [{ id: 1 }] };
+    };
+    const mgr = new WorkerManager({ factories, onEvent: () => {}, contextProvider });
+    const a = await mgr.spawnWorker({});
+    mgr.send({ to: a.id, text: '/help' });
+    await new Promise((r) => setImmediate(r));
+    eq(providerCalled, 0, 'provider must not run for slash commands');
+    eq(created.claude[0].sent[0], '/help', 'slash text reaches driver verbatim');
+  });
+
+  t.test('semantic workers bypass auto-context (router needs literal prompt)', async () => {
+    const { factories, created } = fakeFactories();
+    let providerCalled = 0;
+    const contextProvider = async () => {
+      providerCalled++;
+      return { preamble: '[noise]\n\n', usedHits: [{ id: 1 }] };
+    };
+    const mgr = new WorkerManager({ factories, onEvent: () => {}, contextProvider });
+    const sem = await mgr.spawnSemantic({});
+    mgr.send({ to: sem.id, text: 'find references to WorkerManager' });
+    await new Promise((r) => setImmediate(r));
+    eq(providerCalled, 0, 'provider must not run for semantic workers');
+    eq(created.semantic[0].sent[0], 'find references to WorkerManager');
+  });
+
+  t.test('listTools returns the toolkit for workers whose driver exposes one', async () => {
+    // Stand up a real semantic factory so the channel's driver has a
+    // toolkit. Use a fake embedder so we don't pull in MiniLM.
+    const { ToolKit } = require('../src/core/semantic/toolkit');
+    const { EmbeddingRouter } = require('../src/core/semantic/router');
+    const { SemanticDriver } = require('../src/core/drivers/semanticDriver');
+    const fakeEmbedder = { embed: async () => new Float32Array([1, 0, 0, 0]) };
+    const semFactory = ({ agentId, onEvent }) => {
+      const kit = new ToolKit([
+        { id: 'foo', name: 'Foo', description: 'foo desc', usage: ['/foo bar'], run: async () => ({ ok: true, text: 'x' }) },
+        { id: 'baz', name: 'Baz', description: 'baz desc', run: async () => ({ ok: true, text: 'y' }) },
+      ]);
+      const router = new EmbeddingRouter({ embedder: fakeEmbedder, toolkit: kit, threshold: 0 });
+      return new SemanticDriver({ agentId, router, toolkit: kit, onEvent });
+    };
+    const { factories: base } = fakeFactories();
+    const mgr = new WorkerManager({
+      factories: { ...base, semantic: semFactory },
+      onEvent: () => {},
+    });
+    const sem = await mgr.spawnSemantic({});
+    const tools = mgr.listTools(sem.id);
+    eq(tools.length, 2, 'two tools');
+    eq(tools[0].id, 'foo');
+    eq(tools[0].name, 'Foo');
+    deepEq(tools[0].usage, ['/foo bar']);
+    deepEq(tools[1].usage, [], 'missing usage normalized to []');
+  });
+
+  t.test('listTools returns null for workers without a toolkit (claude/shell)', async () => {
+    const { factories } = fakeFactories();
+    const mgr = new WorkerManager({ factories, onEvent: () => {} });
+    const a = await mgr.spawnWorker({});
+    const b = await mgr.spawnShell({});
+    eq(mgr.listTools(a.id), null);
+    eq(mgr.listTools(b.id), null);
+    eq(mgr.listTools('does-not-exist'), null);
+  });
+
+  t.test('claude workers still get auto-context (regression guard)', async () => {
+    const { factories, created } = fakeFactories();
+    let providerCalled = 0;
+    const contextProvider = async () => {
+      providerCalled++;
+      return { preamble: '[ctx]\n\n', usedHits: [] };
+    };
+    const mgr = new WorkerManager({ factories, onEvent: () => {}, contextProvider });
+    const a = await mgr.spawnWorker({});
+    mgr.send({ to: a.id, text: 'plain prompt' });
+    await new Promise((r) => setImmediate(r));
+    eq(providerCalled, 1, 'provider must still run for claude workers');
+    eq(created.claude[0].sent[0], '[ctx]\n\nplain prompt');
   });
 
   t.test('contextProvider failure does not block the send', async () => {

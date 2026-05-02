@@ -473,6 +473,29 @@ body.is-resizing * {
   gap: 4px;
 }
 
+/* Settings-drawer cwd picker. Sits beneath the Workers spawn buttons
+   so users don't need to close all workers (and return to the empty
+   state) just to change the directory of the next spawn. The dashed
+   button mirrors the empty-state version visually. */
+.am-setting-row--cwd {
+  margin-top: 4px;
+  padding-bottom: 8px;
+  gap: 8px;
+}
+.am-setting-row__label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  flex: 0 0 auto;
+}
+.am-setting-row--cwd .agent-manager__empty-cwd-button {
+  flex: 1 1 auto;
+  font-size: 11px;
+  padding: 3px 8px;
+  text-align: left;
+}
+
 /* Segmented control (Left | Right). Two cmd-btns sitting flush. */
 .am-segmented {
   display: inline-flex;
@@ -910,6 +933,89 @@ body.is-resizing * {
 .tool-card--collapsed .tool-card__input,
 .tool-card--collapsed .tool-card__result { display: none; }
 
+/* Semantic agent — each turn produces one card with a tool-name
+   header, a Copy button, and the result body. Long bodies collapse
+   to ~6 lines with a "Show all N lines" toggle. Header click also
+   toggles. Reuses the tool-card visual language (left border accent,
+   surface-2 background) so it feels native. */
+.semantic-card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  margin: 4px 0;
+  font-size: 12px;
+  overflow: hidden;
+}
+.semantic-card__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--surface-3);
+  user-select: none;
+}
+.semantic-card--collapsible .semantic-card__header { cursor: pointer; }
+.semantic-card__name {
+  font-weight: 600;
+  font-family: 'Cascadia Code', Consolas, Menlo, monospace;
+  color: var(--text);
+  flex: 1 1 auto;
+}
+.semantic-card__copy {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 3px;
+  padding: 1px 8px;
+  font-size: 10px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 80ms ease, border-color 80ms ease, color 80ms ease;
+}
+.semantic-card__copy:hover {
+  background: var(--surface);
+  border-color: var(--accent);
+  color: var(--text);
+}
+.semantic-card__copy--ok    { border-color: #6bb56b; color: #cfeacf; }
+.semantic-card__copy--err   { border-color: #d06868; color: #f0c0c0; }
+
+.semantic-card__body {
+  margin: 0;
+  padding: 8px 10px;
+  font-family: 'Cascadia Code', Consolas, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text);
+  background: var(--surface);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  cursor: text;
+}
+.semantic-card--collapsed .semantic-card__body {
+  /* Cap visible height roughly at SEMANTIC_COLLAPSE_LINES * 1.4em + padding,
+     then fade the bottom so the user can tell it's truncated. */
+  max-height: calc(var(--semantic-collapse-lines, 6) * 1.4em + 16px);
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 60%, transparent);
+          mask-image: linear-gradient(to bottom, #000 60%, transparent);
+}
+.semantic-card__toggle {
+  display: block;
+  width: 100%;
+  background: var(--surface-2);
+  border: none;
+  border-top: 1px solid var(--border);
+  color: var(--accent);
+  font-size: 11px;
+  font-family: inherit;
+  padding: 4px 10px;
+  cursor: pointer;
+  text-align: center;
+}
+.semantic-card__toggle:hover { background: var(--surface-3); }
+
 /* Hidden mode: render the card as a compact badge. Body sections
    gone, header shrunk to a single inline pill. Click does nothing
    special — the badge is just a "this happened" marker. */
@@ -1011,5 +1117,26 @@ body.is-resizing * {
   color: #ddd;
   cursor: pointer;
 }
-.mention-item:hover { background: #1e3a5c; color: #cce6ff; }
+.mention-item:hover,
+.mention-item--active { background: #1e3a5c; color: #cce6ff; }
+
+/* Slash-command popup rows are two-line: command id on top, first
+   sentence of the description below in muted text. */
+.mention-item--slash { padding: 6px 10px; }
+.mention-item__head {
+  font-weight: 600;
+  color: var(--accent-fg);
+}
+.mention-item--slash:not(.mention-item--active) .mention-item__head {
+  color: var(--accent);
+}
+.mention-item__sub {
+  font-size: 10px;
+  color: var(--text-faint);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mention-item--active .mention-item__sub { color: var(--accent-fg); opacity: 0.8; }
 
