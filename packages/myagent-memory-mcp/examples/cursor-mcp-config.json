@@ -1,0 +1,9 @@
+{
+  "_comment": "Cursor MCP config. Save as .cursor/mcp.json in your project (or ~/.cursor/mcp.json globally).",
+  "mcpServers": {
+    "memory": {
+      "command": "npx",
+      "args": ["-y", "myagent-memory-mcp"]
+    }
+  }
+}

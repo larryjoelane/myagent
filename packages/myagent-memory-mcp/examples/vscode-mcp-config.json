@@ -1,0 +1,10 @@
+{
+  "_comment": "VS Code MCP config (GitHub Copilot Chat agent mode). Save as .vscode/mcp.json in your project, or merge into your user mcp.json. Reload VS Code or run 'MCP: Restart Servers' from the command palette.",
+  "servers": {
+    "memory": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "myagent-memory-mcp"]
+    }
+  }
+}

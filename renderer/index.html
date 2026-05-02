@@ -12,19 +12,115 @@
     <header class="topbar">
       <span class="title">MyAgent</span>
       <nav class="commands" aria-label="Commands">
+        <button id="cmd-agent-manager" class="cmd-btn cmd-btn--primary" type="button"
+                title="Toggle chat (Ctrl+Shift+A)">Chat</button>
         <button id="cmd-new-shell" class="cmd-btn" type="button"
-                title="Open side terminal pane (Ctrl+Shift+T)">New Shell</button>
+                title="New terminal tab (Ctrl+Shift+T)">+ Terminal</button>
+        <button id="cmd-new-browser" class="cmd-btn" type="button"
+                title="New browser tab">+ Browser</button>
         <button id="cmd-close-pane" class="cmd-btn" type="button"
-                title="Close side pane (Ctrl+Shift+W)" disabled>Close Pane</button>
+                title="Close terminal tab (Ctrl+Shift+W)" disabled>Close</button>
       </nav>
     </header>
+    <div id="app-row">
+    <aside id="agent-manager" class="agent-manager" aria-label="Chat">
+      <div class="agent-manager__header">
+        <span class="agent-manager__title">Chat</span>
+        <button id="am-settings-toggle" class="agent-manager__icon-btn" type="button"
+                title="Settings (memory mirror, workers)" aria-label="Settings">⚙</button>
+        <button id="agent-manager-close" class="agent-manager__icon-btn" type="button"
+                title="Hide chat" aria-label="Close">×</button>
+      </div>
+
+      <!-- Settings drawer: collapsible, hidden by default. Houses the
+           mirror toggle and the worker management section. -->
+      <div id="am-settings" class="agent-manager__settings agent-manager__settings--hidden">
+        <label class="am-setting-row">
+          <input id="am-default-mirror" type="checkbox" checked />
+          <span>Save chats to memory by default</span>
+        </label>
+        <label class="am-setting-row" title="Before each prompt is sent to a worker, search memory for relevant past context and prepend it.">
+          <input id="am-auto-context" type="checkbox" checked />
+          <span>Auto-include relevant memories</span>
+        </label>
+        <div class="am-setting-row">
+          <span>Chat position</span>
+          <span class="am-segmented" role="group" aria-label="Chat position">
+            <button id="am-chat-side-left" class="cmd-btn cmd-btn--small" type="button">Left</button>
+            <button id="am-chat-side-right" class="cmd-btn cmd-btn--small" type="button">Right</button>
+          </span>
+        </div>
+        <div class="am-setting-row">
+          <span>Tool details</span>
+          <span class="am-segmented" role="group" aria-label="Tool details">
+            <button id="am-tool-details-expanded" class="cmd-btn cmd-btn--small" type="button"
+                    title="Show input + result inline by default">Expanded</button>
+            <button id="am-tool-details-collapsed" class="cmd-btn cmd-btn--small" type="button"
+                    title="One-line summary; click to expand">Collapsed</button>
+            <button id="am-tool-details-hidden" class="cmd-btn cmd-btn--small" type="button"
+                    title="Tiny badge only; no body">Hidden</button>
+          </span>
+        </div>
+        <div class="am-setting-row am-setting-row--header">
+          <span>Workers</span>
+          <span class="am-spawn-buttons">
+            <button id="am-spawn-claude" class="cmd-btn cmd-btn--small cmd-btn--primary" type="button"
+                    title="Spawn another Claude worker">+ Claude</button>
+            <button id="am-spawn-shell" class="cmd-btn cmd-btn--small" type="button"
+                    title="Spawn another shell">+ Shell</button>
+          </span>
+        </div>
+        <div id="am-workers-detail"></div>
+      </div>
+
+      <!-- Always-visible worker chip strip (only shown when workers exist). -->
+      <div class="agent-manager__workers" id="am-workers" aria-label="Attached workers"></div>
+
+      <!-- Empty state — shown when no workers exist. Spawn a claude
+           worker (default) or a shell worker. -->
+      <div id="am-empty-state" class="agent-manager__empty">
+        <h2 class="agent-manager__empty-title">Drive Claude from here</h2>
+        <p class="agent-manager__empty-body">
+          Spawn a worker and send prompts from this pane. Responses stream back here automatically.
+        </p>
+        <div class="agent-manager__empty-actions">
+          <button id="am-empty-spawn-claude" class="cmd-btn cmd-btn--primary" type="button">
+            + Spawn Claude worker
+          </button>
+          <button id="am-empty-spawn-shell" class="cmd-btn" type="button">
+            + Open shell
+          </button>
+        </div>
+        <div class="agent-manager__empty-cwd">
+          <span class="agent-manager__empty-cwd-label">Working directory:</span>
+          <button id="am-empty-cwd" class="agent-manager__empty-cwd-button" type="button"
+                  title="Click to choose a different folder">
+            <span id="am-empty-cwd-text">…</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="agent-manager__chat" id="am-chat" role="log"></div>
+
+      <div class="agent-manager__compose">
+        <div id="am-mention-popup" class="mention-popup mention-popup--hidden" role="listbox"></div>
+        <textarea id="am-input" rows="2" placeholder="Message your worker..."
+                  aria-label="Message"></textarea>
+        <button id="am-send" class="cmd-btn cmd-btn--primary" type="button"
+                title="Send (Enter)" aria-label="Send">Send</button>
+      </div>
+    </aside>
+    <div id="split-wrap" class="split-wrap--hidden">
     <div id="split">
-      <div class="pane pane--focused" data-pane="main">
+      <!-- Main pane is retained for back-compat with the existing
+           PaneManager wiring but visually hidden. The tabbed area below
+           is the user-facing terminal surface. -->
+      <div class="pane pane--legacy-hidden" data-pane="main">
         <div class="pane-host"></div>
       </div>
       <div id="splitter" class="splitter splitter--hidden" role="separator"
            aria-orientation="vertical" aria-label="Resize panes" tabindex="0"></div>
-      <div class="pane pane--hidden" data-pane="extra">
+      <div class="pane pane--focused" data-pane="extra">
         <div class="tabs" id="tabs">
           <div class="tabs__list" id="tabs-list" role="tablist"></div>
           <button class="tabs__add" id="tabs-add" type="button" title="New shell tab (Ctrl+Shift+T)">+</button>
@@ -32,9 +128,12 @@
         <div class="tabs-host" id="tabs-host"></div>
       </div>
     </div>
+    </div><!-- /#split-wrap -->
+    </div><!-- /#app-row -->
     <script src="./vendor/xterm.js"></script>
     <script src="./vendor/addon-fit.js"></script>
     <script src="./shell.js"></script>
+    <script src="./agentManager.js"></script>
     <script src="./renderer.js"></script>
   </body>
 </html>

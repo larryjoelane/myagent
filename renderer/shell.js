@@ -316,6 +316,207 @@
     }
   }
 
+  // -------------------------- BrowserPane -----------------------------
+  // Owns a tab whose body is an Electron BrowserView (out-of-DOM Chromium
+  // widget). The renderer just reserves a rectangle (the .browser-host
+  // element) and reports its bounds to the main process; the BrowserView
+  // is layered on top. Hide/show maps to detach/attach.
+
+  class BrowserPane {
+    constructor({ transport, tabId, hostEl, onTitle, onLoading }) {
+      this.transport = transport;
+      this.tabId = tabId;
+      this.hostEl = hostEl;
+      this.onTitle = onTitle || (() => {});
+      this.onLoading = onLoading || (() => {});
+      this.unsub = [];
+      this.boundsObserver = null;
+      this.canGoBack = false;
+      this.canGoForward = false;
+      this.currentURL = '';
+      this.urlInput = null;
+      this.backBtn = null;
+      this.forwardBtn = null;
+      this.reloadBtn = null;
+    }
+
+    // Build the chrome (URL bar + back/forward/reload + body host) and
+    // create the BrowserView. Reports initial bounds after the host
+    // element has a non-zero rect.
+    async start({ initialURL } = {}) {
+      this._buildChrome();
+
+      const { ok, error } = await this.transport.browser.create({
+        tabId: this.tabId,
+        url: initialURL,
+      });
+      if (!ok) throw new Error(error || 'browser:create failed');
+
+      // Start observing the body host so window/pane resize keeps the
+      // BrowserView aligned. ResizeObserver fires on initial layout too.
+      this.boundsObserver = new ResizeObserver(() => this._reportBounds());
+      this.boundsObserver.observe(this.bodyEl);
+      // Window scroll/resize: the host's getBoundingClientRect changes
+      // even if its size didn't, so reposition on those too.
+      this._onWinResize = () => this._reportBounds();
+      window.addEventListener('resize', this._onWinResize);
+      // Mutations on #app-row (e.g. chat panel toggling its hidden
+      // class) shift the body's screen position without changing its
+      // size, so ResizeObserver alone misses them.
+      const appRow = document.getElementById('app-row');
+      if (appRow) {
+        this.mutationObserver = new MutationObserver(() => this._reportBounds());
+        this.mutationObserver.observe(appRow, {
+          attributes: true,
+          attributeFilter: ['class', 'style'],
+          subtree: true,
+        });
+      }
+
+      this.unsub.push(this.transport.browser.on('browser:nav', (msg) => {
+        if (msg.tabId !== this.tabId) return;
+        this.currentURL = msg.url;
+        this.canGoBack = !!msg.canGoBack;
+        this.canGoForward = !!msg.canGoForward;
+        if (this.urlInput && document.activeElement !== this.urlInput) {
+          this.urlInput.value = msg.url;
+        }
+        if (this.backBtn) this.backBtn.disabled = !this.canGoBack;
+        if (this.forwardBtn) this.forwardBtn.disabled = !this.canGoForward;
+      }));
+      this.unsub.push(this.transport.browser.on('browser:title', (msg) => {
+        if (msg.tabId !== this.tabId) return;
+        this.onTitle(msg.title);
+      }));
+      this.unsub.push(this.transport.browser.on('browser:loading', (msg) => {
+        if (msg.tabId !== this.tabId) return;
+        if (this.reloadBtn) this.reloadBtn.textContent = msg.loading ? '×' : '⟳';
+        this.onLoading(msg.loading);
+      }));
+      this.unsub.push(this.transport.browser.on('browser:error', (msg) => {
+        if (msg.tabId !== this.tabId) return;
+        // Surface load errors as a tiny inline banner. Auto-clears on
+        // next successful nav.
+        this._showError(`${msg.errorDescription || 'load failed'}`);
+      }));
+
+      // Initial bounds — ResizeObserver fires on first observe but only
+      // after the next layout. Force one now so the view doesn't flash.
+      requestAnimationFrame(() => this._reportBounds());
+    }
+
+    _buildChrome() {
+      this.hostEl.classList.add('browser-pane');
+      const bar = document.createElement('div');
+      bar.className = 'browser-bar';
+
+      this.backBtn = document.createElement('button');
+      this.backBtn.className = 'browser-btn';
+      this.backBtn.type = 'button';
+      this.backBtn.title = 'Back';
+      this.backBtn.textContent = '←';
+      this.backBtn.disabled = true;
+      this.backBtn.addEventListener('click', () => this.transport.browser.back(this.tabId));
+
+      this.forwardBtn = document.createElement('button');
+      this.forwardBtn.className = 'browser-btn';
+      this.forwardBtn.type = 'button';
+      this.forwardBtn.title = 'Forward';
+      this.forwardBtn.textContent = '→';
+      this.forwardBtn.disabled = true;
+      this.forwardBtn.addEventListener('click', () => this.transport.browser.forward(this.tabId));
+
+      this.reloadBtn = document.createElement('button');
+      this.reloadBtn.className = 'browser-btn';
+      this.reloadBtn.type = 'button';
+      this.reloadBtn.title = 'Reload';
+      this.reloadBtn.textContent = '⟳';
+      this.reloadBtn.addEventListener('click', () => {
+        // If currently loading, the button shows '×' for stop.
+        if (this.reloadBtn.textContent === '×') this.transport.browser.stop(this.tabId);
+        else this.transport.browser.reload(this.tabId);
+      });
+
+      this.urlInput = document.createElement('input');
+      this.urlInput.className = 'browser-url';
+      this.urlInput.type = 'text';
+      this.urlInput.placeholder = 'Enter URL or search...';
+      this.urlInput.spellcheck = false;
+      this.urlInput.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') {
+          ev.preventDefault();
+          const v = this.urlInput.value.trim();
+          if (v) this.transport.browser.loadURL(this.tabId, v);
+        }
+      });
+      this.urlInput.addEventListener('focus', () => this.urlInput.select());
+
+      bar.appendChild(this.backBtn);
+      bar.appendChild(this.forwardBtn);
+      bar.appendChild(this.reloadBtn);
+      bar.appendChild(this.urlInput);
+
+      this.errorBar = document.createElement('div');
+      this.errorBar.className = 'browser-error browser-error--hidden';
+
+      this.bodyEl = document.createElement('div');
+      this.bodyEl.className = 'browser-body';
+
+      this.hostEl.appendChild(bar);
+      this.hostEl.appendChild(this.errorBar);
+      this.hostEl.appendChild(this.bodyEl);
+    }
+
+    _showError(msg) {
+      if (!this.errorBar) return;
+      this.errorBar.textContent = msg;
+      this.errorBar.classList.remove('browser-error--hidden');
+      clearTimeout(this._errorTimer);
+      this._errorTimer = setTimeout(() => {
+        this.errorBar.classList.add('browser-error--hidden');
+      }, 4000);
+    }
+
+    _reportBounds() {
+      if (!this.bodyEl) return;
+      const rect = this.bodyEl.getBoundingClientRect();
+      this.transport.browser.setBounds(this.tabId, {
+        x: rect.left,
+        y: rect.top,
+        width: rect.width,
+        height: rect.height,
+      });
+    }
+
+    show() {
+      this.transport.browser.show(this.tabId);
+      // Bounds may have shifted while hidden (e.g. window resized).
+      requestAnimationFrame(() => this._reportBounds());
+    }
+
+    hide() {
+      this.transport.browser.hide(this.tabId);
+    }
+
+    refit() { this._reportBounds(); }
+
+    cleanup() {
+      for (const off of this.unsub) { try { off(); } catch { /* ignore */ } }
+      this.unsub = [];
+      try { this.boundsObserver?.disconnect(); } catch { /* ignore */ }
+      this.boundsObserver = null;
+      try { this.mutationObserver?.disconnect(); } catch { /* ignore */ }
+      this.mutationObserver = null;
+      if (this._onWinResize) window.removeEventListener('resize', this._onWinResize);
+      this._onWinResize = null;
+    }
+
+    async destroy() {
+      this.cleanup();
+      try { await this.transport.browser.destroy(this.tabId); } catch { /* ignore */ }
+    }
+  }
+
   // -------------------------- PaneManager -----------------------------
   // Owns layout, focus, refit. Wires the main TerminalShell, lazily creates
   // the extra ShellPane.
@@ -347,6 +548,15 @@
       this.shell.start();
       this.wireFocus(this.main.el, 'main');
       this.setFocus('main');
+
+      // + Browser button on the topbar opens a new browser tab in the
+      // extra pane (same place + Terminal puts shell tabs).
+      const btnNewBrowser = document.getElementById('cmd-new-browser');
+      btnNewBrowser?.addEventListener('click', () => {
+        this.openBrowserTab({}).catch((err) => {
+          console.error('openBrowserTab failed', err);
+        });
+      });
 
       // Splitter is part of the layout but starts hidden until /shell new
       // opens the extra pane.
@@ -444,7 +654,11 @@
       // their xterm canvases would measure to 0 anyway. They re-fit when
       // they become active.
       const active = this.activeTab();
-      try { active?.fit?.fit(); } catch { /* ignore */ }
+      if (active?.kind === 'browser') {
+        try { active.browserPane.refit(); } catch { /* ignore */ }
+      } else {
+        try { active?.fit?.fit(); } catch { /* ignore */ }
+      }
     }
 
     // Open a new tab in the extra pane. First tab also reveals the pane
@@ -455,6 +669,9 @@
       const wasEmpty = this.tabs.length === 0;
 
       if (wasEmpty) {
+        // Reveal the terminal area (hidden by default in the new
+        // chat-first layout).
+        document.getElementById('split-wrap')?.classList.remove('split-wrap--hidden');
         el.classList.remove('pane--hidden');
         this.wireFocus(el, 'extra');
         // One layout cycle so the pane has real dimensions before we
@@ -469,6 +686,7 @@
       const hostEl = document.createElement('div');
       hostEl.className = 'tab-host';
       hostEl.dataset.paneId = paneId;
+      hostEl.dataset.kind = 'shell';
       tabsHost.appendChild(hostEl);
 
       const tabEl = document.createElement('div');
@@ -493,7 +711,7 @@
       document.getElementById('tabs-list')?.appendChild(tabEl);
 
       const { term, fit } = makeTerminal(hostEl);
-      const tab = { paneId, term, fit, hostEl, tabEl, labelEl, label, cwd, shellPane: null };
+      const tab = { kind: 'shell', paneId, term, fit, hostEl, tabEl, labelEl, label, cwd, shellPane: null };
       this.tabs.push(tab);
 
       // Activate the new tab so the user immediately sees it.
@@ -530,22 +748,107 @@
       this.setFocus('extra');
     }
 
+    // Open a browser tab in the extra pane. Same lifecycle as openTab —
+    // first tab reveals the pane and splitter; subsequent tabs append
+    // to the bar. Browser tabs use a BrowserView (out-of-DOM Chromium
+    // widget); the .tab-host element just reserves a rectangle.
+    async openBrowserTab({ url } = {}) {
+      const { el, tabsHost } = this.extraSpec;
+      const wasEmpty = this.tabs.length === 0;
+
+      if (wasEmpty) {
+        document.getElementById('split-wrap')?.classList.remove('split-wrap--hidden');
+        el.classList.remove('pane--hidden');
+        this.wireFocus(el, 'extra');
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      }
+
+      const paneId = `tab-${++this.tabSeq}`;
+      const initialURL = url || 'https://duckduckgo.com';
+      const label = labelFromURL(initialURL) || `Browser ${this.tabSeq}`;
+
+      const hostEl = document.createElement('div');
+      hostEl.className = 'tab-host';
+      hostEl.dataset.paneId = paneId;
+      hostEl.dataset.kind = 'browser';
+      tabsHost.appendChild(hostEl);
+
+      const tabEl = document.createElement('div');
+      tabEl.className = 'tab tab--browser';
+      tabEl.dataset.paneId = paneId;
+      tabEl.setAttribute('role', 'tab');
+      const labelEl = document.createElement('span');
+      labelEl.className = 'tab__label';
+      labelEl.textContent = label;
+      const closeEl = document.createElement('button');
+      closeEl.className = 'tab__close';
+      closeEl.type = 'button';
+      closeEl.textContent = '×';
+      closeEl.title = 'Close tab';
+      closeEl.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        this.closeTab(paneId);
+      });
+      tabEl.addEventListener('click', () => this.activateTab(paneId));
+      tabEl.appendChild(labelEl);
+      tabEl.appendChild(closeEl);
+      document.getElementById('tabs-list')?.appendChild(tabEl);
+
+      const browserPane = new BrowserPane({
+        transport: this.transport,
+        tabId: paneId,
+        hostEl,
+        onTitle: (title) => {
+          if (title) labelEl.textContent = title.slice(0, 40);
+        },
+      });
+
+      const tab = {
+        kind: 'browser', paneId, hostEl, tabEl, labelEl, label, browserPane,
+      };
+      this.tabs.push(tab);
+      this.activateTab(paneId);
+
+      if (wasEmpty) this.splitter?.show();
+      this.updateCommandButtons();
+
+      try {
+        await browserPane.start({ initialURL });
+      } catch (err) {
+        this.closeTab(paneId);
+        throw err;
+      }
+
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => this.refitAll());
+      });
+      this.setFocus('extra');
+    }
+
     // Make `paneId` the visible tab. Hides others by removing their
     // active class. Refits the newly-active tab so xterm tracks the size.
     activateTab(paneId) {
       const tab = this.tabs.find((t) => t.paneId === paneId);
       if (!tab) return;
+      // Hide whatever browser tab was active so its BrowserView
+      // detaches before the new one shows. Skip if same tab.
+      if (this.activeTabId && this.activeTabId !== paneId) {
+        const prev = this.tabs.find((t) => t.paneId === this.activeTabId);
+        if (prev?.kind === 'browser') prev.browserPane.hide();
+      }
       this.activeTabId = paneId;
       for (const t of this.tabs) {
         const isActive = t.paneId === paneId;
         t.hostEl.classList.toggle('tab-host--active', isActive);
         t.tabEl.classList.toggle('tab--active', isActive);
       }
-      // Newly-shown xterm needs a fit; defer one frame so the host's
-      // display swap has applied.
       requestAnimationFrame(() => {
-        try { tab.fit?.fit(); } catch { /* ignore */ }
-        try { tab.term.focus(); } catch { /* ignore */ }
+        if (tab.kind === 'browser') {
+          tab.browserPane.show();
+        } else {
+          try { tab.fit?.fit(); } catch { /* ignore */ }
+          try { tab.term.focus(); } catch { /* ignore */ }
+        }
       });
     }
 
@@ -556,17 +859,23 @@
       const idx = this.tabs.findIndex((t) => t.paneId === paneId);
       if (idx < 0) return;
       const tab = this.tabs[idx];
-      try { tab.shellPane?.cleanup(); } catch { /* ignore */ }
-      try { tab.term.dispose(); } catch { /* ignore */ }
+      if (tab.kind === 'browser') {
+        try { tab.browserPane.destroy(); } catch { /* ignore */ }
+      } else {
+        try { tab.shellPane?.cleanup(); } catch { /* ignore */ }
+        try { tab.term.dispose(); } catch { /* ignore */ }
+      }
       try { tab.hostEl.remove(); } catch { /* ignore */ }
       try { tab.tabEl.remove(); } catch { /* ignore */ }
       this.tabs.splice(idx, 1);
 
       if (this.tabs.length === 0) {
-        // Last tab closed — hide the extra pane and splitter.
+        // Last tab closed — hide the extra pane, splitter, AND the
+        // whole terminal wrapper so the chat reclaims the window.
         this.activeTabId = null;
         this.extraSpec.el.classList.add('pane--hidden');
         this.splitter?.hide();
+        document.getElementById('split-wrap')?.classList.add('split-wrap--hidden');
         this.updateCommandButtons();
         setTimeout(() => this.refitAll(), 0);
         this.setFocus('main');
@@ -599,6 +908,13 @@
     if (!cwd) return null;
     const parts = String(cwd).split(/[\\/]+/).filter(Boolean);
     return parts.length ? parts[parts.length - 1] : null;
+  }
+
+  // Pull a short tab label from a URL. Uses the hostname; falls back to
+  // null so the caller can supply a "Browser N" default.
+  function labelFromURL(url) {
+    if (!url) return null;
+    try { return new URL(url).hostname || null; } catch { return null; }
   }
 
   // ------------------------- SplitterDrag -----------------------------
@@ -752,6 +1068,7 @@
   window.MyAgent = window.MyAgent || {};
   window.MyAgent.TerminalShell = TerminalShell;
   window.MyAgent.ShellPane = ShellPane;
+  window.MyAgent.BrowserPane = BrowserPane;
   window.MyAgent.PaneManager = PaneManager;
   window.MyAgent.SplitterDrag = SplitterDrag;
 })();

@@ -1,0 +1,36 @@
+{
+  "name": "myagent-memory-mcp",
+  "version": "0.1.0",
+  "description": "Portable, zero-dependency memory server for coding agents. Speaks MCP over stdio so Claude, Copilot, Cursor, and others can store and search persistent notes across sessions.",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "src/index.js",
+  "bin": {
+    "myagent-memory": "bin/cli.js",
+    "myagent-memory-mcp": "bin/mcp.js"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "skill/",
+    "commands/",
+    "examples/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "memory",
+    "search",
+    "claude",
+    "copilot",
+    "agent",
+    "bm25"
+  ]
+}

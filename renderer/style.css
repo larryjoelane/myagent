@@ -1,11 +1,28 @@
+/* Color tokens — use these instead of hardcoded greys. */
+:root {
+  --bg: #1a1a1a;
+  --surface: #1e1e1e;
+  --surface-2: #252525;
+  --surface-3: #2d2d2d;
+  --border: #3c3c3c;
+  --text: #ddd;
+  --text-dim: #999;
+  --text-faint: #777;
+  --accent: #569cd6;
+  --accent-bg: #1e3a5c;
+  --accent-fg: #cce6ff;
+  --user-bubble: #264f78;
+  --warn: #c08c6c;
+}
+
 * { box-sizing: border-box; }
 
 html, body {
   margin: 0;
   padding: 0;
   height: 100%;
-  background: #1e1e1e;
-  color: #ddd;
+  background: var(--surface);
+  color: var(--text);
   font-family: 'Cascadia Code', Consolas, Menlo, monospace;
 }
 
@@ -28,7 +45,7 @@ html, body {
 }
 .cmd-btn {
   background: #3a3a3a;
-  color: #ddd;
+  color: var(--text);
   border: 1px solid #4a4a4a;
   border-radius: 3px;
   padding: 3px 10px;
@@ -39,15 +56,41 @@ html, body {
 }
 .cmd-btn:hover:not(:disabled) {
   background: #4a4a4a;
-  border-color: #569cd6;
+  border-color: var(--accent);
 }
-.cmd-btn:active:not(:disabled) { background: #2d2d2d; }
+.cmd-btn:active:not(:disabled) { background: var(--surface-3); }
 .cmd-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
+.cmd-btn--primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+.cmd-btn--primary:hover:not(:disabled) {
+  background: #4a8ec5;
+  border-color: #4a8ec5;
+}
+.cmd-btn--muted {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-dim);
+}
+.cmd-btn--muted:hover:not(:disabled) {
+  background: var(--surface-3);
+  border-color: transparent;
+}
+.cmd-btn--small {
+  padding: 2px 6px;
+  font-size: 11px;
+}
 
-#split {
+/* Page layout: AgentManager docks on the left (default) or right
+   and pushes the terminal area. Both live inside #app-row so flex
+   sizing works. The right-side variant just flips flex-direction;
+   the chat panel itself swaps which border it draws. */
+#app-row {
   position: absolute;
   top: 38px;
   left: 0;
@@ -55,8 +98,48 @@ html, body {
   bottom: 0;
   display: flex;
   flex-direction: row;
-  gap: 0;
+  min-height: 0;
 }
+#app-row.app-row--chat-right {
+  flex-direction: row-reverse;
+}
+
+/* Wrapper for the terminal area. Lets us hide/show the whole split
+   without disturbing the splitter/pane internals. When hidden, the
+   chat fills the window. */
+#split-wrap {
+  flex: 1 1 auto;
+  display: flex;
+  min-width: 0;
+}
+#split-wrap.split-wrap--hidden {
+  flex: 0 0 0;
+  display: none;
+}
+
+#split {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: row;
+  gap: 0;
+  min-width: 0;
+}
+
+/* The legacy main pane is kept in the DOM (PaneManager wires it) but
+   hidden visually now that the terminal area is the tabbed pane. */
+.pane--legacy-hidden { display: none !important; }
+
+.tabs-host__empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-faint);
+  font-size: 12px;
+  font-style: italic;
+  pointer-events: none;
+}
+.tabs-host:has(.tab-host) .tabs-host__empty { display: none; }
 
 .pane {
   /* When the extra pane is hidden, the main pane fills #split (flex-grow).
@@ -163,6 +246,83 @@ html, body {
   display: none;
 }
 .tab-host--active { display: block; }
+
+/* Browser tab — URL bar + nav controls + body host. The body is just
+   a placeholder rectangle; the actual web content is an Electron
+   BrowserView (out-of-DOM Chromium widget) layered on top by main.js. */
+.browser-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+}
+.browser-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.browser-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-dim);
+  width: 26px;
+  height: 26px;
+  font-size: 14px;
+  border-radius: 3px;
+  cursor: pointer;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.browser-btn:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--text);
+}
+.browser-btn:disabled { opacity: 0.35; cursor: default; }
+.browser-url {
+  flex: 1 1 auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text);
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 12px;
+  min-width: 0;
+}
+.browser-url:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.browser-error {
+  background: #4a2222;
+  color: #f0c0c0;
+  font-size: 11px;
+  padding: 4px 10px;
+  border-bottom: 1px solid #5a2828;
+  flex: 0 0 auto;
+}
+.browser-error--hidden { display: none; }
+.browser-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: #fff;
+}
+.tab--browser .tab__label::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-right: 6px;
+  vertical-align: middle;
+}
 .pane--focused {
   border-left-color: #569cd6;
 }
@@ -198,4 +358,658 @@ body.is-resizing * {
   cursor: col-resize !important;
   user-select: none !important;
 }
+
+/* AgentManager — primary chat surface, docked to the left of the
+   terminal area. Pushes the terminals over rather than overlaying
+   them. Toggle button on the topbar collapses to width 0. */
+.agent-manager {
+  flex: 0 0 460px;
+  max-width: 50vw;
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  min-width: 0;
+  overflow: hidden;
+  transition: flex-basis 160ms ease;
+}
+/* When the terminal wrapper is hidden, the chat reclaims the full
+   window. We override max-width so it can grow past 50vw. */
+#app-row:has(#split-wrap.split-wrap--hidden) .agent-manager {
+  flex: 1 1 auto;
+  max-width: none;
+}
+.agent-manager--hidden {
+  flex-basis: 0;
+  border-right-width: 0;
+  border-left-width: 0;
+}
+/* Right-side variant: divider sits on the chat's left edge (between
+   chat and terminal), not on its right edge (which would now be the
+   window edge). */
+#app-row.app-row--chat-right .agent-manager {
+  border-right: none;
+  border-left: 1px solid var(--border);
+}
+.agent-manager__header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: var(--surface-3);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.agent-manager__title {
+  font-weight: 600;
+  flex: 1 1 auto;
+  font-size: 13px;
+}
+.agent-manager__icon-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--text-dim);
+  width: 26px;
+  height: 26px;
+  font-size: 14px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  font-family: inherit;
+}
+.agent-manager__icon-btn:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+/* Settings drawer. Slides down between the header and the chat
+   surface. Uses max-height for a smooth open/close. */
+.agent-manager__settings {
+  flex: 0 0 auto;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 14px;
+  max-height: 280px;
+  overflow-y: auto;
+  transition: max-height 160ms ease, padding 160ms ease, opacity 160ms ease;
+}
+.agent-manager__settings--hidden {
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  opacity: 0;
+  border-bottom-width: 0;
+}
+.am-setting-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text);
+  padding: 4px 0;
+  cursor: pointer;
+  user-select: none;
+}
+.am-setting-row input { margin: 0; }
+.am-setting-row--header {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  cursor: default;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.am-spawn-buttons {
+  display: inline-flex;
+  gap: 4px;
+}
+
+/* Segmented control (Left | Right). Two cmd-btns sitting flush. */
+.am-segmented {
+  display: inline-flex;
+}
+.am-segmented .cmd-btn {
+  border-radius: 0;
+}
+.am-segmented .cmd-btn:first-child {
+  border-top-left-radius: 3px;
+  border-bottom-left-radius: 3px;
+}
+.am-segmented .cmd-btn:last-child {
+  border-top-right-radius: 3px;
+  border-bottom-right-radius: 3px;
+  margin-left: -1px;
+}
+.am-segmented .cmd-btn--active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.am-worker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 11px;
+}
+.am-worker-row__name {
+  flex: 1 1 auto;
+  font-family: 'Cascadia Code', Consolas, Menlo, monospace;
+  color: var(--text);
+}
+.am-worker-row__name input {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 6px;
+  font: inherit;
+  width: 100%;
+}
+
+/* Empty state — shown when no workers are attached. Pretty CTA, big
+   primary button, list of available panes. */
+.agent-manager__empty {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 28px 22px;
+  text-align: center;
+  align-items: center;
+  justify-content: flex-start;
+  overflow-y: auto;
+}
+.agent-manager__empty--hidden { display: none; }
+.agent-manager__empty-title {
+  margin: 0;
+  font-size: 16px;
+  color: var(--text);
+}
+.agent-manager__empty-body {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.5;
+  max-width: 320px;
+}
+.agent-manager__empty-body code {
+  background: var(--surface-3);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+.agent-manager__empty-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  max-width: 320px;
+}
+.agent-manager__empty-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-width: 280px;
+  align-items: stretch;
+}
+.agent-manager__empty-actions .cmd-btn { padding: 8px 12px; }
+
+.agent-manager__empty-cwd {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: center;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-faint);
+  max-width: 320px;
+  width: 100%;
+}
+.agent-manager__empty-cwd-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.agent-manager__empty-cwd-button {
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-family: 'Cascadia Code', Consolas, Menlo, monospace;
+  font-size: 11px;
+  padding: 4px 8px;
+  cursor: pointer;
+  width: 100%;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: border-color 80ms ease, color 80ms ease;
+}
+.agent-manager__empty-cwd-button:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.am-empty-pane {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+  text-align: left;
+}
+.am-empty-pane__name {
+  flex: 1 1 auto;
+  font-family: 'Cascadia Code', Consolas, Menlo, monospace;
+  color: var(--text);
+}
+.am-empty-pane__hint {
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.agent-manager__workers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px;
+  background: #1f1f1f;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+  align-items: center;
+}
+.agent-manager__workers:empty { display: none; }
+.worker-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 2px 10px;
+  font-size: 11px;
+  color: var(--text);
+  transition: background 80ms ease, border-color 80ms ease;
+}
+.worker-chip--active {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+.worker-chip__label {
+  cursor: pointer;
+  font-family: 'Cascadia Code', Consolas, Menlo, monospace;
+}
+.worker-chip--thinking::after {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse 1s ease-in-out infinite;
+  margin-left: 4px;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 0.3; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+.agent-manager__chat {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+.agent-manager__chat--hidden { display: none; }
+.bubble {
+  max-width: 88%;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-family: 'Cascadia Code', Consolas, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  word-wrap: break-word;
+}
+.bubble--user {
+  align-self: flex-end;
+  background: var(--user-bubble);
+  color: #e8f1fa;
+  white-space: pre-wrap;
+}
+
+/* Typing indicator inside an open assistant bubble that has no text yet. */
+.typing-indicator {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px 0;
+}
+.typing-indicator span {
+  width: 6px;
+  height: 6px;
+  background: var(--text-faint);
+  border-radius: 50%;
+  animation: typing-bounce 1.2s ease-in-out infinite;
+}
+.typing-indicator span:nth-child(2) { animation-delay: 0.15s; }
+.typing-indicator span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes typing-bounce {
+  0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-3px); }
+}
+.bubble--assistant {
+  align-self: flex-start;
+  background: #2a2a2a;
+  color: #ddd;
+  border: 1px solid #3c3c3c;
+  width: 88%;
+}
+.bubble--assistant.bubble--done {
+  border-color: #2a2a2a;
+}
+.bubble--memory {
+  align-self: stretch;
+  max-width: 100%;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+.bubble--memory__header {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.bubble--memory__body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.bubble--memory__hit {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 6px 8px;
+  cursor: pointer;
+  transition: border-color 80ms ease, background 80ms ease;
+}
+.bubble--memory__hit:hover {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+.bubble--memory__meta {
+  font-size: 10px;
+  color: var(--text-faint);
+  margin-bottom: 3px;
+  font-family: 'Cascadia Code', Consolas, Menlo, monospace;
+}
+.bubble--memory__snippet {
+  font-family: 'Cascadia Code', Consolas, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  max-height: 6em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.4;
+}
+.bubble--memory__error {
+  color: var(--warn);
+  font-size: 11px;
+}
+.bubble--memory-help__body {
+  margin: 0;
+  font-family: 'Cascadia Code', Consolas, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text);
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+
+/* Context badge — sits under a user bubble when auto-context
+   injected memories into the prompt. Compact summary; click to
+   expand the detail list. */
+.context-badge {
+  align-self: flex-end;
+  max-width: 88%;
+  font-size: 10px;
+  margin-top: -4px;
+  margin-bottom: 6px;
+  color: var(--text-faint);
+  font-family: 'Cascadia Code', Consolas, Menlo, monospace;
+}
+.context-badge__summary {
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  display: inline-block;
+  user-select: none;
+  transition: border-color 80ms ease, color 80ms ease;
+}
+.context-badge__summary:hover {
+  border-color: var(--accent);
+  color: var(--text-dim);
+}
+.context-badge__detail {
+  margin-top: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.context-badge__detail--hidden { display: none; }
+.context-badge__hit {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
+}
+.context-badge__hit:last-child { border-bottom: none; padding-bottom: 0; }
+.context-badge__meta {
+  font-size: 9px;
+  color: var(--text-faint);
+  margin-bottom: 2px;
+}
+.context-badge__snippet {
+  font-size: 11px;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  line-height: 1.3;
+}
+
+/* Tool-use cards inside assistant bubbles. Each card pairs a tool
+   call (name + input) with its result. Click the header to collapse. */
+.tool-card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  margin: 6px 0;
+  font-size: 11px;
+  overflow: hidden;
+}
+.tool-card--ok    { border-left-color: #6bb56b; }
+.tool-card--error { border-left-color: #d06868; }
+.tool-card__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--surface-3);
+  cursor: pointer;
+  user-select: none;
+}
+.tool-card__icon {
+  color: var(--accent);
+  font-size: 9px;
+}
+.tool-card--ok    .tool-card__icon { color: #6bb56b; }
+.tool-card--error .tool-card__icon { color: #d06868; }
+.tool-card__name {
+  font-weight: 600;
+  font-family: 'Cascadia Code', Consolas, Menlo, monospace;
+  color: var(--text);
+}
+.tool-card__status {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: 10px;
+}
+.tool-card__input,
+.tool-card__result {
+  margin: 0;
+  padding: 6px 10px;
+  font-family: 'Cascadia Code', Consolas, Menlo, monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  color: var(--text);
+  background: var(--surface);
+}
+.tool-card__input {
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+  max-height: 8em;
+  overflow-y: auto;
+}
+.tool-card__result {
+  border-top: 1px solid var(--border);
+  max-height: 12em;
+  overflow-y: auto;
+}
+.tool-card__result--pending {
+  color: var(--text-faint);
+  font-style: italic;
+}
+/* Collapsed state hides input + result, leaving just the header. */
+.tool-card--collapsed .tool-card__input,
+.tool-card--collapsed .tool-card__result { display: none; }
+
+/* Hidden mode: render the card as a compact badge. Body sections
+   gone, header shrunk to a single inline pill. Click does nothing
+   special — the badge is just a "this happened" marker. */
+.tool-card--hidden-mode {
+  display: inline-flex;
+  margin: 2px 4px 2px 0;
+  padding: 0;
+  border-left-width: 0;
+  border-radius: 10px;
+  background: var(--surface-3);
+  font-size: 10px;
+}
+.tool-card--hidden-mode .tool-card__header {
+  padding: 1px 8px;
+  background: transparent;
+  cursor: default;
+  pointer-events: none;
+}
+.tool-card--hidden-mode .tool-card__input,
+.tool-card--hidden-mode .tool-card__result { display: none; }
+.tool-card--hidden-mode .tool-card__status { font-size: 9px; }
+
+.bubble--system {
+  align-self: center;
+  background: transparent;
+  color: #c08c6c;
+  font-style: italic;
+  font-size: 11px;
+  padding: 2px 8px;
+}
+.bubble__meta {
+  font-size: 10px;
+  color: #888;
+  margin-bottom: 4px;
+}
+.bubble__body {
+  margin: 0;
+  font-family: inherit;
+  font-size: inherit;
+  white-space: pre-wrap;
+  color: inherit;
+  background: transparent;
+  border: none;
+}
+
+.agent-manager__compose {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  padding: 8px 12px;
+  background: #222;
+  border-top: 1px solid #3c3c3c;
+  flex: 0 0 auto;
+  /* Lock the compose row to its natural height so flex pressure from
+     the chat above can't squeeze it as content grows. */
+  flex-shrink: 0;
+}
+.agent-manager__compose textarea {
+  flex: 1 1 auto;
+  /* Comfortable default ~4 rows. JS auto-grows the box on input up
+     to max-height; below that this floor keeps the box from
+     shrinking under flex pressure as the chat overflows. */
+  min-height: 80px;
+  max-height: 220px;
+  background: #1e1e1e;
+  color: #ddd;
+  border: 1px solid #3c3c3c;
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-family: 'Cascadia Code', Consolas, Menlo, monospace;
+  font-size: 12px;
+  resize: none;
+  line-height: 1.4;
+}
+.agent-manager__compose textarea:focus {
+  outline: none;
+  border-color: #569cd6;
+}
+
+.mention-popup {
+  position: absolute;
+  bottom: 100%;
+  left: 12px;
+  right: 60px;
+  background: #2a2a2a;
+  border: 1px solid #3c3c3c;
+  border-radius: 4px;
+  max-height: 160px;
+  overflow-y: auto;
+  z-index: 1;
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.4);
+}
+.mention-popup--hidden { display: none; }
+.mention-item {
+  padding: 5px 10px;
+  font-family: 'Cascadia Code', Consolas, Menlo, monospace;
+  font-size: 12px;
+  color: #ddd;
+  cursor: pointer;
+}
+.mention-item:hover { background: #1e3a5c; color: #cce6ff; }
 

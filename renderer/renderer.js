@@ -67,4 +67,7 @@
   window.addEventListener('resize', () => manager.refitAll());
 
   manager.start();
+  // Terminal area is hidden by default — the chat fills the window.
+  // Clicking + Terminal opens the area; closing the last tab hides
+  // it again. See PaneManager.cmdNewShell / closeTab in shell.js.
 })();

@@ -4,19 +4,45 @@
   "description": "Local coding agent powered by SmolLM3-3B via Ollama, with an xterm.js terminal UI",
   "main": "electron/main.js",
   "scripts": {
+    "postinstall": "node scripts/ensure-native.js electron",
+    "rebuild:electron": "node scripts/ensure-native.js electron",
+    "rebuild:node": "node scripts/ensure-native.js node",
+    "prestart": "node scripts/ensure-native.js electron",
+    "predev": "node scripts/ensure-native.js electron",
     "start": "electron .",
+    "dev": "electronmon .",
     "start:web": "node web/server.js",
+    "memory:search": "node scripts/ensure-native.js node && node bin/memory-search.js",
     "sft:export": "node scripts/sft-export.js",
     "sft:label": "node scripts/sft-label.js",
-    "sft:build": "node scripts/sft-build.js"
+    "sft:build": "node scripts/sft-build.js",
+    "test": "node tests/run.js",
+    "test:e2e": "playwright test --config tests/e2e/playwright.config.js"
   },
   "dependencies": {
     "@lydell/node-pty": "^1.2.0-beta.12",
+    "@xenova/transformers": "^2.17.2",
     "@xterm/addon-fit": "^0.10.0",
-    "@xterm/xterm": "^5.5.0"
+    "@xterm/headless": "^6.0.0",
+    "@xterm/xterm": "^5.5.0",
+    "better-sqlite3": "^12.9.0"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.4",
-    "electron": "^41.3.0"
+    "@playwright/test": "^1.59.1",
+    "electron": "^41.3.0",
+    "electronmon": "^2.0.4"
+  },
+  "electronmon": {
+    "patterns": [
+      "!.myagent/**",
+      "!project-output/**",
+      "!bin/**",
+      "!node_modules/**",
+      "!.claude/**",
+      "!scripts/**",
+      "!web/**"
+    ],
+    "logLevel": "quiet"
   }
 }
