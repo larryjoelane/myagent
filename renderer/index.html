@@ -116,6 +116,30 @@
             <option value="">(none — explain disabled)</option>
           </select>
         </div>
+        <!-- Cache status panel for the selected Explain model.
+             Surfaces source URL, cache state, and a Pre-download
+             button so users can pay the multi-GB download cost
+             deliberately instead of triggering it on first inference. -->
+        <div id="am-gen-model-info" class="am-gen-model-info am-gen-model-info--hidden">
+          <div class="am-gen-model-info__row">
+            <span class="am-gen-model-info__label">Source</span>
+            <a id="am-gen-model-src" class="am-gen-model-info__link" href="#" target="_blank" rel="noopener"></a>
+          </div>
+          <div class="am-gen-model-info__row">
+            <span class="am-gen-model-info__label">Cache</span>
+            <span id="am-gen-model-cache" class="am-gen-model-info__cache">…</span>
+          </div>
+          <div class="am-gen-model-info__row am-gen-model-info__row--actions">
+            <button id="am-gen-model-warmup" class="cmd-btn cmd-btn--small" type="button"
+                    title="Download + load the model now (otherwise happens on first --explain)">
+              Pre-download
+            </button>
+            <button id="am-gen-model-recheck" class="cmd-btn cmd-btn--small cmd-btn--muted" type="button"
+                    title="Re-check the cache for this model">
+              Recheck
+            </button>
+          </div>
+        </div>
         <label class="am-setting-row am-setting-row--explain">
           <input id="am-default-explain" type="checkbox" />
           <span>Explain results by default (use --no-explain to skip)</span>

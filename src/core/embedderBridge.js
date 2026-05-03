@@ -199,6 +199,26 @@ class EmbedderBridge {
     };
   }
 
+  // Inspect the renderer's cache for a model. Returns a manifest
+  // describing which expected files are present, total bytes, and
+  // a `cached` boolean (true iff every required file + a weight
+  // file are present). Cheap — no network, no model load.
+  async cacheStatus(modelId) {
+    if (!this.ready) await this.start();
+    await this.ready;
+    return this._request('cache-status', { modelId }, { timeoutMs: 30_000 });
+  }
+
+  // Pre-load a model onto the chosen device without running
+  // inference. Used by the UI's pre-download button so the user can
+  // pay the multi-GB download cost deliberately. Resolves with
+  // { modelId, resolvedDevice, loadMs }.
+  async warmup(modelId, opts = {}) {
+    if (!this.ready) await this.start();
+    await this.ready;
+    return this._request('warmup', { modelId, opts }, { timeoutMs: 30 * 60_000 });
+  }
+
   // Open DevTools on the hidden embedder window — for verifying
   // WebGPU is actually firing. Detached so the tools window opens
   // separately rather than trying to dock against an invisible host.

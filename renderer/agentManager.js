@@ -23,6 +23,7 @@
     pendingDevice: 'cpu', // device for the next Semantic worker spawn
     pendingGenerationModelId: '',  // '' = no explain
     pendingDefaultExplain: false,  // global toggle for --explain on by default
+    generationModels: [],          // cached registry rows + cache-status snapshots
     // Tool list per worker id, fetched on spawn for kinds that
     // expose a toolkit (semantic). Drives slash-command autocomplete.
     // The toolkit is currently immutable per spawn — if that changes,
@@ -130,25 +131,107 @@
   }
 
   // Populate the generation-model dropdown from the registry. Only
-  // models with kind: 'generate' show up. Cached after first call.
+  // models with kind: 'generate' show up. Each option label shows
+  // approximate download size; we also probe the cache up front so
+  // a status dot can prefix the label (● cached / ○ not cached).
   async function loadGenerationModels() {
     const sel = $('am-spawn-gen-model');
     if (!sel || !transport.models?.list) return;
     try {
       const r = await transport.models.list('generate');
       if (!r || !r.ok) return;
-      // Keep the leading "(none)" option, then add a row per model.
-      // Approximate size in the label so users see the download cost
-      // before opting in.
+      // Cache the registry rows so the info panel can read them
+      // without another IPC round-trip.
+      state.generationModels = r.models;
       while (sel.options.length > 1) sel.remove(1);
       for (const m of r.models) {
         const o = document.createElement('option');
         o.value = m.id;
-        o.textContent = `${m.name} — ~${m.approxSizeMB}MB`;
+        // Prefix with a placeholder dot — refreshed by
+        // refreshGenerationModelStatuses() below.
+        o.textContent = `○ ${m.name} — ~${m.approxSizeMB}MB`;
+        o.dataset.cached = 'unknown';
         sel.appendChild(o);
       }
       sel.value = state.pendingGenerationModelId || '';
+      // Probe each model's cache status in the background. Use a
+      // sequential await — these calls are cheap (no network) and
+      // serializing avoids a thundering herd into the bridge.
+      refreshGenerationModelStatuses();
+      renderGenerationModelInfo();
     } catch { /* leave the (none) option in place */ }
+  }
+
+  async function refreshGenerationModelStatuses() {
+    const sel = $('am-spawn-gen-model');
+    if (!sel || !transport.models?.cacheStatus) return;
+    for (const m of state.generationModels || []) {
+      try {
+        const r = await transport.models.cacheStatus(m.id);
+        if (!r || !r.ok) continue;
+        m._cacheStatus = r;
+        const opt = [...sel.options].find((o) => o.value === m.id);
+        if (opt) {
+          const dot = r.cached ? '●' : '○';
+          opt.textContent = `${dot} ${m.name} — ~${m.approxSizeMB}MB`;
+          opt.dataset.cached = r.cached ? 'true' : 'false';
+        }
+      } catch { /* skip — leave placeholder dot */ }
+    }
+    renderGenerationModelInfo();
+  }
+
+  function renderGenerationModelInfo() {
+    const panel = $('am-gen-model-info');
+    if (!panel) return;
+    const id = state.pendingGenerationModelId;
+    if (!id) {
+      panel.classList.add('am-gen-model-info--hidden');
+      return;
+    }
+    panel.classList.remove('am-gen-model-info--hidden');
+    const m = (state.generationModels || []).find((x) => x.id === id);
+    if (!m) return;
+    const srcEl = $('am-gen-model-src');
+    if (srcEl) {
+      const url = `https://huggingface.co/${m.repo}`;
+      srcEl.textContent = m.repo;
+      srcEl.href = url;
+      srcEl.title = url;
+    }
+    const cacheEl = $('am-gen-model-cache');
+    const warmBtn = $('am-gen-model-warmup');
+    const cs = m._cacheStatus;
+    if (!cs) {
+      if (cacheEl) cacheEl.textContent = 'checking…';
+      if (warmBtn) warmBtn.disabled = true;
+    } else if (cs.cached) {
+      const mb = (cs.totalBytes / 1024 / 1024).toFixed(0);
+      if (cacheEl) {
+        cacheEl.textContent = `cached (${mb}MB on disk in browser cache)`;
+        cacheEl.classList.add('am-gen-model-info__cache--ok');
+        cacheEl.classList.remove('am-gen-model-info__cache--missing');
+      }
+      if (warmBtn) {
+        warmBtn.disabled = false;
+        warmBtn.textContent = 'Re-load';
+        warmBtn.title = 'Force a reload of the model into memory';
+      }
+    } else {
+      const partial = cs.totalBytes > 0
+        ? ` (partial: ${(cs.totalBytes / 1024 / 1024).toFixed(0)}MB present, missing ${cs.missingRequired.join(', ')})`
+        : '';
+      if (cacheEl) {
+        cacheEl.textContent = `not cached — ~${m.approxSizeMB}MB will download on first use${partial}`;
+        cacheEl.classList.add('am-gen-model-info__cache--missing');
+        cacheEl.classList.remove('am-gen-model-info__cache--ok');
+      }
+      if (warmBtn) {
+        warmBtn.disabled = false;
+        warmBtn.textContent = 'Pre-download';
+        warmBtn.title = `Download ~${m.approxSizeMB}MB and load the model now (otherwise happens on first --explain)`;
+      }
+    }
   }
 
   // Honest status line under the device dropdown:
@@ -315,6 +398,17 @@
     });
     if (!r.ok) { pushBubble('system', `spawn failed: ${r.error || 'unknown'}`); return; }
     state.currentTarget = r.id;
+    // Visible spawn confirmation — surfaces explain config so the
+    // user can immediately see whether --explain will do anything.
+    // Without this, an unconfigured Semantic worker silently ignores
+    // --explain (intentional, but confusing the first time).
+    if (isSem) {
+      const dev = device || 'cpu';
+      const explainBits = generationModelId
+        ? `explain: ${generationModelId} (default ${defaultExplain ? 'on' : 'off'})`
+        : 'explain: disabled (no generation model picked)';
+      pushBubble('system', `Spawned "${r.name}" — embed device: ${dev}, ${explainBits}`);
+    }
     // Cache the worker's toolkit for slash autocomplete. Only semantic
     // workers expose tools; for other kinds the call returns ok:false
     // and we just skip (popup will not appear).
@@ -1369,6 +1463,7 @@
     if (genSelect) {
       genSelect.addEventListener('change', () => {
         state.pendingGenerationModelId = genSelect.value || '';
+        renderGenerationModelInfo();
       });
     }
     const explainCheckbox = $('am-default-explain');
@@ -1378,6 +1473,49 @@
         state.pendingDefaultExplain = !!explainCheckbox.checked;
       });
     }
+    // Pre-download button: kicks off the model load (and any
+    // missing-files download) on the user's chosen device. Surfaces
+    // success / failure as system bubbles. The button shows
+    // "Downloading…" while the bridge is busy — no progress bar today
+    // (transformers.js v4 doesn't expose download progress reliably
+    // through the high-level pipeline API; could add a fetch
+    // interceptor later if it matters).
+    $('am-gen-model-warmup')?.addEventListener('click', async () => {
+      const id = state.pendingGenerationModelId;
+      if (!id) return;
+      const m = (state.generationModels || []).find((x) => x.id === id);
+      if (!m) return;
+      const btn = $('am-gen-model-warmup');
+      const orig = btn?.textContent;
+      if (btn) { btn.disabled = true; btn.textContent = `Downloading ${m.name}…`; }
+      const wasCached = !!m._cacheStatus?.cached;
+      const t0 = Date.now();
+      try {
+        const r = await transport.models.warmup(id, state.pendingDevice || undefined);
+        if (!r.ok) throw new Error(r.error || 'warmup failed');
+        const secs = ((Date.now() - t0) / 1000).toFixed(1);
+        const where = r.resolvedDevice?.device || 'unknown';
+        pushBubble('system',
+          `Model "${m.name}" ready on ${where} in ${secs}s` +
+          `${wasCached ? ' (was cached)' : ' (downloaded + loaded)'}.`);
+        // Re-probe so the panel reflects the newly-cached state.
+        try {
+          const cs = await transport.models.cacheStatus(id);
+          if (cs.ok) m._cacheStatus = cs;
+          await refreshGenerationModelStatuses();
+        } catch { /* leave stale state */ }
+        renderGenerationModelInfo();
+      } catch (err) {
+        pushBubble('system', `Pre-download of "${m.name}" failed: ${err.message}`);
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = orig; }
+        renderGenerationModelInfo();
+      }
+    });
+    $('am-gen-model-recheck')?.addEventListener('click', async () => {
+      await refreshGenerationModelStatuses();
+      renderGenerationModelInfo();
+    });
     loadGenerationModels();
 
     // Settings-drawer spawn buttons — the way to add workers once

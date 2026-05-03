@@ -431,7 +431,7 @@ exports.run = (ctx) => {
     contains(rec.last('chat:turn-end').payload.assistantText, 'tool output');
   });
 
-  ctx.test('no generator + --explain = no error, no extra chunks', async () => {
+  ctx.test('no generator + --explain surfaces a hint chunk explaining why', async () => {
     const rec = recorder();
     const kit = new ToolKit([
       makeTool('grep', 'Grep', async () => ({ ok: true, text: 'x' })),
@@ -444,8 +444,29 @@ exports.run = (ctx) => {
     await drv.start();
     drv.send('find x --explain');
     await eventually(() => ok(rec.last('chat:turn-end')));
-    // Just the one tool-result chunk; --explain is silently dropped
-    // when no generator is configured.
+    // Tool result chunk + a semantic-explain-error chunk telling the
+    // user why their --explain request did nothing.
+    const chunks = rec.events.filter((e) => e.name === 'chat:chunk');
+    eq(chunks.length, 2);
+    eq(chunks[0].payload.kind, 'semantic-tool-result');
+    eq(chunks[1].payload.kind, 'semantic-explain-error');
+    contains(chunks[1].payload.text, 'no generation model');
+  });
+
+  ctx.test('no generator + no --explain = single chunk, no hint', async () => {
+    const rec = recorder();
+    const kit = new ToolKit([
+      makeTool('grep', 'Grep', async () => ({ ok: true, text: 'x' })),
+    ]);
+    const drv = new SemanticDriver({
+      agentId: 'a1',
+      router: fakeRouter({ toolId: 'grep', score: 0.9, candidates: [] }),
+      toolkit: kit, onEvent: rec.onEvent,
+    });
+    await drv.start();
+    drv.send('find x');
+    await eventually(() => ok(rec.last('chat:turn-end')));
+    // Without --explain the absence of a generator is not noise.
     eq(rec.events.filter((e) => e.name === 'chat:chunk').length, 1);
   });
 

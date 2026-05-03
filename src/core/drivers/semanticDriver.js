@@ -197,6 +197,17 @@ class SemanticDriver {
           toolId: tool.id,
         });
       }
+    } else if (wantExplain && !this.generator) {
+      // User asked for --explain (or the worker default is on) but
+      // no generator is wired. Surface that so the silence isn't
+      // mysterious. We emit it as an explain-error chunk so the
+      // renderer styles it the same way as a real failure.
+      this.onEvent('chat:chunk', {
+        agentId: this.agentId,
+        kind: 'semantic-explain-error',
+        text: '(--explain requested but this worker has no generation model — pick one in Settings → Explain model, then spawn a new Semantic worker)',
+        toolId: tool.id,
+      });
     }
 
     const finalAssistant = explainText
@@ -216,20 +227,24 @@ class SemanticDriver {
   // explanation text so the caller can attach it to the turn-end
   // assistantText (so memory mirror picks it up too).
   async _explainResult({ tool, userText, normalized }) {
-    const prompt = [
-      `The user asked: "${userText.trim()}"`,
-      '',
-      `I ran the "${tool.name}" tool and it returned:`,
-      '```',
-      // Cap the body fed to the LLM. Qwen 0.5B has a small context
-      // and we want the response to be a summary, not a parrot.
-      normalized.text.slice(0, 1500),
-      '```',
-      '',
-      'In 1-3 short sentences, summarize what this means for the user. ' +
-      'Do NOT repeat the raw output verbatim — interpret it. ' +
-      'If the result is empty or an error, say so plainly.',
-    ].join('\n');
+    // Prompt construction notes — the prior version used negative
+    // instructions ("do NOT repeat verbatim") which small models
+    // (~0.5B params) latch onto and do the bad thing. The version
+    // below uses *positive* framing only:
+    //   1. Tell the model exactly what role it plays.
+    //   2. Show the data without delimiters that prime "raw" output.
+    //   3. End on a concrete one-sentence answer request.
+    // We also cap the body harder (600 chars) — Qwen 0.5B's quality
+    // drops fast as context fills, and the tool result is already
+    // visible to the user so this is just a paraphrase.
+    const body = normalized.text.slice(0, 600).trim();
+    const userQuestion = userText.replace(/--explain\b/gi, '').trim();
+    const prompt =
+      `A search tool ran in response to the user's request and produced this output:\n\n` +
+      `${body}\n\n` +
+      `User's request: ${userQuestion}\n\n` +
+      `Write one short sentence that answers the user's request based on the search output above. ` +
+      `Be specific about what was found.`;
 
     let cumulative = '';
     const onToken = (chunk) => {
@@ -245,8 +260,17 @@ class SemanticDriver {
     const result = await this.generator.generate(prompt, {
       modelId: this.generator.modelId,
       device: this.generator.device,
-      maxTokens: 200,
-      temperature: 0.3,
+      // Tighter ceiling: a one-sentence answer rarely needs more
+      // than 80 tokens. Bigger means more rope to hang itself on.
+      maxTokens: 120,
+      // Higher temp + top-p widens the candidate pool so the model
+      // doesn't fall into the lowest-entropy loop. Repetition penalty
+      // and no_repeat_ngram_size are applied in the host (see
+      // renderer/embedder-host.js#handleGenerate).
+      temperature: 0.7,
+      topP: 0.9,
+      repetitionPenalty: 1.2,
+      noRepeatNgramSize: 4,
       stream: true,
     }, onToken);
     return result.text || cumulative;

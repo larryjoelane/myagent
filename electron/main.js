@@ -655,6 +655,32 @@ ipcMain.handle('models:list', (_e, body = {}) => {
   }
 });
 
+// Inspect the renderer's transformers cache for a given model id.
+// Used by the UI to show "downloaded ✓ / will download" status next
+// to each entry in the Explain Model dropdown.
+ipcMain.handle('models:cache-status', async (_e, body = {}) => {
+  try {
+    const bridge = getEmbedderBridge();
+    const r = await bridge.cacheStatus(body.modelId);
+    return { ok: true, ...r };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// Pre-load a model into memory (and download it if not cached) so
+// the user can pay the cost deliberately instead of triggering it
+// invisibly on first inference.
+ipcMain.handle('models:warmup', async (_e, body = {}) => {
+  try {
+    const bridge = getEmbedderBridge();
+    const r = await bridge.warmup(body.modelId, { device: body.device });
+    return { ok: true, ...r };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
 // Run a generation. When `stream: true`, intermediate token chunks
 // are forwarded to the renderer via `models:generate-chunk` events
 // (correlated by the requestId we return). Resolves with the final

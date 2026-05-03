@@ -88,6 +88,8 @@ contextBridge.exposeInMainWorld('transport', {
     embedderDevTools: () => ipcRenderer.invoke('models:embedder-devtools'),
     embedderBenchmark: (body) => ipcRenderer.invoke('models:embedder-benchmark', body || {}),
     list: (kind) => ipcRenderer.invoke('models:list', { kind }),
+    cacheStatus: (modelId) => ipcRenderer.invoke('models:cache-status', { modelId }),
+    warmup: (modelId, device) => ipcRenderer.invoke('models:warmup', { modelId, device }),
     generate: (body) => ipcRenderer.invoke('models:generate', body || {}),
     onGenerateChunk: (fn) => {
       if (!listeners.has('models:generate-chunk')) listeners.set('models:generate-chunk', new Set());

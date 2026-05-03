@@ -48,15 +48,35 @@ const REGISTRY = [
       'Tiny generative model — useful for narrating tool results in ' +
       'plain English ("Found 3 matches; the WorkerManager class lives ' +
       'in src/core/workerManager.js"). ~370MB on first download. ' +
-      'Runs at ~30 tok/s on integrated GPU, ~10 tok/s on CPU. ' +
-      'Quality is below frontier models — good for short summaries, ' +
-      'not for code generation.',
+      'Runs at ~5 tok/s on integrated GPU, ~2 tok/s on CPU. Quality ' +
+      'is rough — prone to repetition loops on complex prompts. ' +
+      'Good for one-line summaries, not for analysis.',
     kind: 'generate',
     backend: 'transformers-web',
     repo: 'onnx-community/Qwen2.5-0.5B-Instruct',
     quantization: 'q4f16',
     pipeline: 'text-generation',
     approxSizeMB: 370,
+    defaultDevice: 'webgpu',
+    capabilities: { cpu: true, webgpu: true },
+  },
+  {
+    id: 'qwen3-4b-q4',
+    name: 'Qwen3-4B (q4f16)',
+    description:
+      'Larger generative model from the Qwen3 family. Notably better ' +
+      'instruction following and less prone to repetition than the ' +
+      '0.5B variant — produces real summaries instead of garbled ' +
+      'paraphrases. Cost: ~2.5GB download on first use, slow ' +
+      'generation (~1 tok/s on Iris Xe via WebGPU, ~0.3 tok/s on ' +
+      'CPU). Will fail to load if the GPU\'s maxBufferSize is below ' +
+      '~2GB — see docs/webgpu-limits-probe.md to check first.',
+    kind: 'generate',
+    backend: 'transformers-web',
+    repo: 'onnx-community/Qwen3-4B-ONNX',
+    quantization: 'q4f16',
+    pipeline: 'text-generation',
+    approxSizeMB: 2500,
     defaultDevice: 'webgpu',
     capabilities: { cpu: true, webgpu: true },
   },
