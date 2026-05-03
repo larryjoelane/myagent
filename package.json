@@ -18,7 +18,8 @@
     "sft:label": "node scripts/sft-label.js",
     "sft:build": "node scripts/sft-build.js",
     "test": "node tests/run.js",
-    "test:e2e": "playwright test --config tests/e2e/playwright.config.js"
+    "test:e2e": "playwright test --config tests/e2e/playwright.config.js",
+    "shots": "node scripts/screenshots.js"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
