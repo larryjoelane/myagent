@@ -20,6 +20,7 @@
     settings: { defaultMirror: true, toolDetails: 'collapsed' },
     thinkingWorkers: new Set(),
     pendingCwd: null,     // user's chosen cwd for the next spawn
+    pendingDevice: 'cpu', // device for the next Semantic worker spawn
     // Tool list per worker id, fetched on spawn for kinds that
     // expose a toolkit (semantic). Drives slash-command autocomplete.
     // The toolkit is currently immutable per spawn — if that changes,
@@ -27,6 +28,9 @@
     toolsByWorker: new Map(),
     // Selected index in the slash popup, for keyboard navigation.
     slashSelected: 0,
+    // Embedder status (filled on settings open). Shape:
+    //   { modelId, supportedDevices, webgpuRuntimeAvailable, ... }
+    embedderStatus: null,
   };
 
   function rootEl() { return $('agent-manager'); }
@@ -109,6 +113,41 @@
       state.pendingCwd = r.path;
       await renderEmptyCwd();
     } catch { /* ignore */ }
+  }
+
+  // Pull embedder status from main and update the device-status line.
+  // Cheap (cached after first call), idempotent.
+  async function loadEmbedderStatus() {
+    if (state.embedderStatus) { renderDeviceStatus(); return; }
+    if (!transport.models?.embedderStatus) return;
+    try {
+      const r = await transport.models.embedderStatus();
+      if (r && r.ok) state.embedderStatus = r;
+    } catch { /* ignore */ }
+    renderDeviceStatus();
+  }
+
+  // Honest status line under the device dropdown:
+  //   - which model is in use
+  //   - whether the runtime can actually do WebGPU today
+  //   - what the chosen device will resolve to
+  function renderDeviceStatus() {
+    const el = $('am-device-status');
+    if (!el) return;
+    const s = state.embedderStatus;
+    if (!s) { el.textContent = 'Embedder status unknown.'; return; }
+    const model = s.modelId || 'embedder';
+    const dev = state.pendingDevice || 'cpu';
+    if (dev === 'cpu') {
+      el.textContent = `${model} on CPU (always available).`;
+      el.classList.remove('am-device-status--warn');
+    } else if (s.webgpuRuntimeAvailable) {
+      el.textContent = `${model} will use ${dev === 'auto' ? 'WebGPU when possible' : 'WebGPU'}.`;
+      el.classList.remove('am-device-status--warn');
+    } else {
+      el.textContent = `${model}: WebGPU not available in current build — will fall back to CPU.`;
+      el.classList.add('am-device-status--warn');
+    }
   }
 
   function workerById(id) { return state.workers.find((w) => w.id === id) || null; }
@@ -232,7 +271,11 @@
   // --- Spawn flow --------------------------------------------------------
 
   async function spawnWorker(kind) {
-    const r = await transport.workers.spawn({ kind, cwd: state.pendingCwd || undefined });
+    // Semantic workers get the chosen compute device; other kinds
+    // ignore it. Pass undefined when the user hasn't picked anything
+    // so the main process applies its default.
+    const device = kind === 'semantic' ? (state.pendingDevice || undefined) : undefined;
+    const r = await transport.workers.spawn({ kind, cwd: state.pendingCwd || undefined, device });
     if (!r.ok) { pushBubble('system', `spawn failed: ${r.error || 'unknown'}`); return; }
     state.currentTarget = r.id;
     // Cache the worker's toolkit for slash autocomplete. Only semantic
@@ -1197,6 +1240,17 @@
     // Settings-drawer cwd picker — same handler, different button.
     // Both write to state.pendingCwd; renderEmptyCwd() syncs both labels.
     $('am-spawn-cwd')?.addEventListener('click', () => pickCwd());
+
+    // Device picker for Semantic workers.
+    const deviceSelect = $('am-spawn-device');
+    if (deviceSelect) {
+      deviceSelect.value = state.pendingDevice || 'cpu';
+      deviceSelect.addEventListener('change', () => {
+        state.pendingDevice = deviceSelect.value;
+        renderDeviceStatus();
+      });
+    }
+    loadEmbedderStatus();
 
     // Settings-drawer spawn buttons — the way to add workers once
     // the empty state is gone.

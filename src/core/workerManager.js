@@ -67,14 +67,15 @@ class WorkerManager {
     });
   }
 
-  async spawnSemantic({ name, cwd } = {}) {
+  async spawnSemantic({ name, cwd, device } = {}) {
     if (typeof this.factories.semantic !== 'function') {
       throw new Error('semantic agent type is not available (no factories.semantic)');
     }
     return this._spawn({
       kind: 'semantic',
       name: name || this._nextSemanticName(),
-      driverOpts: { cwd },
+      driverOpts: { cwd, device },
+      record: { device: device || null },
     });
   }
 
@@ -209,7 +210,7 @@ class WorkerManager {
     return `Semantic ${Date.now()}`;
   }
 
-  async _spawn({ kind, name, driverOpts }) {
+  async _spawn({ kind, name, driverOpts, record: extra }) {
     // Reject duplicate name up front so callers don't get surprises.
     for (const w of this.workers.values()) {
       if (w.name === name) {
@@ -224,9 +225,9 @@ class WorkerManager {
       driverFactory: (opts) => factory({ ...opts, ...driverOpts }),
     });
     await channel.start();
-    const record = { id, kind, name, cwd: driverOpts.cwd, channel, memoryMirror: null };
+    const record = { id, kind, name, cwd: driverOpts.cwd, channel, memoryMirror: null, ...(extra || {}) };
     this.workers.set(id, record);
-    return { id, name, kind, cwd: driverOpts.cwd };
+    return { id, name, kind, cwd: driverOpts.cwd, ...(extra || {}) };
   }
 
   _resolve(to) {

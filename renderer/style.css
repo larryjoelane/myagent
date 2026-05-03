@@ -496,6 +496,32 @@ body.is-resizing * {
   text-align: left;
 }
 
+/* Device picker row — same layout as the cwd row above. The status
+   line below it is full-width, faint, and turns warn-orange when
+   WebGPU was requested but isn't available. */
+.am-setting-row--device { gap: 8px; }
+.am-setting-row--device-status {
+  margin-top: -4px;
+  padding-bottom: 8px;
+  font-size: 10px;
+  color: var(--text-faint);
+}
+.am-select {
+  flex: 1 1 auto;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 3px 6px;
+  font: inherit;
+  font-size: 11px;
+}
+.am-select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.am-device-status--warn { color: var(--warn); }
+
 /* Segmented control (Left | Right). Two cmd-btns sitting flush. */
 .am-segmented {
   display: inline-flex;

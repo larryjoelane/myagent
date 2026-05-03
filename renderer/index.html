@@ -83,6 +83,21 @@
             <span id="am-spawn-cwd-text">…</span>
           </button>
         </div>
+        <!-- Device picker for semantic workers. Applies to the next
+             "+ Semantic" spawn. The status line under it shows what
+             the embedder runtime can actually do (so we don't silently
+             pretend WebGPU works when the underlying lib doesn't). -->
+        <div class="am-setting-row am-setting-row--device">
+          <span class="am-setting-row__label">Semantic device</span>
+          <select id="am-spawn-device" class="am-select" title="Compute device for the next Semantic worker spawn">
+            <option value="cpu">CPU</option>
+            <option value="auto">Auto (prefer WebGPU)</option>
+            <option value="webgpu">WebGPU</option>
+          </select>
+        </div>
+        <div class="am-setting-row am-setting-row--device-status">
+          <span id="am-device-status" class="am-device-status">…</span>
+        </div>
         <div id="am-workers-detail"></div>
       </div>
 

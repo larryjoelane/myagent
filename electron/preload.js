@@ -77,6 +77,12 @@ contextBridge.exposeInMainWorld('transport', {
     // autocomplete.
     listTools: (id) => ipcRenderer.invoke('worker:list-tools', { id }),
   },
+  // In-process model registry (Cut A: just the embedder). Renderer
+  // reads embedder status to populate the Device dropdown on the
+  // semantic-worker spawn UI.
+  models: {
+    embedderStatus: () => ipcRenderer.invoke('models:embedder-status'),
+  },
   // Native dialogs + persisted settings, used by the spawn UX.
   dialog: {
     chooseDirectory: (opts) => ipcRenderer.invoke('dialog:choose-directory', opts || {}),

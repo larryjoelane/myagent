@@ -47,7 +47,7 @@ function defaultBuildToolkit({ search, store, root }) {
 }
 
 function buildSemanticDriverFactory({
-  embedder,         // { embed(text) -> Float32Array }, required
+  embedder,         // { embed(text, opts?) -> Float32Array }, required
   search,           // optional async ({query, limit, minConfidence}) -> hits
   store,            // optional async ({text, source, tags}) -> {id}
   root,             // optional absolute path; enables grep/read-file/git-log
@@ -62,9 +62,16 @@ function buildSemanticDriverFactory({
   // change, so embedding them once is the right behavior.
   const toolkit = builder({ search, store, root });
 
-  return function spawn({ agentId, onEvent, cwd, ...rest } = {}) {
+  return function spawn({ agentId, onEvent, cwd, device, ...rest } = {}) {
     void cwd; void rest;
-    const router = new EmbeddingRouter({ embedder, toolkit, threshold });
+    // Per-spawn device wraps the shared embedder so the router/tool-kit
+    // embed() calls go through the user-selected device. The base
+    // embedder caches one pipeline per device, so multiple semantic
+    // workers with different devices share underlying pipelines.
+    const wrapped = device
+      ? { embed: (text) => embedder.embed(text, { device }) }
+      : embedder;
+    const router = new EmbeddingRouter({ embedder: wrapped, toolkit, threshold });
     return new SemanticDriver({ agentId, router, toolkit, onEvent });
   };
 }

@@ -511,7 +511,7 @@ ipcMain.handle('worker:spawn', async (_e, body = {}) => {
     if (kind === 'shell') {
       result = await workerManager.spawnShell({ name: body.name, cwd });
     } else if (kind === 'semantic') {
-      result = await workerManager.spawnSemantic({ name: body.name, cwd });
+      result = await workerManager.spawnSemantic({ name: body.name, cwd, device: body.device });
     } else {
       result = await workerManager.spawnWorker({
         name: body.name, cwd, permissionMode: body.permissionMode,
@@ -561,6 +561,19 @@ ipcMain.handle('worker:list-tools', (_e, body = {}) => {
   const tools = workerManager.listTools(body.id);
   if (!tools) return { ok: false, error: 'no toolkit for worker' };
   return { ok: true, tools };
+});
+
+// Embedder status (which devices are supported, what's loaded).
+// Used by the renderer to populate the Device dropdown on the
+// semantic-worker spawn UI honestly — if WebGPU isn't available we
+// say so rather than silently falling back.
+ipcMain.handle('models:embedder-status', () => {
+  try {
+    const embedderModule = require('../src/core/embedder');
+    return { ok: true, ...embedderModule.status() };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
 });
 
 ipcMain.handle('worker:send', (_e, body = {}) => {
