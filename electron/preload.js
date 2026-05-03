@@ -29,6 +29,9 @@ for (const ev of ['browser:nav', 'browser:title', 'browser:loading', 'browser:er
   ipcRenderer.on(ev, (_e, msg) => emit(ev, msg));
 }
 
+// Generation streaming chunks. Subscribers filter by requestId.
+ipcRenderer.on('models:generate-chunk', (_e, msg) => emit('models:generate-chunk', msg));
+
 function emit(event, msg) {
   const set = listeners.get(event);
   if (set) for (const fn of set) fn(msg);
@@ -82,6 +85,15 @@ contextBridge.exposeInMainWorld('transport', {
   // semantic-worker spawn UI.
   models: {
     embedderStatus: () => ipcRenderer.invoke('models:embedder-status'),
+    embedderDevTools: () => ipcRenderer.invoke('models:embedder-devtools'),
+    embedderBenchmark: (body) => ipcRenderer.invoke('models:embedder-benchmark', body || {}),
+    list: (kind) => ipcRenderer.invoke('models:list', { kind }),
+    generate: (body) => ipcRenderer.invoke('models:generate', body || {}),
+    onGenerateChunk: (fn) => {
+      if (!listeners.has('models:generate-chunk')) listeners.set('models:generate-chunk', new Set());
+      listeners.get('models:generate-chunk').add(fn);
+      return () => listeners.get('models:generate-chunk').delete(fn);
+    },
   },
   // Native dialogs + persisted settings, used by the spawn UX.
   dialog: {

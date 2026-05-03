@@ -168,6 +168,16 @@ function getSemanticFactory() {
   const bridge = getEmbedderBridge();
   semanticFactory = buildSemanticDriverFactory({
     embedder: { embed: (text, opts) => bridge.embed(text, opts || {}) },
+    // Generator uses the same bridge — text-generation pipelines run
+    // in the same hidden renderer that hosts the embedder. The
+    // factory only invokes generate() when the per-spawn opts opt in
+    // (generationModelId set and --explain or defaultExplain).
+    generator: {
+      generate: (prompt, opts, onToken) =>
+        onToken
+          ? bridge.generateStream(prompt, opts, onToken)
+          : bridge.generate(prompt, opts),
+    },
     // Hand the indexHost's search through so the memory-search tool
     // talks to the same SQLite index every other piece of the app uses.
     search: (opts) => indexHost.search(opts),
@@ -534,7 +544,12 @@ ipcMain.handle('worker:spawn', async (_e, body = {}) => {
     if (kind === 'shell') {
       result = await workerManager.spawnShell({ name: body.name, cwd });
     } else if (kind === 'semantic') {
-      result = await workerManager.spawnSemantic({ name: body.name, cwd, device: body.device });
+      result = await workerManager.spawnSemantic({
+        name: body.name, cwd, device: body.device,
+        generationModelId: body.generationModelId,
+        generationDevice: body.generationDevice,
+        defaultExplain: body.defaultExplain,
+      });
     } else {
       result = await workerManager.spawnWorker({
         name: body.name, cwd, permissionMode: body.permissionMode,
@@ -596,6 +611,68 @@ ipcMain.handle('models:embedder-status', async () => {
     const bridge = getEmbedderBridge();
     const status = await bridge.status();
     return { ok: true, ...status };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// Open DevTools on the hidden embedder window. Useful for verifying
+// WebGPU actually fires (chrome://gpu, console, perf timeline).
+ipcMain.handle('models:embedder-devtools', () => {
+  try {
+    const bridge = getEmbedderBridge();
+    return { ok: true, ...bridge.openDevTools() };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// Benchmark a device — runs N embeds with warmup and returns
+// timings. Renderer surfaces this in the Device row so the user
+// has concrete numbers, not vibes.
+ipcMain.handle('models:embedder-benchmark', async (_e, body = {}) => {
+  try {
+    const bridge = getEmbedderBridge();
+    const r = await bridge.benchmark({
+      device: body.device || 'cpu',
+      iterations: Math.min(50, Math.max(5, body.iterations || 20)),
+    });
+    return { ok: true, ...r };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// Model registry — list all known models, optionally filtered by
+// kind ('embed' | 'generate'). Renderer uses this to populate the
+// generation-model picker.
+ipcMain.handle('models:list', (_e, body = {}) => {
+  try {
+    const registry = require('../src/core/models/registry');
+    return { ok: true, models: registry.list(body.kind || null) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// Run a generation. When `stream: true`, intermediate token chunks
+// are forwarded to the renderer via `models:generate-chunk` events
+// (correlated by the requestId we return). Resolves with the final
+// stats once generation completes.
+ipcMain.handle('models:generate', async (event, body = {}) => {
+  try {
+    const bridge = getEmbedderBridge();
+    const onToken = body.stream
+      ? (chunk) => {
+          if (!event.sender.isDestroyed()) {
+            event.sender.send('models:generate-chunk', { requestId: body.requestId, ...chunk });
+          }
+        }
+      : null;
+    const r = body.stream
+      ? await bridge.generateStream(body.prompt || '', body.opts || {}, onToken)
+      : await bridge.generate(body.prompt || '', body.opts || {});
+    return { ok: true, ...r };
   } catch (err) {
     return { ok: false, error: err.message };
   }

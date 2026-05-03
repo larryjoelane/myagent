@@ -522,6 +522,43 @@ body.is-resizing * {
 }
 .am-device-status--warn { color: var(--warn); }
 
+.am-setting-row--device-tools {
+  gap: 6px;
+  padding-bottom: 8px;
+}
+.am-setting-row--device-tools .cmd-btn {
+  flex: 0 0 auto;
+}
+
+/* Generation model picker + explain toggle. The picker reuses the
+   .am-select shape; the toggle is a checkbox row. */
+.am-setting-row--gen-model { gap: 8px; padding-top: 4px; }
+.am-setting-row--explain { gap: 6px; padding-bottom: 6px; }
+
+/* Explain region — appended below the body of a semantic-card when
+   --explain runs. Streams tokens in. Subdued styling so the tool
+   result remains the primary content. */
+.semantic-card__explain {
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+  padding: 6px 10px;
+}
+.semantic-card__explain-label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-faint);
+  margin-bottom: 2px;
+}
+.semantic-card__explain-body {
+  font-size: 12px;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  line-height: 1.4;
+}
+.semantic-card__explain--error .semantic-card__explain-body { color: var(--warn); }
+
 /* Segmented control (Left | Right). Two cmd-btns sitting flush. */
 .am-segmented {
   display: inline-flex;

@@ -48,6 +48,7 @@ function defaultBuildToolkit({ search, store, root }) {
 
 function buildSemanticDriverFactory({
   embedder,         // { embed(text, opts?) -> Float32Array }, required
+  generator,        // optional { generate(prompt, opts, onToken?) }
   search,           // optional async ({query, limit, minConfidence}) -> hits
   store,            // optional async ({text, source, tags}) -> {id}
   root,             // optional absolute path; enables grep/read-file/git-log
@@ -62,7 +63,7 @@ function buildSemanticDriverFactory({
   // change, so embedding them once is the right behavior.
   const toolkit = builder({ search, store, root });
 
-  return function spawn({ agentId, onEvent, cwd, device, ...rest } = {}) {
+  return function spawn({ agentId, onEvent, cwd, device, generationModelId, generationDevice, defaultExplain, ...rest } = {}) {
     void cwd; void rest;
     // Per-spawn device wraps the shared embedder so the router/tool-kit
     // embed() calls go through the user-selected device. The base
@@ -72,7 +73,20 @@ function buildSemanticDriverFactory({
       ? { embed: (text) => embedder.embed(text, { device }) }
       : embedder;
     const router = new EmbeddingRouter({ embedder: wrapped, toolkit, threshold });
-    return new SemanticDriver({ agentId, router, toolkit, onEvent });
+    // Build the per-spawn generator handle when both a generator
+    // implementation AND a model id were provided. Absent either,
+    // explain becomes a no-op (or, if --explain is requested, an
+    // error chunk so the user knows why nothing happened).
+    let perSpawnGenerator = null;
+    if (generator && typeof generator.generate === 'function' && generationModelId) {
+      perSpawnGenerator = {
+        generate: (prompt, opts, onToken) => generator.generate(prompt, opts, onToken),
+        modelId: generationModelId,
+        device: generationDevice || undefined,
+        defaultExplain: !!defaultExplain,
+      };
+    }
+    return new SemanticDriver({ agentId, router, toolkit, onEvent, generator: perSpawnGenerator });
   };
 }
 

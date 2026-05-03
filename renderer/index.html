@@ -98,6 +98,28 @@
         <div class="am-setting-row am-setting-row--device-status">
           <span id="am-device-status" class="am-device-status">…</span>
         </div>
+        <div class="am-setting-row am-setting-row--device-tools">
+          <button id="am-device-benchmark" class="cmd-btn cmd-btn--small" type="button"
+                  title="Run a 20-embed benchmark with the chosen device">Benchmark</button>
+          <button id="am-device-devtools" class="cmd-btn cmd-btn--small cmd-btn--muted" type="button"
+                  title="Open DevTools on the hidden embedder host (verify WebGPU)">DevTools</button>
+        </div>
+        <!-- Generative model + explain default for Semantic workers.
+             When a generation model is chosen, semantic results can
+             be wrapped in a natural-language explanation. Always
+             opt-in per turn via --explain unless the toggle below
+             is on (then the wrap is automatic; --no-explain skips it). -->
+        <div class="am-setting-row am-setting-row--gen-model">
+          <span class="am-setting-row__label">Explain model</span>
+          <select id="am-spawn-gen-model" class="am-select"
+                  title="Generative model used by --explain on Semantic workers">
+            <option value="">(none — explain disabled)</option>
+          </select>
+        </div>
+        <label class="am-setting-row am-setting-row--explain">
+          <input id="am-default-explain" type="checkbox" />
+          <span>Explain results by default (use --no-explain to skip)</span>
+        </label>
         <div id="am-workers-detail"></div>
       </div>
 

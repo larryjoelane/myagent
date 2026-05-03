@@ -67,15 +67,20 @@ class WorkerManager {
     });
   }
 
-  async spawnSemantic({ name, cwd, device } = {}) {
+  async spawnSemantic({ name, cwd, device, generationModelId, generationDevice, defaultExplain } = {}) {
     if (typeof this.factories.semantic !== 'function') {
       throw new Error('semantic agent type is not available (no factories.semantic)');
     }
     return this._spawn({
       kind: 'semantic',
       name: name || this._nextSemanticName(),
-      driverOpts: { cwd, device },
-      record: { device: device || null },
+      driverOpts: { cwd, device, generationModelId, generationDevice, defaultExplain },
+      record: {
+        device: device || null,
+        generationModelId: generationModelId || null,
+        generationDevice: generationDevice || null,
+        defaultExplain: !!defaultExplain,
+      },
     });
   }
 

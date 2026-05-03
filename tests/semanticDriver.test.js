@@ -2,7 +2,7 @@
 // router/toolkit integration. Uses a fake router so we can deterministically
 // drive the "matched"/"no match"/"tool throws" paths.
 
-const { SemanticDriver, parseSlash, formatToolHelp, formatGlobalHelp } = require('../src/core/drivers/semanticDriver');
+const { SemanticDriver, parseSlash, extractExplainFlag, formatToolHelp, formatGlobalHelp } = require('../src/core/drivers/semanticDriver');
 const { ToolKit } = require('../src/core/semantic/toolkit');
 const { eq, ok, contains, eventually } = require('./assert');
 
@@ -329,6 +329,124 @@ exports.run = (ctx) => {
     contains(help, '/b');
     contains(help, 'A is a tool');
     contains(help, 'B is another');
+  });
+
+  // ---- Explain (--explain / generator integration) --------------------
+
+  ctx.test('extractExplainFlag finds and strips the flags', () => {
+    eq(extractExplainFlag('hello world').explain, null);
+    eq(extractExplainFlag('hello world --explain').explain, true);
+    eq(extractExplainFlag('hello world --explain').text, 'hello world');
+    eq(extractExplainFlag('--no-explain hello').explain, false);
+    eq(extractExplainFlag('--no-explain hello').text, 'hello');
+    eq(extractExplainFlag('left --explain right').text, 'left right');
+  });
+
+  ctx.test('--explain triggers generator.generate after tool runs', async () => {
+    const rec = recorder();
+    let genCalled = 0;
+    let promptSeen = '';
+    const generator = {
+      generate: async (prompt, opts, onToken) => {
+        genCalled++;
+        promptSeen = prompt;
+        if (typeof onToken === 'function') {
+          onToken({ token: 'It', cumulativeText: 'It', index: 1 });
+          onToken({ token: ' worked.', cumulativeText: 'It worked.', index: 2 });
+        }
+        return { text: 'It worked.' };
+      },
+      modelId: 'mock-gen',
+      defaultExplain: false,
+    };
+    const kit = new ToolKit([
+      makeTool('grep', 'Grep', async () => ({ ok: true, text: 'one match in foo.js' })),
+    ]);
+    const drv = new SemanticDriver({
+      agentId: 'a1',
+      router: fakeRouter({ toolId: 'grep', score: 0.9, candidates: [] }),
+      toolkit: kit,
+      onEvent: rec.onEvent,
+      generator,
+    });
+    await drv.start();
+    drv.send('find Foo --explain');
+    await eventually(() => ok(rec.last('chat:turn-end')));
+    eq(genCalled, 1, 'generator.generate called exactly once');
+    contains(promptSeen, 'one match in foo.js');
+    // Two explain chunks (the streamed tokens) plus the original
+    // tool-result chunk.
+    const explainChunks = rec.events.filter((e) =>
+      e.name === 'chat:chunk' && e.payload.kind === 'semantic-explain');
+    eq(explainChunks.length, 2);
+    contains(rec.last('chat:turn-end').payload.assistantText, 'It worked.');
+  });
+
+  ctx.test('--no-explain wins over generator.defaultExplain=true', async () => {
+    const rec = recorder();
+    let genCalled = 0;
+    const generator = {
+      generate: async () => { genCalled++; return { text: 'nope' }; },
+      modelId: 'mock-gen',
+      defaultExplain: true,
+    };
+    const kit = new ToolKit([
+      makeTool('grep', 'Grep', async () => ({ ok: true, text: 'x' })),
+    ]);
+    const drv = new SemanticDriver({
+      agentId: 'a1',
+      router: fakeRouter({ toolId: 'grep', score: 0.9, candidates: [] }),
+      toolkit: kit, onEvent: rec.onEvent, generator,
+    });
+    await drv.start();
+    drv.send('find x --no-explain');
+    await eventually(() => ok(rec.last('chat:turn-end')));
+    eq(genCalled, 0, 'generator skipped despite defaultExplain');
+  });
+
+  ctx.test('generator failure surfaces as semantic-explain-error, tool result still ok', async () => {
+    const rec = recorder();
+    const generator = {
+      generate: async () => { throw new Error('model exploded'); },
+      modelId: 'mock-gen',
+      defaultExplain: true,
+    };
+    const kit = new ToolKit([
+      makeTool('grep', 'Grep', async () => ({ ok: true, text: 'tool output' })),
+    ]);
+    const drv = new SemanticDriver({
+      agentId: 'a1',
+      router: fakeRouter({ toolId: 'grep', score: 0.9, candidates: [] }),
+      toolkit: kit, onEvent: rec.onEvent, generator,
+    });
+    await drv.start();
+    drv.send('find x');   // defaultExplain true → tries to explain
+    await eventually(() => ok(rec.last('chat:turn-end')));
+    const err = rec.events.find((e) =>
+      e.name === 'chat:chunk' && e.payload.kind === 'semantic-explain-error');
+    ok(err, 'expected semantic-explain-error chunk');
+    contains(err.payload.text, 'model exploded');
+    // Turn still completes, tool result still in assistantText.
+    eq(rec.last('chat:turn-end').payload.ok, true);
+    contains(rec.last('chat:turn-end').payload.assistantText, 'tool output');
+  });
+
+  ctx.test('no generator + --explain = no error, no extra chunks', async () => {
+    const rec = recorder();
+    const kit = new ToolKit([
+      makeTool('grep', 'Grep', async () => ({ ok: true, text: 'x' })),
+    ]);
+    const drv = new SemanticDriver({
+      agentId: 'a1',
+      router: fakeRouter({ toolId: 'grep', score: 0.9, candidates: [] }),
+      toolkit: kit, onEvent: rec.onEvent,
+    });
+    await drv.start();
+    drv.send('find x --explain');
+    await eventually(() => ok(rec.last('chat:turn-end')));
+    // Just the one tool-result chunk; --explain is silently dropped
+    // when no generator is configured.
+    eq(rec.events.filter((e) => e.name === 'chat:chunk').length, 1);
   });
 
   ctx.test('empty/whitespace send is ignored (no events emitted)', async () => {

@@ -21,6 +21,8 @@
     thinkingWorkers: new Set(),
     pendingCwd: null,     // user's chosen cwd for the next spawn
     pendingDevice: 'cpu', // device for the next Semantic worker spawn
+    pendingGenerationModelId: '',  // '' = no explain
+    pendingDefaultExplain: false,  // global toggle for --explain on by default
     // Tool list per worker id, fetched on spawn for kinds that
     // expose a toolkit (semantic). Drives slash-command autocomplete.
     // The toolkit is currently immutable per spawn — if that changes,
@@ -125,6 +127,28 @@
       if (r && r.ok) state.embedderStatus = r;
     } catch { /* ignore */ }
     renderDeviceStatus();
+  }
+
+  // Populate the generation-model dropdown from the registry. Only
+  // models with kind: 'generate' show up. Cached after first call.
+  async function loadGenerationModels() {
+    const sel = $('am-spawn-gen-model');
+    if (!sel || !transport.models?.list) return;
+    try {
+      const r = await transport.models.list('generate');
+      if (!r || !r.ok) return;
+      // Keep the leading "(none)" option, then add a row per model.
+      // Approximate size in the label so users see the download cost
+      // before opting in.
+      while (sel.options.length > 1) sel.remove(1);
+      for (const m of r.models) {
+        const o = document.createElement('option');
+        o.value = m.id;
+        o.textContent = `${m.name} — ~${m.approxSizeMB}MB`;
+        sel.appendChild(o);
+      }
+      sel.value = state.pendingGenerationModelId || '';
+    } catch { /* leave the (none) option in place */ }
   }
 
   // Honest status line under the device dropdown:
@@ -271,11 +295,24 @@
   // --- Spawn flow --------------------------------------------------------
 
   async function spawnWorker(kind) {
-    // Semantic workers get the chosen compute device; other kinds
-    // ignore it. Pass undefined when the user hasn't picked anything
-    // so the main process applies its default.
-    const device = kind === 'semantic' ? (state.pendingDevice || undefined) : undefined;
-    const r = await transport.workers.spawn({ kind, cwd: state.pendingCwd || undefined, device });
+    // Semantic workers get the chosen compute device + explain
+    // configuration; other kinds ignore those.
+    const isSem = kind === 'semantic';
+    const device = isSem ? (state.pendingDevice || undefined) : undefined;
+    const generationModelId = isSem && state.pendingGenerationModelId
+      ? state.pendingGenerationModelId : undefined;
+    // Reuse the chosen device for generation too — model.defaultDevice
+    // can override later when we expose a separate picker.
+    const generationDevice = isSem && generationModelId ? device : undefined;
+    const defaultExplain = isSem && generationModelId ? !!state.pendingDefaultExplain : false;
+    const r = await transport.workers.spawn({
+      kind,
+      cwd: state.pendingCwd || undefined,
+      device,
+      generationModelId,
+      generationDevice,
+      defaultExplain,
+    });
     if (!r.ok) { pushBubble('system', `spawn failed: ${r.error || 'unknown'}`); return; }
     state.currentTarget = r.id;
     // Cache the worker's toolkit for slash autocomplete. Only semantic
@@ -774,6 +811,18 @@
   const SEMANTIC_COLLAPSE_THRESHOLD = 12;
 
   function renderSemanticResult(msg) {
+    // semantic-explain is a streaming append to the most recent
+    // tool-result card for this agent. Each token triggers one
+    // chunk; we look for an existing explain region and append, or
+    // create one inside the most recent semantic-card.
+    if (msg.kind === 'semantic-explain') {
+      appendToExplain(msg);
+      return;
+    }
+    if (msg.kind === 'semantic-explain-error') {
+      appendToExplain({ ...msg, isError: true });
+      return;
+    }
     const entry = ensureOpenAssistantBubble(msg.agentId);
     const raw = String(msg.text || '');
     // Strip the `[Tool Name]\n` annotation the driver prepends, if any —
@@ -843,6 +892,43 @@
 
     entry.bodyEl.appendChild(card);
     entry.lastTextNode = null;
+    chatEl().scrollTop = chatEl().scrollHeight;
+  }
+
+  // Stream an explanation token into the latest semantic-card for
+   // this agent. Creates the explain region on the first token; later
+   // tokens append (uses cumulativeText when present so missing
+   // tokens don't drift).
+  function appendToExplain(msg) {
+    const bubble = state.openBubbles.get(msg.agentId);
+    if (!bubble) return;
+    const cards = bubble.bodyEl.querySelectorAll('.semantic-card');
+    const card = cards[cards.length - 1];
+    if (!card) return;
+    let region = card.querySelector('.semantic-card__explain');
+    if (!region) {
+      region = document.createElement('div');
+      region.className = 'semantic-card__explain';
+      const label = document.createElement('div');
+      label.className = 'semantic-card__explain-label';
+      label.textContent = msg.isError ? 'Explain (failed)' : 'Explain';
+      region.appendChild(label);
+      const body = document.createElement('div');
+      body.className = 'semantic-card__explain-body';
+      region.appendChild(body);
+      card.appendChild(region);
+    }
+    const body = region.querySelector('.semantic-card__explain-body');
+    if (msg.isError) {
+      region.classList.add('semantic-card__explain--error');
+      body.textContent = msg.text || '(unknown error)';
+    } else if (msg.cumulativeText) {
+      // Cumulative text is authoritative — preserves correctness if
+      // a token chunk was missed.
+      body.textContent = msg.cumulativeText;
+    } else if (msg.text) {
+      body.textContent += msg.text;
+    }
     chatEl().scrollTop = chatEl().scrollHeight;
   }
 
@@ -1250,7 +1336,49 @@
         renderDeviceStatus();
       });
     }
+    // Open DevTools on the hidden embedder host so the user can
+    // verify WebGPU directly (chrome://gpu, console probes,
+    // performance timeline).
+    $('am-device-devtools')?.addEventListener('click', async () => {
+      try { await transport.models.embedderDevTools(); }
+      catch (err) { pushBubble('system', `devtools failed: ${err.message}`); }
+    });
+    // Benchmark the chosen device. Posts the result as a system
+    // bubble so the user has a permanent record next to their
+    // session.
+    $('am-device-benchmark')?.addEventListener('click', async () => {
+      const btn = $('am-device-benchmark');
+      const device = state.pendingDevice || 'cpu';
+      if (btn) { btn.disabled = true; btn.textContent = `Benchmarking ${device}…`; }
+      try {
+        const r = await transport.models.embedderBenchmark({ device, iterations: 20 });
+        if (!r.ok) throw new Error(r.error || 'benchmark failed');
+        pushBubble('system',
+          `Benchmark (${device}, ${r.iterations} embeds): ` +
+          `median ${r.medianMs}ms · mean ${r.meanMs}ms · min ${r.minMs}ms · max ${r.maxMs}ms`);
+      } catch (err) {
+        pushBubble('system', `Benchmark failed: ${err.message}`);
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Benchmark'; }
+      }
+    });
     loadEmbedderStatus();
+
+    // Generation model picker + explain-by-default toggle.
+    const genSelect = $('am-spawn-gen-model');
+    if (genSelect) {
+      genSelect.addEventListener('change', () => {
+        state.pendingGenerationModelId = genSelect.value || '';
+      });
+    }
+    const explainCheckbox = $('am-default-explain');
+    if (explainCheckbox) {
+      explainCheckbox.checked = !!state.pendingDefaultExplain;
+      explainCheckbox.addEventListener('change', () => {
+        state.pendingDefaultExplain = !!explainCheckbox.checked;
+      });
+    }
+    loadGenerationModels();
 
     // Settings-drawer spawn buttons — the way to add workers once
     // the empty state is gone.

@@ -23,7 +23,7 @@
 // error message as assistantText. They never throw out of send().
 
 class SemanticDriver {
-  constructor({ agentId, router, toolkit, onEvent } = {}) {
+  constructor({ agentId, router, toolkit, onEvent, generator } = {}) {
     if (!router || typeof router.pick !== 'function') {
       throw new Error('SemanticDriver: router.pick(text) is required');
     }
@@ -34,6 +34,14 @@ class SemanticDriver {
     this.router = router;
     this.toolkit = toolkit;
     this.onEvent = onEvent || (() => {});
+    // Optional generator: { generate(prompt, opts, onToken?) -> {text}
+    //                       defaultExplain: boolean
+    //                       modelId: string
+    //                       device: 'cpu'|'webgpu'|'auto' }
+    // When absent, --explain in a prompt becomes a no-op note; when
+    // present, after-tool narration runs through generate() with
+    // streaming chunks emitted as semantic-explain events.
+    this.generator = generator || null;
     this.started = false;
     this.closed = false;
     this.turnActive = false;
@@ -77,11 +85,18 @@ class SemanticDriver {
   }
 
   async _runTurn(userText) {
+    // Pull --explain / --no-explain off the front of the input first
+    // so the rest of the pipeline (slash parsing, router) sees the
+    // user's intent without the flag noise. The flag becomes an
+    // explainOverride that wins over generator.defaultExplain.
+    const { text: cleaned, explain: explainOverride } = extractExplainFlag(userText);
+    const useText = cleaned || userText;
+
     // Slash override: `/help` lists all tools, `/<id>` runs a specific
     // tool (bypassing the router), `/<id> --help` shows that tool's
     // usage block. Unknown slash commands fall through to a friendly
     // "no such tool" reply rather than going to the router.
-    const slash = parseSlash(userText);
+    const slash = parseSlash(useText);
     if (slash) {
       const reply = this._handleSlash(slash);
       // If the slash maps to a tool, hand off — _runTool emits its own
@@ -91,7 +106,7 @@ class SemanticDriver {
       if (reply.runTool) {
         return this._runTool(reply.runTool, reply.toolInput, userText, {
           toolId: reply.runTool.id, score: 1, candidates: [], reason: 'slash override',
-        });
+        }, explainOverride);
       }
       // Help / unknown / error reply — emit a chunk with the message
       // and finalize. `reply.text` is always defined for this branch.
@@ -105,7 +120,7 @@ class SemanticDriver {
       return;
     }
 
-    const match = await this.router.pick(userText);
+    const match = await this.router.pick(useText);
 
     // No tool matched above threshold — surface candidates honestly.
     if (!match.toolId) {
@@ -134,14 +149,15 @@ class SemanticDriver {
       this._finalize({ userText, assistantText: text, ok: false, totals: { match } });
       return;
     }
-    return this._runTool(tool, userText, userText, match);
+    return this._runTool(tool, useText, userText, match, explainOverride);
   }
 
   // Shared tail: run a tool with the given input, emit the result
   // chunk + turn-end. Used by both the router path and the slash
   // override. `userText` is the literal text the user typed (kept on
   // turn-end for memory mirror); `toolInput` is what the tool sees.
-  async _runTool(tool, toolInput, userText, match) {
+  // `explainOverride` (true|false|null) wins over generator.defaultExplain.
+  async _runTool(tool, toolInput, userText, match, explainOverride) {
     let result;
     try {
       result = await tool.run({ input: toolInput, match, ctx: { agentId: this.agentId } });
@@ -158,13 +174,82 @@ class SemanticDriver {
       text: annotated,
       toolId: tool.id,
     });
+
+    // Optional explain step: hand the (user prompt + tool result) to
+    // the generator and stream the natural-language wrapper as
+    // additional chat:chunk events. The tool result already shipped
+    // to the user above — explain only adds context, never blocks.
+    const wantExplain = explainOverride !== null
+      ? explainOverride
+      : (this.generator?.defaultExplain === true);
+    let explainText = '';
+    if (wantExplain && this.generator && typeof this.generator.generate === 'function') {
+      try {
+        explainText = await this._explainResult({
+          tool, userText, normalized,
+        });
+      } catch (err) {
+        // Never let explanation failure mask the tool result.
+        this.onEvent('chat:chunk', {
+          agentId: this.agentId,
+          kind: 'semantic-explain-error',
+          text: `(explain failed: ${err.message})`,
+          toolId: tool.id,
+        });
+      }
+    }
+
+    const finalAssistant = explainText
+      ? `${annotated}\n\n${explainText}`
+      : annotated;
     this._finalize({
       userText,
-      assistantText: annotated,
+      assistantText: finalAssistant,
       ok: normalized.ok,
-      totals: { match, toolId: tool.id, score: match.score },
+      totals: { match, toolId: tool.id, score: match.score, explained: !!explainText },
       result: normalized.data,
     });
+  }
+
+  // Run the generator over (user prompt + tool result) and stream
+  // tokens as `semantic-explain` chunks. Returns the final
+  // explanation text so the caller can attach it to the turn-end
+  // assistantText (so memory mirror picks it up too).
+  async _explainResult({ tool, userText, normalized }) {
+    const prompt = [
+      `The user asked: "${userText.trim()}"`,
+      '',
+      `I ran the "${tool.name}" tool and it returned:`,
+      '```',
+      // Cap the body fed to the LLM. Qwen 0.5B has a small context
+      // and we want the response to be a summary, not a parrot.
+      normalized.text.slice(0, 1500),
+      '```',
+      '',
+      'In 1-3 short sentences, summarize what this means for the user. ' +
+      'Do NOT repeat the raw output verbatim — interpret it. ' +
+      'If the result is empty or an error, say so plainly.',
+    ].join('\n');
+
+    let cumulative = '';
+    const onToken = (chunk) => {
+      cumulative = chunk.cumulativeText || (cumulative + (chunk.token || ''));
+      this.onEvent('chat:chunk', {
+        agentId: this.agentId,
+        kind: 'semantic-explain',
+        text: chunk.token || '',
+        cumulativeText: cumulative,
+        toolId: tool.id,
+      });
+    };
+    const result = await this.generator.generate(prompt, {
+      modelId: this.generator.modelId,
+      device: this.generator.device,
+      maxTokens: 200,
+      temperature: 0.3,
+      stream: true,
+    }, onToken);
+    return result.text || cumulative;
   }
 
   // Translate a parsed slash command into a reply or a tool dispatch.
@@ -237,6 +322,24 @@ function normalizeResult(r) {
   };
 }
 
+// Pull --explain / --no-explain out of a free-form input. Returns
+// { text, explain } where:
+//   text     — input with the flag removed (for downstream parsing)
+//   explain  — true if --explain present, false if --no-explain,
+//              null otherwise (caller falls back to default).
+function extractExplainFlag(input) {
+  let text = String(input || '');
+  let explain = null;
+  if (/(^|\s)--no-explain\b/i.test(text)) {
+    explain = false;
+    text = text.replace(/(^|\s)--no-explain\b/gi, ' ');
+  } else if (/(^|\s)--explain\b/i.test(text)) {
+    explain = true;
+    text = text.replace(/(^|\s)--explain\b/gi, ' ');
+  }
+  return { text: text.replace(/\s+/g, ' ').trim(), explain };
+}
+
 // Parse `/cmd rest of line` into { cmd, args }. Returns null when the
 // input doesn't begin with `/<word>`. We require the slash to be at
 // the very start (no leading whitespace) so prompts that mention a
@@ -286,4 +389,4 @@ function formatGlobalHelp(tools) {
   return lines.join('\n');
 }
 
-module.exports = { SemanticDriver, parseSlash, formatToolHelp, formatGlobalHelp };
+module.exports = { SemanticDriver, parseSlash, extractExplainFlag, formatToolHelp, formatGlobalHelp };

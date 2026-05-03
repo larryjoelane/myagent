@@ -26,13 +26,15 @@
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/headless": "^6.0.0",
     "@xterm/xterm": "^5.5.0",
-    "better-sqlite3": "^12.9.0"
+    "better-sqlite3": "^12.9.0",
+    "onnxruntime-web": "^1.25.1"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.4",
     "@playwright/test": "^1.59.1",
     "electron": "^41.3.0",
-    "electronmon": "^2.0.4"
+    "electronmon": "^2.0.4",
+    "esbuild": "^0.28.0"
   },
   "electronmon": {
     "patterns": [
