@@ -18,6 +18,7 @@ const { ShellDriver } = require('../src/core/drivers/shellDriver');
 const { AppSettings } = require('../src/core/appSettings');
 const { BrowserManager } = require('../src/core/browserManager');
 const { buildSemanticDriverFactory } = require('../src/core/semantic');
+const { createEmbedderBridge } = require('../src/core/embedderBridge');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const OUTPUT_DIR = path.join(PROJECT_ROOT, 'project-output');
@@ -134,17 +135,39 @@ async function autoContextProvider({ text }) {
   }
 }
 
-// Semantic driver factory — built lazily so the MiniLM model isn't
-// loaded into the main process until the user actually spawns a
-// semantic worker. The embedder module is required only here, then
-// passed in; the factory closes over it so all semantic spawns share
-// one model load.
+// Embedder bridge — hosts @huggingface/transformers in a hidden
+// renderer BrowserWindow so it can target WebGPU. The semantic
+// factory closes over this bridge so all semantic workers share
+// one model load (and one hidden window).
+let embedderBridge = null;
+function getEmbedderBridge() {
+  if (embedderBridge) return embedderBridge;
+  embedderBridge = createEmbedderBridge({
+    projectRoot: PROJECT_ROOT,
+    BrowserWindow,
+  });
+  // Spawn the hidden window now (lazy was: on-first-spawn). Spawning
+  // here means the WebGPU probe completes before the user clicks
+  // "+ Spawn Semantic worker", so the device dropdown reflects truth.
+  embedderBridge.start().catch((err) => {
+    // Non-fatal: a failed bridge means semantic spawn will surface
+    // the error when it tries to embed. Log so we at least see it.
+    // eslint-disable-next-line no-console
+    console.error('[embedder bridge] start failed:', err);
+  });
+  return embedderBridge;
+}
+
+// Semantic driver factory — built lazily so the WebGPU window isn't
+// spawned until the user actually wants a semantic worker. The
+// factory closes over the bridge so all semantic spawns share one
+// model load.
 let semanticFactory = null;
 function getSemanticFactory() {
   if (semanticFactory) return semanticFactory;
-  const embedderModule = require('../src/core/embedder');
+  const bridge = getEmbedderBridge();
   semanticFactory = buildSemanticDriverFactory({
-    embedder: { embed: (text) => embedderModule.embed(text) },
+    embedder: { embed: (text, opts) => bridge.embed(text, opts || {}) },
     // Hand the indexHost's search through so the memory-search tool
     // talks to the same SQLite index every other piece of the app uses.
     search: (opts) => indexHost.search(opts),
@@ -563,14 +586,16 @@ ipcMain.handle('worker:list-tools', (_e, body = {}) => {
   return { ok: true, tools };
 });
 
-// Embedder status (which devices are supported, what's loaded).
-// Used by the renderer to populate the Device dropdown on the
-// semantic-worker spawn UI honestly — if WebGPU isn't available we
-// say so rather than silently falling back.
-ipcMain.handle('models:embedder-status', () => {
+// Embedder status from the bridge (real WebGPU detection — the
+// hidden renderer probes navigator.gpu and reports back). Used by
+// the renderer to populate the Device dropdown on the semantic-
+// worker spawn UI honestly — if WebGPU isn't available we say so
+// rather than silently falling back.
+ipcMain.handle('models:embedder-status', async () => {
   try {
-    const embedderModule = require('../src/core/embedder');
-    return { ok: true, ...embedderModule.status() };
+    const bridge = getEmbedderBridge();
+    const status = await bridge.status();
+    return { ok: true, ...status };
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -821,6 +846,10 @@ app.on('before-quit', (ev) => {
       searchServerStop = null;
     }
     try { await indexHost.close(); } catch { /* ignore */ }
+    if (embedderBridge) {
+      try { await embedderBridge.stop(); } catch { /* ignore */ }
+      embedderBridge = null;
+    }
     shutdownDone = true;
     app.quit();
   }, 250);
