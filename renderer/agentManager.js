@@ -6,7 +6,7 @@
 // @-mention to a specific one. Responses stream in via chat:* IPC
 // events broadcast from main.js.
 
-(function () {
+function init() {
   const transport = window.transport;
   if (!transport || !transport.workers || !transport.chat) return;
 
@@ -1756,4 +1756,6 @@
   } else {
     init();
   }
-})();
+}
+
+init();

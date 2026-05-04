@@ -2,16 +2,10 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <!-- Hidden renderer that hosts the WebGPU-capable embedder.
-         Allows blob: workers (transformers.js spawns a Web Worker
-         from a blob URL for ONNX inference) and the HF CDN for
-         model downloads on first run. -->
-    <meta http-equiv="Content-Security-Policy"
-          content="default-src 'self';
-                   script-src 'self' 'wasm-unsafe-eval' blob:;
-                   worker-src 'self' blob:;
-                   connect-src 'self' https://huggingface.co https://*.hf.co https://cdn-lfs.hf.co https://cdn-lfs.huggingface.co;
-                   img-src 'self' data: blob:;" />
+    <!-- CSP for this hidden renderer is set as a response header from
+         electron/csp.js (matched on URL ending with embedder-host.html).
+         It allows blob: workers (transformers.js spawns a Web Worker from
+         a blob URL for ONNX inference) and the HF CDN for model downloads. -->
     <title>MyAgent — embedder host</title>
   </head>
   <body>

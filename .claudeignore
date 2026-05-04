@@ -1,0 +1,25 @@
+# Files Claude Code (and agents) should NOT search through. Mirrors
+# .gitignore for things that are generated/built — agents should always
+# read source, never compiled or minified output, so refactors land in
+# the right place.
+
+node_modules/
+
+# Vite build output for the renderer
+renderer/dist/
+
+# Generic build dirs
+dist/
+out/
+build/
+
+# Vendor/static assets that aren't source we'd edit
+renderer/vendor/
+
+# Local agent state + session logs
+.myagent/
+project-output/
+test-results/
+
+# Local screenshots (regenerate with `npm run shots`)
+docs/screenshots/

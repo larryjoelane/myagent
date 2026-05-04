@@ -1,0 +1,40 @@
+{
+  "//": "JSDoc-driven type checking for plain JS. Opt-in per file: add `// @ts-check` at the top to enable. New files (Lit components, new modules) should opt in; untyped legacy files stay quiet until they're annotated. `npm run typecheck` runs the compiler over the whole tree but only flags opted-in files.",
+
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true,
+
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+
+    "strict": false,
+    "noImplicitAny": false,
+    "strictNullChecks": false,
+
+    "skipLibCheck": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"]
+  },
+
+  "include": [
+    "electron/**/*.js",
+    "renderer/**/*.js",
+    "src/**/*.js",
+    "scripts/**/*.js",
+    "bin/**/*.js"
+  ],
+
+  "exclude": [
+    "node_modules",
+    "renderer/dist",
+    "renderer/vendor",
+    "tests",
+    ".myagent",
+    "project-output"
+  ]
+}

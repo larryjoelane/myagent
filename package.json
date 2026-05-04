@@ -8,10 +8,12 @@
     "rebuild:electron": "node scripts/ensure-native.js electron",
     "rebuild:node": "node scripts/ensure-native.js node",
     "vendor:transformers": "node scripts/copy-transformers.js",
-    "prestart": "node scripts/ensure-native.js electron && node scripts/copy-transformers.js",
+    "prestart": "node scripts/ensure-native.js electron && node scripts/copy-transformers.js && vite build",
     "predev": "node scripts/ensure-native.js electron && node scripts/copy-transformers.js",
     "start": "electron .",
-    "dev": "electronmon .",
+    "dev": "concurrently --kill-others-on-fail --names \"vite,electron\" --prefix-colors \"cyan,yellow\" \"vite\" \"node scripts/dev-electron.js\"",
+    "build": "vite build",
+    "typecheck": "tsc -p tsconfig.json",
     "start:web": "node web/server.js",
     "memory:search": "node scripts/ensure-native.js node && node bin/memory-search.js",
     "sft:export": "node scripts/sft-export.js",
@@ -28,14 +30,19 @@
     "@xterm/headless": "^6.0.0",
     "@xterm/xterm": "^5.5.0",
     "better-sqlite3": "^12.9.0",
+    "lit": "^3.3.2",
     "onnxruntime-web": "^1.25.1"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.4",
     "@playwright/test": "^1.59.1",
+    "@types/node": "^25.6.0",
+    "concurrently": "^9.2.1",
     "electron": "^41.3.0",
     "electronmon": "^2.0.4",
-    "esbuild": "^0.28.0"
+    "esbuild": "^0.28.0",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.10"
   },
   "electronmon": {
     "patterns": [

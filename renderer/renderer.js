@@ -1,73 +1,59 @@
-// Entry point — runs after vendor scripts (xterm, addon-fit) and shell.js.
-// Uses globals (window.Terminal, window.FitAddon, window.MyAgent.*)
-// because Electron's file:// loader doesn't resolve bare or relative ESM
-// imports reliably across versions. This also keeps the renderer trivially
-// portable to a static-served web app later (no build step required).
+// Renderer entry point — bootstraps the terminal pane manager and the
+// AgentManager chat surface. Loaded as an ES module via Vite (see
+// vite.config.js). xterm + FitAddon come from npm; PaneManager is
+// imported from shell.js. Importing agentManager.js for its side
+// effect (it registers DOM listeners on its own).
 
-(function () {
-  const transport = window.transport;
+import { Terminal } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
+import '@xterm/xterm/css/xterm.css';
 
-  const Terminal =
-    window.Terminal ||
-    (window.xterm && window.xterm.Terminal) ||
-    (window.xtermjs && window.xtermjs.Terminal);
-  const FitAddon =
-    (window.FitAddon && window.FitAddon.FitAddon) ||
-    window.FitAddon ||
-    (window.xtermAddonFit && window.xtermAddonFit.FitAddon);
+import { PaneManager } from './shell.js';
+import './agentManager.js';
+import './components/app-root.js';
 
-  if (!Terminal) {
-    document.body.innerHTML =
-      '<pre style="color:#f88;padding:16px;font-family:monospace">' +
-      'failed to load xterm.js — vendor file missing or wrong global. ' +
-      'check renderer/vendor/xterm.js exists.</pre>';
-    return;
-  }
+const transport = window.transport;
 
-  const TERM_OPTS = {
-    fontFamily: "'Cascadia Code', Consolas, Menlo, monospace",
-    fontSize: 13,
-    cursorBlink: true,
-    theme: { background: '#1e1e1e', foreground: '#dcdcdc', cursor: '#dcdcdc' },
-  };
+const TERM_OPTS = {
+  fontFamily: "'Cascadia Code', Consolas, Menlo, monospace",
+  fontSize: 13,
+  cursorBlink: true,
+  theme: { background: '#1e1e1e', foreground: '#dcdcdc', cursor: '#dcdcdc' },
+};
 
-  function makeTerminal(host) {
-    const term = new Terminal(TERM_OPTS);
-    let fit = null;
-    if (FitAddon) {
-      fit = new FitAddon();
-      term.loadAddon(fit);
-    }
-    term.open(host);
-    if (fit) fit.fit();
-    return { term, fit };
-  }
+function makeTerminal(host) {
+  const term = new Terminal(TERM_OPTS);
+  const fit = new FitAddon();
+  term.loadAddon(fit);
+  term.open(host);
+  fit.fit();
+  return { term, fit };
+}
 
-  // Build the main pane immediately.
-  const mainHost = document.querySelector('.pane[data-pane="main"] .pane-host');
-  const mainPaneEl = document.querySelector('.pane[data-pane="main"]');
-  const extraPaneEl = document.querySelector('.pane[data-pane="extra"]');
-  const tabsHost = document.getElementById('tabs-host');
+// Build the main pane immediately.
+const mainHost = document.querySelector('.pane[data-pane="main"] .pane-host');
+const mainPaneEl = document.querySelector('.pane[data-pane="main"]');
+const extraPaneEl = document.querySelector('.pane[data-pane="extra"]');
+const tabsHost = document.getElementById('tabs-host');
 
-  const main = makeTerminal(mainHost);
+const main = makeTerminal(mainHost);
 
-  const manager = new window.MyAgent.PaneManager({
-    transport,
-    panes: {
-      main: { term: main.term, fit: main.fit, el: mainPaneEl, paneId: 'main' },
-      // The extra pane now owns N tabs. Manager creates per-tab hosts
-      // inside `tabsHost` on demand; no single shared host.
-      extra: { el: extraPaneEl, tabsHost, makeTerminal },
-    },
-    Terminal,
-    FitAddon,
-  });
+const manager = new PaneManager({
+  transport,
+  panes: {
+    main: { term: main.term, fit: main.fit, el: mainPaneEl, paneId: 'main' },
+    // The extra pane now owns N tabs. Manager creates per-tab hosts
+    // inside `tabsHost` on demand; no single shared host.
+    extra: { el: extraPaneEl, tabsHost, makeTerminal },
+  },
+  Terminal,
+  FitAddon,
+});
 
-  // Resize handling: refit whatever pane(s) are visible.
-  window.addEventListener('resize', () => manager.refitAll());
+// Resize handling: refit whatever pane(s) are visible.
+window.addEventListener('resize', () => manager.refitAll());
 
-  manager.start();
-  // Terminal area is hidden by default — the chat fills the window.
-  // Clicking + Terminal opens the area; closing the last tab hides
-  // it again. See PaneManager.cmdNewShell / closeTab in shell.js.
-})();
+manager.start();
+// Terminal area is hidden by default — the chat fills the window.
+// Clicking + Terminal opens the area; closing the last tab hides
+// it again. See PaneManager.cmdNewShell / closeTab in shell.js.

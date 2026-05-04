@@ -10,8 +10,10 @@
 // IPC handlers live in electron/ipc/*. main.js wires them up at startup with
 // register({...deps}) — each module closes over the deps it needs.
 
-const { app, BrowserWindow, ipcMain, Menu, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, dialog, session } = require('electron');
 const path = require('path');
+
+const csp = require('./csp');
 
 const { createRunner } = require('../src/core/runners');
 const { SessionLog } = require('../src/core/sessionLog');
@@ -311,7 +313,14 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
-  win.loadFile(path.join(PROJECT_ROOT, 'renderer', 'index.html'));
+  // In dev (npm run dev), Vite serves the renderer at this URL; in prod,
+  // load the built bundle from renderer/dist/. VITE_DEV_SERVER_URL is set
+  // by the dev script in package.json — its absence is the prod signal.
+  if (process.env.VITE_DEV_SERVER_URL) {
+    win.loadURL(process.env.VITE_DEV_SERVER_URL);
+  } else {
+    win.loadFile(path.join(PROJECT_ROOT, 'renderer', 'dist', 'index.html'));
+  }
 
   win.webContents.on('destroyed', () => {
     const id = win.webContents.id;
@@ -374,6 +383,12 @@ function registerIpcHandlers() {
 
 app.whenReady().then(() => {
   buildMenu();
+  // Install CSP headers on the default session before any window loads.
+  // Dev URL — when set — loosens CSP enough for Vite HMR; prod is strict.
+  csp.apply({
+    session: session.defaultSession,
+    devServerUrl: process.env.VITE_DEV_SERVER_URL || null,
+  });
   registerIpcHandlers();
   createWindow();
   // Kick off the first ingest in the background. Window paints first,
