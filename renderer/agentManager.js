@@ -43,8 +43,8 @@ function init() {
   function chatEl() { return $('am-chat'); }
   function workersEl() { return $('am-workers'); }
   function emptyEl() { return $('am-empty-state'); }
-  function inputEl() { return $('am-input'); }
-  function mentionEl() { return $('am-mention-popup'); }
+  function composeEl() { return /** @type {any} */ ($('am-compose')); }
+  function inputEl() { return composeEl(); }
   function settingsEl() { return $('am-settings'); }
 
   function show(open) {
@@ -59,9 +59,10 @@ function init() {
     const el = settingsEl();
     if (!el) return;
     state.settings.settingsOpen = (open == null) ? !state.settings.settingsOpen : !!open;
-    // <settings-drawer> reflects an [open] boolean attribute. The
-    // component handles its own animation + section rendering.
+    // <settings-drawer> reflects an [open] boolean attribute. Also keep
+    // the legacy class for back-compat with tests that look for it.
     /** @type {any} */ (el).open = state.settings.settingsOpen;
+    el.classList.toggle('agent-manager__settings--hidden', !state.settings.settingsOpen);
   }
 
   // --- Worker list refresh -----------------------------------------------
@@ -545,33 +546,9 @@ function init() {
     return file;
   }
 
-  // Auto-grow the textarea to fit its content, up to its CSS
-  // max-height. We set height to 'auto' first so scrollHeight
-  // reflects the natural content height (otherwise it stays at the
-  // current set value). Cap at parent-derived max so the box can't
-  // overflow visually past its CSS limit.
-  function autoGrow(el) {
-    if (!el) return;
-    el.style.height = 'auto';
-    // scrollHeight excludes the textarea's border, so add it back.
-    const border = (el.offsetHeight - el.clientHeight) || 0;
-    el.style.height = (el.scrollHeight + border) + 'px';
-  }
-
   function insertSnippet(text) {
     if (!text) return;
-    const input = inputEl();
-    if (!input) return;
-    // Strip any trailing "[tags: ...]" line that storeMemory adds
-    // before saving — those are bookkeeping, not content.
-    const cleaned = text.replace(/\n\[tags:[^\]]*\]\s*$/, '');
-    const current = input.value;
-    const sep = current && !current.endsWith('\n') ? '\n' : '';
-    input.value = current + sep + cleaned;
-    input.focus();
-    // Move cursor to end.
-    const pos = input.value.length;
-    input.setSelectionRange(pos, pos);
+    composeEl()?.appendValue(text);
   }
 
   function appendToOpenBubble(agentId, text) {
@@ -975,9 +952,9 @@ function init() {
     return null;
   }
 
-  async function send() {
-    const input = inputEl();
-    const raw = input.value;
+  async function send(rawArg) {
+    const compose = composeEl();
+    const raw = (typeof rawArg === 'string') ? rawArg : (compose?.value || '');
     if (!raw.trim()) return;
 
     // Built-in @memory command — searches the memory index and
@@ -996,8 +973,7 @@ function init() {
     const memoryMatch = raw.match(memoryRe);
     if (memoryMatch) {
       const tail = (memoryMatch[1] || '').trim();
-      input.value = '';
-      input.style.height = '';
+      compose?.clear();
       if (!tail || tail === '--help' || tail === '-h' || tail === 'help') {
         pushMemoryHelpBubble();
         return;
@@ -1031,10 +1007,7 @@ function init() {
 
     pendingUserOptimistic = { agentId: target.id, text };
     pushBubble('user', text, target.id);
-    input.value = '';
-    // Reset to the CSS-defined min height; otherwise the inline
-    // height we set during autoGrow keeps the box at the grown size.
-    input.style.height = '';
+    compose?.clear();
 
     const placeholder = pushBubble('assistant', '', target.id);
     openBubbles.set(target.id, {
@@ -1048,148 +1021,13 @@ function init() {
     if (r && r.ok === false) pushBubble('system', `send failed: ${r.error || 'unknown'}`);
   }
 
-  // --- Mention popup ------------------------------------------------------
+  // --- Mention popup / slash popup / autoGrow / popup keyboard nav -------
+  // All moved into <compose-input> (renderer/components/compose-input.js).
+  // The component owns the textarea + popup; we listen for its
+  // 'submit' event and route through send() below.
 
-  // Single dispatcher: figure out whether the textarea is in slash-
-  // command mode, mention mode, or neither, and render accordingly.
-  // Slash mode wins when the input begins with `/`; the slash command
-  // is only valid at column 0 of the textarea (matches what the
-  // SemanticDriver's parseSlash() accepts).
-  function updateInputPopup() {
-    const input = inputEl();
-    const popup = mentionEl();
-    const text = input.value;
-    const cursor = input.selectionStart || 0;
-    const before = text.slice(0, cursor);
-
-    // Slash mode: only when `/` is the very first character of the
-    // textarea AND the active worker is semantic (others have no
-    // toolkit to autocomplete from).
-    if (text.startsWith('/')) {
-      const tools = currentWorkerTools();
-      if (tools && tools.length > 0) {
-        renderSlashPopup(input, popup, text);
-        return;
-      }
-    }
-
-    // @-mention mode (existing behavior).
-    const m = before.match(/(?:^|\s)@(\S*)$/);
-    if (!m) { hidePopup(popup); return; }
-    renderMentionPopup(input, popup, before, cursor, text, m[1].toLowerCase());
-  }
-
-  function currentWorkerTools() {
-    const w = workerById(state.currentTarget);
-    if (!w || w.kind !== 'semantic') return null;
-    return state.toolsByWorker.get(w.id) || null;
-  }
-
-  function hidePopup(popup) {
-    popup.classList.add('mention-popup--hidden');
-    slashSelected = 0;
-  }
-
-  function renderSlashPopup(input, popup, text) {
-    // Parse `/cmd args` out of the start of the input. The user is
-    // typing the cmd portion; everything after the first space is
-    // the args (we don't rewrite that on accept).
-    const m = text.match(/^\/([a-zA-Z0-9_-]*)/);
-    const typedCmd = (m && m[1]) ? m[1].toLowerCase() : '';
-    const tools = state.toolsByWorker.get(state.currentTarget) || [];
-
-    // Always show /help even though it's not a tool id — it's a real
-    // slash command in the SemanticDriver. Synthesize an entry.
-    const entries = [
-      { id: 'help', name: 'Help', description: 'List all tools or show help for one.' },
-      ...tools,
-    ];
-    const matches = entries.filter((t) => t.id.toLowerCase().includes(typedCmd));
-
-    popup.innerHTML = '';
-    if (matches.length === 0) {
-      const item = document.createElement('div');
-      item.className = 'mention-item';
-      item.style.color = 'var(--text-faint)';
-      item.style.fontStyle = 'italic';
-      item.textContent = `no slash commands match "/${typedCmd}"`;
-      popup.appendChild(item);
-      popup.classList.remove('mention-popup--hidden');
-      return;
-    }
-
-    // Clamp the selection index to the matches we just rebuilt.
-    if (slashSelected >= matches.length) slashSelected = matches.length - 1;
-    if (slashSelected < 0) slashSelected = 0;
-
-    matches.forEach((t, i) => {
-      const item = document.createElement('div');
-      item.className = 'mention-item mention-item--slash';
-      if (i === slashSelected) item.classList.add('mention-item--active');
-      const head = document.createElement('div');
-      head.className = 'mention-item__head';
-      head.textContent = `/${t.id}`;
-      const sub = document.createElement('div');
-      sub.className = 'mention-item__sub';
-      // First sentence of the description — keep the row tight.
-      sub.textContent = (t.description || '').split(/(?<=\.)\s/)[0].slice(0, 90);
-      item.appendChild(head);
-      if (sub.textContent) item.appendChild(sub);
-      item.dataset.index = String(i);
-      item.addEventListener('mousedown', (e) => {
-        e.preventDefault();
-        acceptSlash(input, popup, text, t.id);
-      });
-      popup.appendChild(item);
-    });
-    popup.classList.remove('mention-popup--hidden');
-  }
-
-  function acceptSlash(input, popup, text, toolId) {
-    // Replace just the leading `/cmd`, keep any trailing args + space.
-    const rest = text.replace(/^\/[a-zA-Z0-9_-]*/, '');
-    const next = `/${toolId}${rest.length === 0 ? ' ' : rest}`;
-    input.value = next;
-    input.focus();
-    // Cursor goes to the end of the inserted command (before any args
-    // the user already had typed) so they can immediately type args.
-    const cursor = `/${toolId}`.length + (rest.length === 0 ? 1 : 0);
-    input.setSelectionRange(cursor, cursor);
-    hidePopup(popup);
-  }
-
-  function renderMentionPopup(input, popup, before, cursor, text, prefix) {
-    const matches = state.workers.filter((w) => w.name.toLowerCase().includes(prefix));
-    popup.innerHTML = '';
-    if (matches.length === 0) {
-      const item = document.createElement('div');
-      item.className = 'mention-item';
-      item.style.color = 'var(--text-faint)';
-      item.style.fontStyle = 'italic';
-      item.textContent = 'no workers — spawn one first';
-      popup.appendChild(item);
-    } else {
-      for (const w of matches) {
-        const item = document.createElement('div');
-        item.className = 'mention-item';
-        item.textContent = `@${w.name} (${w.kind})`;
-        item.addEventListener('mousedown', (e) => {
-          e.preventDefault();
-          const head = before.replace(/(^|\s)@\S*$/, `$1@${w.name} `);
-          input.value = head + text.slice(cursor);
-          input.focus();
-          const newPos = head.length;
-          input.setSelectionRange(newPos, newPos);
-          popup.classList.add('mention-popup--hidden');
-        });
-        popup.appendChild(item);
-      }
-    }
-    popup.classList.remove('mention-popup--hidden');
-  }
-
-  // Backwards-compat shim — old call sites still reference this name.
-  function updateMentionPopup() { updateInputPopup(); }
+  // (Removed in-line: updateInputPopup, currentWorkerTools, hidePopup,
+  //  renderSlashPopup, acceptSlash, renderMentionPopup, updateMentionPopup.)
 
   // --- Wire-up -----------------------------------------------------------
 
@@ -1227,65 +1065,14 @@ function init() {
       if (text) pushBubble('system', text);
     });
 
-    $('am-send')?.addEventListener('click', () => send().catch(() => {}));
-    const input = inputEl();
-    if (input) {
-      input.addEventListener('keydown', (e) => {
-        // Slash-popup keyboard navigation. Active only when the popup
-        // is visible AND the textarea begins with `/`. We treat any
-        // other state as "popup not for me" and fall through to normal
-        // textarea behavior (so Enter still sends, etc.).
-        const popup = mentionEl();
-        const slashOpen = !popup.classList.contains('mention-popup--hidden')
-          && input.value.startsWith('/');
-        if (slashOpen) {
-          const items = popup.querySelectorAll('.mention-item--slash');
-          if (e.key === 'Escape') {
-            e.preventDefault();
-            hidePopup(popup);
-            return;
-          }
-          if (items.length > 0 && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
-            e.preventDefault();
-            const dir = e.key === 'ArrowDown' ? 1 : -1;
-            slashSelected = (slashSelected + dir + items.length) % items.length;
-            updateInputPopup();
-            return;
-          }
-          if (items.length > 0 && (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey))) {
-            e.preventDefault();
-            const sel = items[slashSelected];
-            const idx = Number(sel?.dataset.index || 0);
-            // Re-derive the entries the same way renderSlashPopup does.
-            const tools = state.toolsByWorker.get(state.currentTarget) || [];
-            const entries = [
-              { id: 'help' },
-              ...tools,
-            ];
-            const m = input.value.match(/^\/([a-zA-Z0-9_-]*)/);
-            const typed = (m && m[1]) ? m[1].toLowerCase() : '';
-            const matches = entries.filter((t) => t.id.toLowerCase().includes(typed));
-            const pick = matches[idx];
-            if (pick) acceptSlash(input, popup, input.value, pick.id);
-            return;
-          }
-        }
-        if (e.key === 'Enter' && !e.shiftKey) {
-          e.preventDefault();
-          send().catch(() => {});
-        }
-      });
-      input.addEventListener('input', () => {
-        autoGrow(input);
-        // Reset selection when the input changes — we can't carry an
-        // index across a different filter result set sensibly.
-        slashSelected = 0;
-        updateInputPopup();
-      });
-      input.addEventListener('blur', () => {
-        setTimeout(() => mentionEl().classList.add('mention-popup--hidden'), 100);
-      });
-    }
+    // <compose-input> handles the textarea + popup + Enter/Send + autogrow
+    // internally. It dispatches a 'submit' event with detail.text when the
+    // user hits Enter (without Shift) or clicks the Send button. We route
+    // that text through the existing send() path.
+    composeEl()?.addEventListener('submit', (/** @type {any} */ ev) => {
+      const text = ev?.detail?.text;
+      if (typeof text === 'string') send(text).catch(() => {});
+    });
 
     // All persisted settings (mirror toggles, auto-context, chat side,
     // tool details, semantic device, generation model, default explain)

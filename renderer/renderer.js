@@ -14,6 +14,7 @@ import './components/app-root.js';
 import './components/empty-state.js';
 import './components/worker-chips.js';
 import './components/settings-drawer.js';
+import './components/compose-input.js';
 
 const transport = window.transport;
 

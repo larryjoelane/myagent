@@ -36,8 +36,10 @@
            component owns all knobs (mirror toggles, chat side, tool
            details, workers section, semantic device, explain model).
            Visibility is controlled by the [open] attribute — toggled
-           by the gear-icon button via agentManager.js. -->
-      <settings-drawer id="am-settings"></settings-drawer>
+           by the gear-icon button via agentManager.js. The legacy
+           --hidden class is kept on the host for back-compat with
+           tests that check classList.contains(...). -->
+      <settings-drawer id="am-settings" class="agent-manager__settings--hidden"></settings-drawer>
 
       <!-- Always-visible worker chip strip (only shown when workers exist).
            The component subscribes to the store and renders one chip per
@@ -55,13 +57,13 @@
 
       <div class="agent-manager__chat" id="am-chat" role="log"></div>
 
-      <div class="agent-manager__compose">
-        <div id="am-mention-popup" class="mention-popup mention-popup--hidden" role="listbox"></div>
-        <textarea id="am-input" rows="2" placeholder="Message your worker..."
-                  aria-label="Message"></textarea>
-        <button id="am-send" class="cmd-btn cmd-btn--primary" type="button"
-                title="Send (Enter)" aria-label="Send">Send</button>
-      </div>
+      <!-- Composer: textarea + mention/slash popup + send button. The
+           component renders a `submit` event with detail.text whenever
+           the user hits Enter or clicks Send; agentManager.js routes
+           that to the existing send() flow. Programmatic API (value,
+           appendValue, focus, clear) is used by send() and by memory-
+           bubble click-to-insert. -->
+      <compose-input id="am-compose"></compose-input>
     </aside>
     <div id="split-wrap" class="split-wrap--hidden">
     <div id="split">
