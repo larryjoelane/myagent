@@ -68,53 +68,15 @@ function init() {
       }));
       renderWorkers();
       renderEmptyState();
-      renderEmptyCwd();
       // <settings-drawer> subscribes to the store and re-renders the
-      // workers list itself when state.workers changes.
+      // workers list and cwd label itself when state changes.
     } catch { /* ignore transient errors */ }
   }
 
-  function shortenPath(p) {
-    if (!p) return '(default)';
-    // Show last two path segments for compactness, e.g. ".../source/MyAgent".
-    const parts = p.split(/[\\/]/).filter(Boolean);
-    if (parts.length <= 2) return p;
-    return '…/' + parts.slice(-2).join('/');
-  }
-
-  // Hydrate state.pendingCwd from the persisted lastCwd, then update the
-  // settings-drawer cwd label. The empty-state component renders its own
-  // cwd label from the store — no DOM update needed there. We call
-  // store.bump() after the hydration so the component re-renders.
-  async function renderEmptyCwd() {
-    if (!state.pendingCwd) {
-      try {
-        const r = await transport.settings.get('lastCwd');
-        if (r.value) {
-          state.pendingCwd = r.value;
-          store.bump();
-        }
-      } catch { /* ignore */ }
-    }
-    const label = state.pendingCwd ? shortenPath(state.pendingCwd) : '(repo root)';
-    const tooltip = state.pendingCwd || '(repo root)';
-    // Settings-drawer picker (still legacy DOM). The empty-state side
-    // is owned by <empty-state>, which reads pendingCwd from the store.
-    const t = $('am-spawn-cwd-text');
-    if (t) t.textContent = label;
-    const b = $('am-spawn-cwd');
-    if (b) b.title = tooltip;
-  }
-
-  async function pickCwd() {
-    try {
-      const r = await transport.dialog.chooseDirectory({ defaultPath: state.pendingCwd });
-      if (r.canceled || !r.path) return;
-      state.pendingCwd = r.path;
-      store.bump();
-      await renderEmptyCwd();
-    } catch { /* ignore */ }
-  }
+  // cwd hydration + the cwd-picker action live in renderer/state/actions.js
+  // (hydrateLastCwd, pickCwd). settings-drawer hydrates on connect; both
+  // <empty-state> and <settings-drawer> read pendingCwd from the store and
+  // wire @click directly to actions.pickCwd.
 
   // Embedder status, generation-model registry, and device-status
   // rendering all moved into <settings-drawer> (renderer/components/

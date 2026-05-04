@@ -25,7 +25,7 @@ import {
   pickCwd, closeWorker, renameWorker, refreshWorkers,
   setWorkerMirror, setDefaultMirror,
   loadEmbedderStatus, loadGenerationModels, refreshGenerationModelStatuses,
-  getSetting, setSetting,
+  getSetting, setSetting, hydrateLastCwd,
 } from '../state/actions.js';
 import { cmdBtnStyles } from './styles.js';
 
@@ -290,6 +290,9 @@ export class SettingsDrawer extends LitElement {
     store.update({
       settings: { ...ns.settings, toolDetails },
     });
+    // Restore the persisted lastCwd into pendingCwd so empty-state
+    // and the cwd-picker label show the right path on launch.
+    hydrateLastCwd();
     this.requestUpdate();
     loadEmbedderStatus();
     loadGenerationModels();
