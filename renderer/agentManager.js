@@ -281,7 +281,7 @@ function init() {
   // --- Wire-up -----------------------------------------------------------
 
   function init() {
-    $('cmd-agent-manager')?.addEventListener('click', () => {
+    document.querySelector('topbar-commands')?.addEventListener('chat-toggle', () => {
       const isHidden = rootEl().classList.contains('agent-manager--hidden');
       show(isHidden);
     });

@@ -9,16 +9,12 @@
     <header class="topbar">
       <span class="title">MyAgent</span>
       <app-root></app-root>
-      <nav class="commands" aria-label="Commands">
-        <button id="cmd-agent-manager" class="cmd-btn cmd-btn--primary" type="button"
-                title="Toggle chat (Ctrl+Shift+A)">Chat</button>
-        <button id="cmd-new-shell" class="cmd-btn" type="button"
-                title="New terminal tab (Ctrl+Shift+T)">+ Terminal</button>
-        <button id="cmd-new-browser" class="cmd-btn" type="button"
-                title="New browser tab">+ Browser</button>
-        <button id="cmd-close-pane" class="cmd-btn" type="button"
-                title="Close terminal tab (Ctrl+Shift+W)" disabled>Close</button>
-      </nav>
+      <!-- Topbar command buttons: Chat / + Terminal / + Browser / Close.
+           Component renders into the light DOM so the existing .cmd-btn
+           styles and the e2e test selectors (#cmd-new-shell etc) keep
+           working. Emits chat-toggle / new-shell / new-browser /
+           close-pane events. -->
+      <topbar-commands close-pane-disabled></topbar-commands>
     </header>
     <div id="app-row">
     <aside id="agent-manager" class="agent-manager" aria-label="Chat">

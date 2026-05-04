@@ -17,6 +17,7 @@ import './components/settings-drawer.js';
 import './components/compose-input.js';
 import './components/memory-bubble.js';
 import './components/chat-log.js';
+import './components/topbar-commands.js';
 
 const transport = window.transport;
 

@@ -548,14 +548,18 @@ class PaneManager {
     this.wireFocus(this.main.el, 'main');
     this.setFocus('main');
 
-    // + Browser button on the topbar opens a new browser tab in the
-    // extra pane (same place + Terminal puts shell tabs).
-    const btnNewBrowser = document.getElementById('cmd-new-browser');
-    btnNewBrowser?.addEventListener('click', () => {
+    // <topbar-commands> emits new-shell / new-browser / close-pane
+    // events. Same actions are also reachable via the global hotkeys
+    // wired further down — both call into these methods.
+    const topbar = document.querySelector('topbar-commands');
+    topbar?.addEventListener('new-browser', () => {
       this.openBrowserTab({}).catch((err) => {
         console.error('openBrowserTab failed', err);
       });
     });
+    topbar?.addEventListener('new-shell', () => this.cmdNewShell());
+    topbar?.addEventListener('close-pane', () => this.cmdClosePane());
+    this.topbar = topbar;
 
     // Splitter is part of the layout but starts hidden until /shell new
     // opens the extra pane.
@@ -569,14 +573,6 @@ class PaneManager {
       });
     }
 
-    // Top-bar command buttons. The same actions are also reachable via
-    // the global hotkeys wired further down — both call into these
-    // methods so the behavior stays consistent.
-    const btnNewShell = document.getElementById('cmd-new-shell');
-    const btnClosePane = document.getElementById('cmd-close-pane');
-    btnNewShell?.addEventListener('click', () => this.cmdNewShell());
-    btnClosePane?.addEventListener('click', () => this.cmdClosePane());
-    this.btnClosePane = btnClosePane;
     this.updateCommandButtons();
 
     // Global hotkeys — Ctrl+Shift+T/W and Ctrl+Tab cycling. Captured
@@ -605,7 +601,7 @@ class PaneManager {
 
   // Close Pane button is enabled whenever there's at least one tab.
   updateCommandButtons() {
-    if (this.btnClosePane) this.btnClosePane.disabled = this.tabs.length === 0;
+    if (this.topbar) this.topbar.closePaneDisabled = this.tabs.length === 0;
   }
 
   // ----- Command actions (shared by buttons + hotkeys) -----
