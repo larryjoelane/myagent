@@ -13,6 +13,7 @@ import './agentManager.js';
 import './components/app-root.js';
 import './components/empty-state.js';
 import './components/worker-chips.js';
+import './components/settings-drawer.js';
 
 const transport = window.transport;
 

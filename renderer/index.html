@@ -32,118 +32,12 @@
 
       <!-- Settings drawer: collapsible, hidden by default. Houses the
            mirror toggle and the worker management section. -->
-      <div id="am-settings" class="agent-manager__settings agent-manager__settings--hidden">
-        <label class="am-setting-row">
-          <input id="am-default-mirror" type="checkbox" checked />
-          <span>Save chats to memory by default</span>
-        </label>
-        <label class="am-setting-row" title="Before each prompt is sent to a worker, search memory for relevant past context and prepend it.">
-          <input id="am-auto-context" type="checkbox" checked />
-          <span>Auto-include relevant memories</span>
-        </label>
-        <div class="am-setting-row">
-          <span>Chat position</span>
-          <span class="am-segmented" role="group" aria-label="Chat position">
-            <button id="am-chat-side-left" class="cmd-btn cmd-btn--small" type="button">Left</button>
-            <button id="am-chat-side-right" class="cmd-btn cmd-btn--small" type="button">Right</button>
-          </span>
-        </div>
-        <div class="am-setting-row">
-          <span>Tool details</span>
-          <span class="am-segmented" role="group" aria-label="Tool details">
-            <button id="am-tool-details-expanded" class="cmd-btn cmd-btn--small" type="button"
-                    title="Show input + result inline by default">Expanded</button>
-            <button id="am-tool-details-collapsed" class="cmd-btn cmd-btn--small" type="button"
-                    title="One-line summary; click to expand">Collapsed</button>
-            <button id="am-tool-details-hidden" class="cmd-btn cmd-btn--small" type="button"
-                    title="Tiny badge only; no body">Hidden</button>
-          </span>
-        </div>
-        <div class="am-setting-row am-setting-row--header">
-          <span>Workers</span>
-          <span class="am-spawn-buttons">
-            <button id="am-spawn-claude" class="cmd-btn cmd-btn--small cmd-btn--primary" type="button"
-                    title="Spawn another Claude worker">+ Claude</button>
-            <button id="am-spawn-shell" class="cmd-btn cmd-btn--small" type="button"
-                    title="Spawn another shell">+ Shell</button>
-            <button id="am-spawn-semantic" class="cmd-btn cmd-btn--small" type="button"
-                    title="Spawn a semantic-routing agent (in-process, no LLM)">+ Semantic</button>
-          </span>
-        </div>
-        <!-- Shared cwd picker for the spawn buttons above. The empty
-             state has its own picker; this one fills the same role
-             once at least one worker exists, so users aren't forced
-             to close all workers to change directory. -->
-        <div class="am-setting-row am-setting-row--cwd">
-          <span class="am-setting-row__label">Working dir</span>
-          <button id="am-spawn-cwd" class="agent-manager__empty-cwd-button" type="button"
-                  title="Click to choose a different folder for the next spawn">
-            <span id="am-spawn-cwd-text">…</span>
-          </button>
-        </div>
-        <!-- Device picker for semantic workers. Applies to the next
-             "+ Semantic" spawn. The status line under it shows what
-             the embedder runtime can actually do (so we don't silently
-             pretend WebGPU works when the underlying lib doesn't). -->
-        <div class="am-setting-row am-setting-row--device">
-          <span class="am-setting-row__label">Semantic device</span>
-          <select id="am-spawn-device" class="am-select" title="Compute device for the next Semantic worker spawn">
-            <option value="cpu">CPU</option>
-            <option value="auto">Auto (prefer WebGPU)</option>
-            <option value="webgpu">WebGPU</option>
-          </select>
-        </div>
-        <div class="am-setting-row am-setting-row--device-status">
-          <span id="am-device-status" class="am-device-status">…</span>
-        </div>
-        <div class="am-setting-row am-setting-row--device-tools">
-          <button id="am-device-benchmark" class="cmd-btn cmd-btn--small" type="button"
-                  title="Run a 20-embed benchmark with the chosen device">Benchmark</button>
-          <button id="am-device-devtools" class="cmd-btn cmd-btn--small cmd-btn--muted" type="button"
-                  title="Open DevTools on the hidden embedder host (verify WebGPU)">DevTools</button>
-        </div>
-        <!-- Generative model + explain default for Semantic workers.
-             When a generation model is chosen, semantic results can
-             be wrapped in a natural-language explanation. Always
-             opt-in per turn via --explain unless the toggle below
-             is on (then the wrap is automatic; --no-explain skips it). -->
-        <div class="am-setting-row am-setting-row--gen-model">
-          <span class="am-setting-row__label">Explain model</span>
-          <select id="am-spawn-gen-model" class="am-select"
-                  title="Generative model used by --explain on Semantic workers">
-            <option value="">(none — explain disabled)</option>
-          </select>
-        </div>
-        <!-- Cache status panel for the selected Explain model.
-             Surfaces source URL, cache state, and a Pre-download
-             button so users can pay the multi-GB download cost
-             deliberately instead of triggering it on first inference. -->
-        <div id="am-gen-model-info" class="am-gen-model-info am-gen-model-info--hidden">
-          <div class="am-gen-model-info__row">
-            <span class="am-gen-model-info__label">Source</span>
-            <a id="am-gen-model-src" class="am-gen-model-info__link" href="#" target="_blank" rel="noopener"></a>
-          </div>
-          <div class="am-gen-model-info__row">
-            <span class="am-gen-model-info__label">Cache</span>
-            <span id="am-gen-model-cache" class="am-gen-model-info__cache">…</span>
-          </div>
-          <div class="am-gen-model-info__row am-gen-model-info__row--actions">
-            <button id="am-gen-model-warmup" class="cmd-btn cmd-btn--small" type="button"
-                    title="Download + load the model now (otherwise happens on first --explain)">
-              Pre-download
-            </button>
-            <button id="am-gen-model-recheck" class="cmd-btn cmd-btn--small cmd-btn--muted" type="button"
-                    title="Re-check the cache for this model">
-              Recheck
-            </button>
-          </div>
-        </div>
-        <label class="am-setting-row am-setting-row--explain">
-          <input id="am-default-explain" type="checkbox" />
-          <span>Explain results by default (use --no-explain to skip)</span>
-        </label>
-        <div id="am-workers-detail"></div>
-      </div>
+      <!-- Settings drawer: collapsible, hidden by default. The
+           component owns all knobs (mirror toggles, chat side, tool
+           details, workers section, semantic device, explain model).
+           Visibility is controlled by the [open] attribute — toggled
+           by the gear-icon button via agentManager.js. -->
+      <settings-drawer id="am-settings"></settings-drawer>
 
       <!-- Always-visible worker chip strip (only shown when workers exist).
            The component subscribes to the store and renders one chip per

@@ -57,9 +57,11 @@ function init() {
 
   function toggleSettings(open) {
     const el = settingsEl();
+    if (!el) return;
     state.settings.settingsOpen = (open == null) ? !state.settings.settingsOpen : !!open;
-    el.classList.toggle('agent-manager__settings--hidden', !state.settings.settingsOpen);
-    if (state.settings.settingsOpen) renderSettings();
+    // <settings-drawer> reflects an [open] boolean attribute. The
+    // component handles its own animation + section rendering.
+    /** @type {any} */ (el).open = state.settings.settingsOpen;
   }
 
   // --- Worker list refresh -----------------------------------------------
@@ -73,7 +75,8 @@ function init() {
       renderWorkers();
       renderEmptyState();
       renderEmptyCwd();
-      if (state.settings.settingsOpen) renderSettings();
+      // <settings-drawer> subscribes to the store and re-renders the
+      // workers list itself when state.workers changes.
     } catch { /* ignore transient errors */ }
   }
 
@@ -119,144 +122,10 @@ function init() {
     } catch { /* ignore */ }
   }
 
-  // Pull embedder status from main and update the device-status line.
-  // Cheap (cached after first call), idempotent.
-  async function loadEmbedderStatus() {
-    if (state.embedderStatus) { renderDeviceStatus(); return; }
-    if (!transport.models?.embedderStatus) return;
-    try {
-      const r = await transport.models.embedderStatus();
-      if (r && r.ok) state.embedderStatus = r;
-    } catch { /* ignore */ }
-    renderDeviceStatus();
-  }
-
-  // Populate the generation-model dropdown from the registry. Only
-  // models with kind: 'generate' show up. Each option label shows
-  // approximate download size; we also probe the cache up front so
-  // a status dot can prefix the label (● cached / ○ not cached).
-  async function loadGenerationModels() {
-    const sel = $('am-spawn-gen-model');
-    if (!sel || !transport.models?.list) return;
-    try {
-      const r = await transport.models.list('generate');
-      if (!r || !r.ok) return;
-      // Cache the registry rows so the info panel can read them
-      // without another IPC round-trip.
-      state.generationModels = r.models;
-      while (sel.options.length > 1) sel.remove(1);
-      for (const m of r.models) {
-        const o = document.createElement('option');
-        o.value = m.id;
-        // Prefix with a placeholder dot — refreshed by
-        // refreshGenerationModelStatuses() below.
-        o.textContent = `○ ${m.name} — ~${m.approxSizeMB}MB`;
-        o.dataset.cached = 'unknown';
-        sel.appendChild(o);
-      }
-      sel.value = state.pendingGenerationModelId || '';
-      // Probe each model's cache status in the background. Use a
-      // sequential await — these calls are cheap (no network) and
-      // serializing avoids a thundering herd into the bridge.
-      refreshGenerationModelStatuses();
-      renderGenerationModelInfo();
-    } catch { /* leave the (none) option in place */ }
-  }
-
-  async function refreshGenerationModelStatuses() {
-    const sel = $('am-spawn-gen-model');
-    if (!sel || !transport.models?.cacheStatus) return;
-    for (const m of state.generationModels || []) {
-      try {
-        const r = await transport.models.cacheStatus(m.id);
-        if (!r || !r.ok) continue;
-        m._cacheStatus = r;
-        const opt = [...sel.options].find((o) => o.value === m.id);
-        if (opt) {
-          const dot = r.cached ? '●' : '○';
-          opt.textContent = `${dot} ${m.name} — ~${m.approxSizeMB}MB`;
-          opt.dataset.cached = r.cached ? 'true' : 'false';
-        }
-      } catch { /* skip — leave placeholder dot */ }
-    }
-    renderGenerationModelInfo();
-  }
-
-  function renderGenerationModelInfo() {
-    const panel = $('am-gen-model-info');
-    if (!panel) return;
-    const id = state.pendingGenerationModelId;
-    if (!id) {
-      panel.classList.add('am-gen-model-info--hidden');
-      return;
-    }
-    panel.classList.remove('am-gen-model-info--hidden');
-    const m = (state.generationModels || []).find((x) => x.id === id);
-    if (!m) return;
-    const srcEl = $('am-gen-model-src');
-    if (srcEl) {
-      const url = `https://huggingface.co/${m.repo}`;
-      srcEl.textContent = m.repo;
-      srcEl.href = url;
-      srcEl.title = url;
-    }
-    const cacheEl = $('am-gen-model-cache');
-    const warmBtn = $('am-gen-model-warmup');
-    const cs = m._cacheStatus;
-    if (!cs) {
-      if (cacheEl) cacheEl.textContent = 'checking…';
-      if (warmBtn) warmBtn.disabled = true;
-    } else if (cs.cached) {
-      const mb = (cs.totalBytes / 1024 / 1024).toFixed(0);
-      if (cacheEl) {
-        cacheEl.textContent = `cached (${mb}MB on disk in browser cache)`;
-        cacheEl.classList.add('am-gen-model-info__cache--ok');
-        cacheEl.classList.remove('am-gen-model-info__cache--missing');
-      }
-      if (warmBtn) {
-        warmBtn.disabled = false;
-        warmBtn.textContent = 'Re-load';
-        warmBtn.title = 'Force a reload of the model into memory';
-      }
-    } else {
-      const partial = cs.totalBytes > 0
-        ? ` (partial: ${(cs.totalBytes / 1024 / 1024).toFixed(0)}MB present, missing ${cs.missingRequired.join(', ')})`
-        : '';
-      if (cacheEl) {
-        cacheEl.textContent = `not cached — ~${m.approxSizeMB}MB will download on first use${partial}`;
-        cacheEl.classList.add('am-gen-model-info__cache--missing');
-        cacheEl.classList.remove('am-gen-model-info__cache--ok');
-      }
-      if (warmBtn) {
-        warmBtn.disabled = false;
-        warmBtn.textContent = 'Pre-download';
-        warmBtn.title = `Download ~${m.approxSizeMB}MB and load the model now (otherwise happens on first --explain)`;
-      }
-    }
-  }
-
-  // Honest status line under the device dropdown:
-  //   - which model is in use
-  //   - whether the runtime can actually do WebGPU today
-  //   - what the chosen device will resolve to
-  function renderDeviceStatus() {
-    const el = $('am-device-status');
-    if (!el) return;
-    const s = state.embedderStatus;
-    if (!s) { el.textContent = 'Embedder status unknown.'; return; }
-    const model = s.modelId || 'embedder';
-    const dev = state.pendingDevice || 'cpu';
-    if (dev === 'cpu') {
-      el.textContent = `${model} on CPU (always available).`;
-      el.classList.remove('am-device-status--warn');
-    } else if (s.webgpuRuntimeAvailable) {
-      el.textContent = `${model} will use ${dev === 'auto' ? 'WebGPU when possible' : 'WebGPU'}.`;
-      el.classList.remove('am-device-status--warn');
-    } else {
-      el.textContent = `${model}: WebGPU not available in current build — will fall back to CPU.`;
-      el.classList.add('am-device-status--warn');
-    }
-  }
+  // Embedder status, generation-model registry, and device-status
+  // rendering all moved into <settings-drawer> (renderer/components/
+  // settings-drawer.js). The component subscribes to the store and
+  // calls actions.loadEmbedderStatus / loadGenerationModels itself.
 
   function workerById(id) { return state.workers.find((w) => w.id === id) || null; }
 
@@ -289,81 +158,6 @@ function init() {
   // dead and goes away.
   function renderWorkers() {
     store.bump();
-  }
-
-  function renderSettings() {
-    const detail = $('am-workers-detail');
-    if (!detail) return;
-    detail.innerHTML = '';
-    if (state.workers.length === 0) {
-      const p = document.createElement('div');
-      p.style.cssText = 'color: var(--text-faint); font-size: 11px; padding: 6px 0;';
-      p.textContent = 'No workers. Spawn one from the empty state.';
-      detail.appendChild(p);
-      return;
-    }
-    for (const w of state.workers) {
-      const row = document.createElement('div');
-      row.className = 'am-worker-row';
-
-      const nameWrap = document.createElement('div');
-      nameWrap.className = 'am-worker-row__name';
-      const nameInput = document.createElement('input');
-      nameInput.type = 'text';
-      nameInput.value = w.name;
-      nameInput.title = `${w.kind} · rename`;
-      nameInput.addEventListener('change', async () => {
-        const newName = (nameInput.value || '').trim();
-        if (!newName || newName === w.name) { nameInput.value = w.name; return; }
-        const r = await transport.workers.rename({ id: w.id, name: newName });
-        if (!r.ok) { pushBubble('system', `rename failed: ${r.error}`); nameInput.value = w.name; }
-        await refreshAll();
-      });
-      nameWrap.appendChild(nameInput);
-      row.appendChild(nameWrap);
-
-      const meta = document.createElement('span');
-      meta.style.cssText = 'font-size: 10px; color: var(--text-faint); flex: 0 0 auto;';
-      meta.textContent = w.kind;
-      meta.title = w.cwd ? `${w.kind} · ${w.cwd}` : w.kind;
-      row.appendChild(meta);
-
-      if (w.cwd) {
-        const cwdLine = document.createElement('span');
-        cwdLine.style.cssText = 'font-size: 10px; color: var(--text-faint); font-family: \'Cascadia Code\', monospace; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto;';
-        cwdLine.textContent = shortenPath(w.cwd);
-        cwdLine.title = w.cwd;
-        row.appendChild(cwdLine);
-      }
-
-      const mirrorOn = (typeof w.memoryMirror === 'boolean') ? w.memoryMirror : state.settings.defaultMirror;
-      const mirrorLabel = document.createElement('label');
-      mirrorLabel.style.cssText = 'display: inline-flex; gap: 4px; align-items: center; font-size: 11px; color: var(--text-dim); cursor: pointer;';
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.checked = mirrorOn;
-      cb.addEventListener('change', async () => {
-        await transport.chat.setWorkerMirror(w.id, cb.checked);
-        await refreshAll();
-      });
-      mirrorLabel.appendChild(cb);
-      const mirrorText = document.createElement('span');
-      mirrorText.textContent = 'save';
-      mirrorLabel.appendChild(mirrorText);
-      row.appendChild(mirrorLabel);
-
-      const closeBtn = document.createElement('button');
-      closeBtn.className = 'cmd-btn cmd-btn--small';
-      closeBtn.textContent = 'Close';
-      closeBtn.addEventListener('click', async () => {
-        await transport.workers.close({ id: w.id });
-        state.toolsByWorker.delete(w.id);
-        await refreshAll();
-      });
-      row.appendChild(closeBtn);
-
-      detail.appendChild(row);
-    }
   }
 
   // <worker-chips> updates state.currentTarget through the store on
@@ -1419,121 +1213,18 @@ function init() {
     // store); here we just refocus the compose input so the user
     // can immediately type at the chosen worker.
     $('am-workers')?.addEventListener('select', () => inputEl()?.focus());
-    // Settings-drawer cwd picker — same handler, different button.
-    // Both write to state.pendingCwd; renderEmptyCwd() syncs both labels.
-    $('am-spawn-cwd')?.addEventListener('click', () => pickCwd());
-
-    // Device picker for Semantic workers.
-    const deviceSelect = $('am-spawn-device');
-    if (deviceSelect) {
-      deviceSelect.value = state.pendingDevice || 'cpu';
-      deviceSelect.addEventListener('change', () => {
-        state.pendingDevice = deviceSelect.value;
-        renderDeviceStatus();
-      });
-    }
-    // Open DevTools on the hidden embedder host so the user can
-    // verify WebGPU directly (chrome://gpu, console probes,
-    // performance timeline).
-    $('am-device-devtools')?.addEventListener('click', async () => {
-      try { await transport.models.embedderDevTools(); }
-      catch (err) { pushBubble('system', `devtools failed: ${err.message}`); }
+    // <settings-drawer> emits its own events for everything that's not
+    // a pure store-mutation. spawn → spawnWorker(kind), system-message
+    // → pushBubble('system', ...). Persisted settings (chat side, tool
+    // details, auto-context, mirror toggles, generation model, default
+    // explain, semantic device) all route through actions/store directly.
+    settingsEl()?.addEventListener('spawn', (/** @type {any} */ ev) => {
+      const kind = ev?.detail?.kind;
+      if (kind) spawnWorker(kind);
     });
-    // Benchmark the chosen device. Posts the result as a system
-    // bubble so the user has a permanent record next to their
-    // session.
-    $('am-device-benchmark')?.addEventListener('click', async () => {
-      const btn = $('am-device-benchmark');
-      const device = state.pendingDevice || 'cpu';
-      if (btn) { btn.disabled = true; btn.textContent = `Benchmarking ${device}…`; }
-      try {
-        const r = await transport.models.embedderBenchmark({ device, iterations: 20 });
-        if (!r.ok) throw new Error(r.error || 'benchmark failed');
-        pushBubble('system',
-          `Benchmark (${device}, ${r.iterations} embeds): ` +
-          `median ${r.medianMs}ms · mean ${r.meanMs}ms · min ${r.minMs}ms · max ${r.maxMs}ms`);
-      } catch (err) {
-        pushBubble('system', `Benchmark failed: ${err.message}`);
-      } finally {
-        if (btn) { btn.disabled = false; btn.textContent = 'Benchmark'; }
-      }
-    });
-    loadEmbedderStatus();
-
-    // Generation model picker + explain-by-default toggle.
-    const genSelect = $('am-spawn-gen-model');
-    if (genSelect) {
-      genSelect.addEventListener('change', () => {
-        state.pendingGenerationModelId = genSelect.value || '';
-        renderGenerationModelInfo();
-      });
-    }
-    const explainCheckbox = $('am-default-explain');
-    if (explainCheckbox) {
-      explainCheckbox.checked = !!state.pendingDefaultExplain;
-      explainCheckbox.addEventListener('change', () => {
-        state.pendingDefaultExplain = !!explainCheckbox.checked;
-      });
-    }
-    // Pre-download button: kicks off the model load (and any
-    // missing-files download) on the user's chosen device. Surfaces
-    // success / failure as system bubbles. The button shows
-    // "Downloading…" while the bridge is busy — no progress bar today
-    // (transformers.js v4 doesn't expose download progress reliably
-    // through the high-level pipeline API; could add a fetch
-    // interceptor later if it matters).
-    $('am-gen-model-warmup')?.addEventListener('click', async () => {
-      const id = state.pendingGenerationModelId;
-      if (!id) return;
-      const m = (state.generationModels || []).find((x) => x.id === id);
-      if (!m) return;
-      const btn = $('am-gen-model-warmup');
-      const orig = btn?.textContent;
-      if (btn) { btn.disabled = true; btn.textContent = `Downloading ${m.name}…`; }
-      const wasCached = !!m._cacheStatus?.cached;
-      const t0 = Date.now();
-      try {
-        const r = await transport.models.warmup(id, state.pendingDevice || undefined);
-        if (!r.ok) throw new Error(r.error || 'warmup failed');
-        const secs = ((Date.now() - t0) / 1000).toFixed(1);
-        const where = r.resolvedDevice?.device || 'unknown';
-        pushBubble('system',
-          `Model "${m.name}" ready on ${where} in ${secs}s` +
-          `${wasCached ? ' (was cached)' : ' (downloaded + loaded)'}.`);
-        // Re-probe so the panel reflects the newly-cached state.
-        try {
-          const cs = await transport.models.cacheStatus(id);
-          if (cs.ok) m._cacheStatus = cs;
-          await refreshGenerationModelStatuses();
-        } catch { /* leave stale state */ }
-        renderGenerationModelInfo();
-      } catch (err) {
-        pushBubble('system', `Pre-download of "${m.name}" failed: ${err.message}`);
-      } finally {
-        if (btn) { btn.disabled = false; btn.textContent = orig; }
-        renderGenerationModelInfo();
-      }
-    });
-    $('am-gen-model-recheck')?.addEventListener('click', async () => {
-      await refreshGenerationModelStatuses();
-      renderGenerationModelInfo();
-    });
-    loadGenerationModels();
-
-    // Settings-drawer spawn buttons — the way to add workers once
-    // the empty state is gone.
-    $('am-spawn-claude')?.addEventListener('click', async () => {
-      // Pick a cwd first if the user wants — same picker as empty state.
-      // For now, reuse the persisted lastCwd / pendingCwd silently. Users
-      // who want a different folder can explicitly pick before spawning
-      // when the picker UX matures.
-      await spawnWorker('claude');
-    });
-    $('am-spawn-shell')?.addEventListener('click', async () => {
-      await spawnWorker('shell');
-    });
-    $('am-spawn-semantic')?.addEventListener('click', async () => {
-      await spawnWorker('semantic');
+    settingsEl()?.addEventListener('system-message', (/** @type {any} */ ev) => {
+      const text = ev?.detail?.text;
+      if (text) pushBubble('system', text);
     });
 
     $('am-send')?.addEventListener('click', () => send().catch(() => {}));
@@ -1596,81 +1287,30 @@ function init() {
       });
     }
 
-    const defMirror = $('am-default-mirror');
-    if (defMirror) {
-      defMirror.addEventListener('change', async () => {
-        await transport.chat.setDefaultMirror(defMirror.checked);
-        const r = await transport.chat.getSettings();
-        state.settings.defaultMirror = r.defaultMirror;
-        await refreshAll();
-      });
-    }
-    transport.chat.getSettings().then((r) => {
-      state.settings.defaultMirror = r.defaultMirror;
-      if (defMirror) defMirror.checked = r.defaultMirror;
-    }).catch(() => {});
+    // All persisted settings (mirror toggles, auto-context, chat side,
+    // tool details, semantic device, generation model, default explain)
+    // are owned by <settings-drawer>. The component hydrates from
+    // transport.settings on connectedCallback and writes back via the
+    // store + actions.
 
-    // Auto-context: when on, the WorkerManager runs a memory search
-    // before each send and prepends a context preamble. Default on.
-    const autoCtx = $('am-auto-context');
-    transport.settings.get('autoContext', true).then((r) => {
-      const on = r.value !== false;
-      if (autoCtx) autoCtx.checked = on;
-    }).catch(() => {});
-    if (autoCtx) {
-      autoCtx.addEventListener('change', async () => {
-        await transport.settings.set('autoContext', autoCtx.checked);
-      });
-    }
-
-    // Chat-side preference. Persists across launches; flips the
-    // app-row flex direction so the chat docks on the chosen side.
-    const applyChatSide = (side) => {
-      const row = document.getElementById('app-row');
-      if (!row) return;
-      const isRight = side === 'right';
-      row.classList.toggle('app-row--chat-right', isRight);
-      $('am-chat-side-left')?.classList.toggle('cmd-btn--active', !isRight);
-      $('am-chat-side-right')?.classList.toggle('cmd-btn--active', isRight);
-    };
-    transport.settings.get('chatSide', 'left').then((r) => applyChatSide(r.value || 'left')).catch(() => {});
-    $('am-chat-side-left')?.addEventListener('click', async () => {
-      applyChatSide('left');
-      await transport.settings.set('chatSide', 'left');
-    });
-    $('am-chat-side-right')?.addEventListener('click', async () => {
-      applyChatSide('right');
-      await transport.settings.set('chatSide', 'right');
-    });
-
-    // Tool details preference: 'expanded' | 'collapsed' (default) |
-    // 'hidden'. Cached in state.settings.toolDetails so the
-    // renderer doesn't need to await on every card.
-    async function refreshToolDetails() {
+    // Test hook: tests change the persisted toolDetails setting via
+    // transport.settings.set() then call this to sync the renderer's
+    // cache without waiting for next init. We re-read the setting and
+    // mirror it into the store so chat-bubble / tool-card render
+    // with the right mode.
+    /** @type {any} */ (window).__amTestRefreshToolDetails = async () => {
       try {
         const r = await transport.settings.get('toolDetails', 'collapsed');
         const v = r.value || 'collapsed';
-        state.settings.toolDetails = (v === 'expanded' || v === 'hidden') ? v : 'collapsed';
-        // Reflect in the segmented control if present.
-        for (const mode of ['expanded', 'collapsed', 'hidden']) {
-          $(`am-tool-details-${mode}`)?.classList.toggle('cmd-btn--active', state.settings.toolDetails === mode);
-        }
+        const td = (v === 'expanded' || v === 'hidden') ? v : 'collapsed';
+        const ns = store.get();
+        store.update({ settings: { ...ns.settings, toolDetails: td } });
       } catch { /* ignore */ }
-    }
-    refreshToolDetails();
-    // Test hook: tests change the persisted setting then call this
-    // to sync the in-renderer cache without waiting for next init.
-    /** @type {any} */ (window).__amTestRefreshToolDetails = refreshToolDetails;
+    };
     // Test hook: tests close workers via transport directly, then call
     // this to make the renderer's worker list reflect main-process state
     // without waiting for the 3-second auto-refresh tick.
     /** @type {any} */ (window).__amTestRefreshAll = refreshAll;
-    for (const mode of ['expanded', 'collapsed', 'hidden']) {
-      $(`am-tool-details-${mode}`)?.addEventListener('click', async () => {
-        await transport.settings.set('toolDetails', mode);
-        await refreshToolDetails();
-      });
-    }
 
     // Named handlers so the test hook (window.__amTestFireEvent)
     // can synthesize events without going through real IPC.
