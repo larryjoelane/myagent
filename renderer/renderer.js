@@ -11,6 +11,7 @@ import '@xterm/xterm/css/xterm.css';
 import { PaneManager } from './shell.js';
 import './agentManager.js';
 import './components/app-root.js';
+import './components/empty-state.js';
 
 const transport = window.transport;
 

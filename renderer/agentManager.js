@@ -5,6 +5,27 @@
 // The chat input routes to the currently-selected worker, or by
 // @-mention to a specific one. Responses stream in via chat:* IPC
 // events broadcast from main.js.
+//
+// State that's shared with new Lit components (worker list, settings,
+// pendingCwd, etc.) lives in renderer/state/store.js. After mutating
+// a store field this file calls store.bump() so component subscribers
+// re-render. State that's purely chat-surface-internal (openBubbles,
+// optimistic-user, slash popup index, pending context badges) stays
+// here as module-locals — no component needs it today.
+
+import { store } from './state/store.js';
+
+// Chat-surface-private state. Lives outside the store because no
+// other component reads it.
+//
+//   openBubbles            agentId → { el, bodyEl, typingEl, hasContent, lastTextNode }
+//   pendingUserOptimistic  optimistic { agentId, text } pre-chat:user
+//   slashSelected          highlighted index in the slash popup
+//   pendingContextBadges   agentId → context-used msg, awaiting its user bubble
+const openBubbles = new Map();
+let pendingUserOptimistic = null;
+let slashSelected = 0;
+const pendingContextBadges = new Map();
 
 function init() {
   const transport = window.transport;
@@ -12,29 +33,11 @@ function init() {
 
   const $ = (id) => document.getElementById(id);
 
-  const state = {
-    workers: [],          // [{id, name, kind, cwd, memoryMirror}]
-    currentTarget: null,  // worker id (or "shell" name)
-    openBubbles: new Map(),
-    pendingUserOptimistic: null,
-    settings: { defaultMirror: true, toolDetails: 'collapsed' },
-    thinkingWorkers: new Set(),
-    pendingCwd: null,     // user's chosen cwd for the next spawn
-    pendingDevice: 'cpu', // device for the next Semantic worker spawn
-    pendingGenerationModelId: '',  // '' = no explain
-    pendingDefaultExplain: false,  // global toggle for --explain on by default
-    generationModels: [],          // cached registry rows + cache-status snapshots
-    // Tool list per worker id, fetched on spawn for kinds that
-    // expose a toolkit (semantic). Drives slash-command autocomplete.
-    // The toolkit is currently immutable per spawn — if that changes,
-    // refetch on a `worker:tools-changed` event.
-    toolsByWorker: new Map(),
-    // Selected index in the slash popup, for keyboard navigation.
-    slashSelected: 0,
-    // Embedder status (filled on settings open). Shape:
-    //   { modelId, supportedDevices, webgpuRuntimeAvailable, ... }
-    embedderStatus: null,
-  };
+  // Shared state lives in the store. Pull the live object so existing
+  // reads (state.workers, state.settings.toolDetails, ...) keep working;
+  // writes mirror through to the store, and we call store.bump() after
+  // each one so components subscribing to the store re-render.
+  const state = store.get();
 
   function rootEl() { return $('agent-manager'); }
   function chatEl() { return $('am-chat'); }
@@ -82,31 +85,28 @@ function init() {
     return '…/' + parts.slice(-2).join('/');
   }
 
-  // Sync the cwd label on every spawn entry point. There are two
-  // pickers in the UI:
-  //   - empty-state picker (shown before the first worker exists)
-  //   - settings-drawer picker (shown once workers are attached so
-  //     users don't have to close everything just to change cwd)
-  // Both write to the same `state.pendingCwd`, so both labels need
-  // to reflect the current value after every change.
+  // Hydrate state.pendingCwd from the persisted lastCwd, then update the
+  // settings-drawer cwd label. The empty-state component renders its own
+  // cwd label from the store — no DOM update needed there. We call
+  // store.bump() after the hydration so the component re-renders.
   async function renderEmptyCwd() {
     if (!state.pendingCwd) {
       try {
         const r = await transport.settings.get('lastCwd');
-        state.pendingCwd = r.value || null;
+        if (r.value) {
+          state.pendingCwd = r.value;
+          store.bump();
+        }
       } catch { /* ignore */ }
     }
     const label = state.pendingCwd ? shortenPath(state.pendingCwd) : '(repo root)';
     const tooltip = state.pendingCwd || '(repo root)';
-    for (const [textId, btnId] of [
-      ['am-empty-cwd-text', 'am-empty-cwd'],
-      ['am-spawn-cwd-text', 'am-spawn-cwd'],
-    ]) {
-      const t = $(textId);
-      if (t) t.textContent = label;
-      const b = $(btnId);
-      if (b) b.title = tooltip;
-    }
+    // Settings-drawer picker (still legacy DOM). The empty-state side
+    // is owned by <empty-state>, which reads pendingCwd from the store.
+    const t = $('am-spawn-cwd-text');
+    if (t) t.textContent = label;
+    const b = $('am-spawn-cwd');
+    if (b) b.title = tooltip;
   }
 
   async function pickCwd() {
@@ -114,6 +114,7 @@ function init() {
       const r = await transport.dialog.chooseDirectory({ defaultPath: state.pendingCwd });
       if (r.canceled || !r.path) return;
       state.pendingCwd = r.path;
+      store.bump();
       await renderEmptyCwd();
     } catch { /* ignore */ }
   }
@@ -271,7 +272,13 @@ function init() {
     // gets out of the way and the chat takes over.
     const hasChatContent = chat.querySelector('.bubble') != null;
     const showEmpty = !hasWorkers && !hasChatContent;
-    empty.classList.toggle('agent-manager__empty--hidden', !showEmpty);
+    // <empty-state> has a reflecting `hidden` boolean property (its
+    // styles include :host([hidden]) { display: none; }). Also keep
+    // the legacy class for back-compat with tests that look for it.
+    if (empty) {
+      /** @type {any} */ (empty).hidden = !showEmpty;
+      empty.classList.toggle('agent-manager__empty--hidden', !showEmpty);
+    }
     chat.classList.toggle('agent-manager__chat--hidden', showEmpty);
   }
 
@@ -482,8 +489,7 @@ function init() {
     if (!target) {
       // Bubble hasn't been pushed yet — stash and try again on next
       // chat:user. Cheap: keep at most one pending badge per agent.
-      state.pendingContextBadges = state.pendingContextBadges || new Map();
-      state.pendingContextBadges.set(agentId, msg);
+      pendingContextBadges.set(agentId, msg);
       return;
     }
     renderContextBadge(target, hits);
@@ -786,11 +792,11 @@ function init() {
   }
 
   function appendToOpenBubble(agentId, text) {
-    let entry = state.openBubbles.get(agentId);
+    let entry = openBubbles.get(agentId);
     if (!entry) {
       const el = pushBubble('assistant', '', agentId);
       entry = { el, bodyEl: el._bodyEl, typingEl: el._typingEl, hasContent: false };
-      state.openBubbles.set(agentId, entry);
+      openBubbles.set(agentId, entry);
     }
     if (!entry.hasContent) {
       if (entry.typingEl && entry.typingEl.parentNode) {
@@ -824,11 +830,11 @@ function init() {
   // result section. Each card is keyed by tool_use_id so the
   // matching tool_result can find its sibling card.
   function ensureOpenAssistantBubble(agentId) {
-    let entry = state.openBubbles.get(agentId);
+    let entry = openBubbles.get(agentId);
     if (!entry) {
       const el = pushBubble('assistant', '', agentId);
       entry = { el, bodyEl: el._bodyEl, typingEl: el._typingEl, hasContent: false };
-      state.openBubbles.set(agentId, entry);
+      openBubbles.set(agentId, entry);
     }
     // Tool cards are real content — clear typing dots if still showing.
     if (!entry.hasContent) {
@@ -994,7 +1000,7 @@ function init() {
    // tokens append (uses cumulativeText when present so missing
    // tokens don't drift).
   function appendToExplain(msg) {
-    const bubble = state.openBubbles.get(msg.agentId);
+    const bubble = openBubbles.get(msg.agentId);
     if (!bubble) return;
     const cards = bubble.bodyEl.querySelectorAll('.semantic-card');
     const card = cards[cards.length - 1];
@@ -1114,7 +1120,7 @@ function init() {
   }
 
   function closeOpenBubble(agentId) {
-    const entry = state.openBubbles.get(agentId);
+    const entry = openBubbles.get(agentId);
     if (!entry) return;
     entry.el.classList.add('bubble--done');
     if (!entry.hasContent && entry.typingEl) {
@@ -1122,7 +1128,7 @@ function init() {
       entry.bodyEl.textContent = '(no response)';
       entry.bodyEl.style.color = 'var(--text-faint)';
     }
-    state.openBubbles.delete(agentId);
+    openBubbles.delete(agentId);
   }
 
   // --- Sending -----------------------------------------------------------
@@ -1240,7 +1246,7 @@ function init() {
     state.thinkingWorkers.add(target.id);
     renderWorkers();
 
-    state.pendingUserOptimistic = { agentId: target.id, text };
+    pendingUserOptimistic = { agentId: target.id, text };
     pushBubble('user', text, target.id);
     input.value = '';
     // Reset to the CSS-defined min height; otherwise the inline
@@ -1248,7 +1254,7 @@ function init() {
     input.style.height = '';
 
     const placeholder = pushBubble('assistant', '', target.id);
-    state.openBubbles.set(target.id, {
+    openBubbles.set(target.id, {
       el: placeholder,
       bodyEl: placeholder._bodyEl,
       typingEl: placeholder._typingEl,
@@ -1298,7 +1304,7 @@ function init() {
 
   function hidePopup(popup) {
     popup.classList.add('mention-popup--hidden');
-    state.slashSelected = 0;
+    slashSelected = 0;
   }
 
   function renderSlashPopup(input, popup, text) {
@@ -1330,13 +1336,13 @@ function init() {
     }
 
     // Clamp the selection index to the matches we just rebuilt.
-    if (state.slashSelected >= matches.length) state.slashSelected = matches.length - 1;
-    if (state.slashSelected < 0) state.slashSelected = 0;
+    if (slashSelected >= matches.length) slashSelected = matches.length - 1;
+    if (slashSelected < 0) slashSelected = 0;
 
     matches.forEach((t, i) => {
       const item = document.createElement('div');
       item.className = 'mention-item mention-item--slash';
-      if (i === state.slashSelected) item.classList.add('mention-item--active');
+      if (i === slashSelected) item.classList.add('mention-item--active');
       const head = document.createElement('div');
       head.className = 'mention-item__head';
       head.textContent = `/${t.id}`;
@@ -1413,10 +1419,12 @@ function init() {
 
     $('am-settings-toggle')?.addEventListener('click', () => toggleSettings());
 
-    $('am-empty-spawn-claude')?.addEventListener('click', () => spawnWorker('claude'));
-    $('am-empty-spawn-shell')?.addEventListener('click', () => spawnWorker('shell'));
-    $('am-empty-spawn-semantic')?.addEventListener('click', () => spawnWorker('semantic'));
-    $('am-empty-cwd')?.addEventListener('click', () => pickCwd());
+    // <empty-state> custom element dispatches a 'spawn' event with
+    // detail.kind. Its cwd picker is wired internally to actions.pickCwd.
+    $('am-empty-state')?.addEventListener('spawn', (/** @type {any} */ ev) => {
+      const kind = ev?.detail?.kind;
+      if (kind) spawnWorker(kind);
+    });
     // Settings-drawer cwd picker — same handler, different button.
     // Both write to state.pendingCwd; renderEmptyCwd() syncs both labels.
     $('am-spawn-cwd')?.addEventListener('click', () => pickCwd());
@@ -1555,13 +1563,13 @@ function init() {
           if (items.length > 0 && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
             e.preventDefault();
             const dir = e.key === 'ArrowDown' ? 1 : -1;
-            state.slashSelected = (state.slashSelected + dir + items.length) % items.length;
+            slashSelected = (slashSelected + dir + items.length) % items.length;
             updateInputPopup();
             return;
           }
           if (items.length > 0 && (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey))) {
             e.preventDefault();
-            const sel = items[state.slashSelected];
+            const sel = items[slashSelected];
             const idx = Number(sel?.dataset.index || 0);
             // Re-derive the entries the same way renderSlashPopup does.
             const tools = state.toolsByWorker.get(state.currentTarget) || [];
@@ -1586,7 +1594,7 @@ function init() {
         autoGrow(input);
         // Reset selection when the input changes — we can't carry an
         // index across a different filter result set sensibly.
-        state.slashSelected = 0;
+        slashSelected = 0;
         updateInputPopup();
       });
       input.addEventListener('blur', () => {
@@ -1670,18 +1678,18 @@ function init() {
     // can synthesize events without going through real IPC.
     const handlers = {
       'chat:user': (msg) => {
-        const opt = state.pendingUserOptimistic;
+        const opt = pendingUserOptimistic;
         if (opt && opt.agentId === msg.agentId && opt.text === msg.text) {
-          state.pendingUserOptimistic = null;
+          pendingUserOptimistic = null;
         } else {
           pushBubble('user', msg.text, msg.agentId);
         }
         // Flush any pending context badge that arrived BEFORE the
         // user bubble was findable. Common in production where the
         // manager fires chat:context-used and chat:user back-to-back.
-        if (state.pendingContextBadges && state.pendingContextBadges.has(msg.agentId)) {
-          const pending = state.pendingContextBadges.get(msg.agentId);
-          state.pendingContextBadges.delete(msg.agentId);
+        if (pendingContextBadges && pendingContextBadges.has(msg.agentId)) {
+          const pending = pendingContextBadges.get(msg.agentId);
+          pendingContextBadges.delete(msg.agentId);
           attachContextBadge(pending);
         }
       },

@@ -132,21 +132,24 @@ export class EmptyState extends LitElement {
     const cwd = store.get().pendingCwd;
     const cwdLabel = shortenCwd(cwd);
     const cwdTooltip = cwd || '(repo root)';
+    // IDs preserved (am-empty-spawn-claude, etc.) so existing Playwright
+    // tests can locate them via shadow-piercing selectors:
+    //   win.locator('empty-state').locator('#am-empty-spawn-claude')
     return html`
       <h2 class="title">Drive Agentic workers from here</h2>
       <p class="body">
         Spawn a worker and send prompts from this pane. Responses stream back here automatically.
       </p>
       <div class="actions">
-        <button class="cmd-btn cmd-btn--primary" type="button"
+        <button id="am-empty-spawn-claude" class="cmd-btn cmd-btn--primary" type="button"
                 @click=${() => this._emitSpawn('claude')}>
           + Spawn Claude worker
         </button>
-        <button class="cmd-btn" type="button"
+        <button id="am-empty-spawn-shell" class="cmd-btn" type="button"
                 @click=${() => this._emitSpawn('shell')}>
           + Open shell
         </button>
-        <button class="cmd-btn" type="button"
+        <button id="am-empty-spawn-semantic" class="cmd-btn" type="button"
                 title="Spawn a semantic-routing agent (in-process, no LLM)"
                 @click=${() => this._emitSpawn('semantic')}>
           + Spawn Semantic worker
@@ -154,10 +157,10 @@ export class EmptyState extends LitElement {
       </div>
       <div class="cwd">
         <span class="cwd__label">Working directory:</span>
-        <button class="cwd__button" type="button"
+        <button id="am-empty-cwd" class="cwd__button" type="button"
                 title=${cwdTooltip}
                 @click=${pickCwd}>
-          ${cwdLabel}
+          <span id="am-empty-cwd-text">${cwdLabel}</span>
         </button>
       </div>
     `;

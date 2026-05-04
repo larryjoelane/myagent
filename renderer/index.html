@@ -148,33 +148,13 @@
       <!-- Always-visible worker chip strip (only shown when workers exist). -->
       <div class="agent-manager__workers" id="am-workers" aria-label="Attached workers"></div>
 
-      <!-- Empty state — shown when no workers exist. Spawn any of the
-           supported worker kinds. -->
-      <div id="am-empty-state" class="agent-manager__empty">
-        <h2 class="agent-manager__empty-title">Drive Agentic workers from here</h2>
-        <p class="agent-manager__empty-body">
-          Spawn a worker and send prompts from this pane. Responses stream back here automatically.
-        </p>
-        <div class="agent-manager__empty-actions">
-          <button id="am-empty-spawn-claude" class="cmd-btn cmd-btn--primary" type="button">
-            + Spawn Claude worker
-          </button>
-          <button id="am-empty-spawn-shell" class="cmd-btn" type="button">
-            + Open shell
-          </button>
-          <button id="am-empty-spawn-semantic" class="cmd-btn" type="button"
-                  title="Spawn a semantic-routing agent (in-process, no LLM)">
-            + Spawn Semantic worker
-          </button>
-        </div>
-        <div class="agent-manager__empty-cwd">
-          <span class="agent-manager__empty-cwd-label">Working directory:</span>
-          <button id="am-empty-cwd" class="agent-manager__empty-cwd-button" type="button"
-                  title="Click to choose a different folder">
-            <span id="am-empty-cwd-text">…</span>
-          </button>
-        </div>
-      </div>
+      <!-- Empty state — shown when no workers exist. The component
+           lives in renderer/components/empty-state.js. It reads
+           pendingCwd from the store and dispatches a 'spawn' event
+           with detail.kind when the user clicks any spawn button.
+           agentManager.js attaches one listener and routes through
+           spawnWorker(kind). -->
+      <empty-state id="am-empty-state"></empty-state>
 
       <div class="agent-manager__chat" id="am-chat" role="log"></div>
 
