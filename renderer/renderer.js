@@ -18,6 +18,7 @@ import './components/compose-input.js';
 import './components/memory-bubble.js';
 import './components/chat-log.js';
 import './components/topbar-commands.js';
+import './components/agent-manager.js';
 
 const transport = window.transport;
 

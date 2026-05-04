@@ -17,22 +17,20 @@
       <topbar-commands close-pane-disabled></topbar-commands>
     </header>
     <div id="app-row">
-    <aside id="agent-manager" class="agent-manager" aria-label="Chat">
-      <div class="agent-manager__header">
-        <span class="agent-manager__title">Chat</span>
-        <button id="am-settings-toggle" class="agent-manager__icon-btn" type="button"
-                title="Settings (memory mirror, workers)" aria-label="Settings">⚙</button>
-        <button id="agent-manager-close" class="agent-manager__icon-btn" type="button"
-                title="Hide chat" aria-label="Close">×</button>
-      </div>
+    <!-- Agent-manager shell — wraps the chat surface. Component owns
+         the header (title, settings ⚙, close ×), the visibility class
+         (`agent-manager--hidden` driven by .open), and toggling the
+         settings-drawer. agentManager.js sets .open and listens to
+         'close' / 'settings-toggled' events.
 
-      <!-- Settings drawer: collapsible, hidden by default. Houses the
-           mirror toggle and the worker management section. -->
+         Light DOM: the host element keeps id="agent-manager" so
+         e2e tests querying #agent-manager continue to work. -->
+    <agent-manager id="agent-manager">
       <!-- Settings drawer: collapsible, hidden by default. The
            component owns all knobs (mirror toggles, chat side, tool
            details, workers section, semantic device, explain model).
-           Visibility is controlled by the [open] attribute — toggled
-           by the gear-icon button via agentManager.js. The legacy
+           Visibility is controlled by the [open] attribute — set by
+           the agent-manager shell when ⚙ is clicked. The legacy
            --hidden class is kept on the host for back-compat with
            tests that check classList.contains(...). -->
       <settings-drawer id="am-settings" class="agent-manager__settings--hidden"></settings-drawer>
@@ -66,7 +64,7 @@
            appendValue, focus, clear) is used by send() and by memory-
            bubble click-to-insert. -->
       <compose-input id="am-compose"></compose-input>
-    </aside>
+    </agent-manager>
     <div id="split-wrap" class="split-wrap--hidden">
     <div id="split">
       <!-- Main pane is retained for back-compat with the existing

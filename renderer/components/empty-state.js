@@ -4,10 +4,17 @@
 // any worker is attached (or any chat bubble has appeared, which
 // includes things like @memory results).
 //
-// Subscribes to the store so visibility re-evaluates as workers come
-// and go. Spawn click dispatches a `spawn` CustomEvent so the parent
-// (app-root) can route through actions.spawnWorker — keeps the
-// component free of IPC concerns.
+// Owns its own visibility:
+//   - Subscribes to the store so the worker count drives re-evaluation.
+//   - Listens for the 'content-changed' CustomEvent that <chat-log>
+//     dispatches whenever its children mutate.
+//   - When empty-state is visible, the chat surface is hidden via the
+//     legacy .agent-manager__chat--hidden class on <chat-log>. This
+//     used to be agentManager.js#renderEmptyState; the component owns
+//     it now since visibility is fundamentally an empty-state concern.
+//
+// Spawn click dispatches a `spawn` CustomEvent so the parent routes
+// through actions.spawnWorker — keeps the component free of IPC.
 
 import { LitElement, html, css } from 'lit';
 import { store } from '../state/store.js';
@@ -109,16 +116,49 @@ export class EmptyState extends LitElement {
     super();
     /** @type {(() => void) | null} */
     this._unsubscribe = null;
+    this._hasChatContent = false;
+    this._onContentChanged = (/** @type {any} */ ev) => {
+      const next = !!(ev?.detail?.hasContent);
+      if (next === this._hasChatContent) return;
+      this._hasChatContent = next;
+      this._refreshVisibility();
+    };
   }
 
   connectedCallback() {
     super.connectedCallback();
-    this._unsubscribe = store.subscribe(() => this.requestUpdate());
+    this._unsubscribe = store.subscribe(() => {
+      this.requestUpdate();
+      this._refreshVisibility();
+    });
+    // <chat-log> bubbles a content-changed event on every mutation.
+    // Listening at document level so the wiring works regardless of
+    // who the parent ends up being (today: agent-manager <aside>;
+    // tomorrow: <agent-manager> shell component).
+    document.addEventListener('content-changed', this._onContentChanged);
+    // Initial sync: chat-log may already exist with content.
+    const chat = document.getElementById('am-chat');
+    this._hasChatContent = !!(chat && /** @type {any} */ (chat).hasBubbles?.());
+    this._refreshVisibility();
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     this._unsubscribe?.();
+    document.removeEventListener('content-changed', this._onContentChanged);
+  }
+
+  // Visibility = no workers AND chat is empty. Drives the host's
+  // [hidden] property + the legacy --hidden class on both empty-state
+  // and chat-log (the chat surface is hidden whenever empty-state is
+  // shown — used to be agentManager.js#renderEmptyState).
+  _refreshVisibility() {
+    const hasWorkers = store.get().workers.length > 0;
+    const showEmpty = !hasWorkers && !this._hasChatContent;
+    this.hidden = !showEmpty;
+    this.classList.toggle('agent-manager__empty--hidden', !showEmpty);
+    const chat = document.getElementById('am-chat');
+    if (chat) chat.classList.toggle('agent-manager__chat--hidden', showEmpty);
   }
 
   /** @param {'claude'|'shell'|'semantic'} kind */

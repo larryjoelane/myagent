@@ -54,6 +54,24 @@ export class ChatLog extends HTMLElement {
 
   connectedCallback() {
     this.setAttribute('role', 'log');
+    // Notify listeners (notably <empty-state>) whenever bubbles are
+    // added or removed. MutationObserver covers every code path —
+    // pushUser/pushSystem, raw appendChild from commands/memory.js,
+    // even tests that inject .bubble divs directly via getElementById.
+    if (!this._mo) {
+      this._mo = new MutationObserver(() => {
+        this.dispatchEvent(new CustomEvent('content-changed', {
+          bubbles: true, composed: true,
+          detail: { hasContent: this.hasBubbles() },
+        }));
+      });
+      this._mo.observe(this, { childList: true });
+    }
+  }
+
+  disconnectedCallback() {
+    this._mo?.disconnect();
+    this._mo = null;
   }
 
   // For the empty-state visibility check — was previously

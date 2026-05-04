@@ -34,30 +34,19 @@ function init() {
   // each one so components subscribing to the store re-render.
   const state = store.get();
 
-  function rootEl() { return $('agent-manager'); }
+  function shellEl() { return /** @type {any} */ ($('agent-manager')); }
   function chatEl() { return $('am-chat'); }
   function workersEl() { return $('am-workers'); }
-  function emptyEl() { return $('am-empty-state'); }
   function composeEl() { return /** @type {any} */ ($('am-compose')); }
   function inputEl() { return composeEl(); }
-  function settingsEl() { return $('am-settings'); }
 
   function show(open) {
-    rootEl().classList.toggle('agent-manager--hidden', !open);
+    const shell = shellEl();
+    if (shell) shell.open = !!open;
     if (open) {
       refreshAll();
       setTimeout(() => inputEl()?.focus(), 200);
     }
-  }
-
-  function toggleSettings(open) {
-    const el = settingsEl();
-    if (!el) return;
-    state.settings.settingsOpen = (open == null) ? !state.settings.settingsOpen : !!open;
-    // <settings-drawer> reflects an [open] boolean attribute. Also keep
-    // the legacy class for back-compat with tests that look for it.
-    /** @type {any} */ (el).open = state.settings.settingsOpen;
-    el.classList.toggle('agent-manager__settings--hidden', !state.settings.settingsOpen);
   }
 
   // --- Worker list refresh -----------------------------------------------
@@ -69,7 +58,8 @@ function init() {
         id: w.id, name: w.name, kind: w.kind, cwd: w.cwd, memoryMirror: w.memoryMirror,
       }));
       renderWorkers();
-      renderEmptyState();
+      // <empty-state> subscribes to the store and self-toggles its
+      // visibility (and the legacy --hidden class on chat-log).
       // <settings-drawer> subscribes to the store and re-renders the
       // workers list and cwd label itself when state changes.
     } catch { /* ignore transient errors */ }
@@ -88,26 +78,12 @@ function init() {
   function workerById(id) { return state.workers.find((w) => w.id === id) || null; }
 
   // --- Renderers ---------------------------------------------------------
-
-  function renderEmptyState() {
-    const empty = emptyEl();
-    const chat = chatEl();
-    const hasWorkers = state.workers.length > 0;
-    // Show the empty state ONLY when no workers AND no chat content.
-    // Built-in commands like @memory render bubbles into chat even
-    // without workers, so once any bubble lands the empty state
-    // gets out of the way and the chat takes over.
-    const hasChatContent = chat.querySelector('.bubble') != null;
-    const showEmpty = !hasWorkers && !hasChatContent;
-    // <empty-state> has a reflecting `hidden` boolean property (its
-    // styles include :host([hidden]) { display: none; }). Also keep
-    // the legacy class for back-compat with tests that look for it.
-    if (empty) {
-      /** @type {any} */ (empty).hidden = !showEmpty;
-      empty.classList.toggle('agent-manager__empty--hidden', !showEmpty);
-    }
-    chat.classList.toggle('agent-manager__chat--hidden', showEmpty);
-  }
+  //
+  // Empty-state visibility is owned by <empty-state> itself — see
+  // renderer/components/empty-state.js. It subscribes to the store
+  // (worker count) and listens for chat-log's content-changed event,
+  // and toggles both its own host class and chat-log's
+  // --hidden class as needed.
 
   // <worker-chips> renders the strip from the store. Calling
   // renderWorkers() is now just "tell subscribers state changed" —
@@ -156,12 +132,9 @@ function init() {
 
   function pushBubble(kind, text, agentId) {
     const c = /** @type {any} */ (chatEl());
-    let wrap;
-    if (kind === 'user') wrap = c.pushUser(text, agentId);
-    else if (kind === 'system') wrap = c.pushSystem(text);
-    else wrap = c.pushAssistant(agentId, text);
-    renderEmptyState();
-    return wrap;
+    if (kind === 'user') return c.pushUser(text, agentId);
+    if (kind === 'system') return c.pushSystem(text);
+    return c.pushAssistant(agentId, text);
   }
 
   function attachContextBadge(msg) {
@@ -282,12 +255,12 @@ function init() {
 
   function init() {
     document.querySelector('topbar-commands')?.addEventListener('chat-toggle', () => {
-      const isHidden = rootEl().classList.contains('agent-manager--hidden');
-      show(isHidden);
+      const shell = shellEl();
+      show(!shell?.open);
     });
-    $('agent-manager-close')?.addEventListener('click', () => show(false));
-
-    $('am-settings-toggle')?.addEventListener('click', () => toggleSettings());
+    // <agent-manager> shell owns its own close button and settings ⚙
+    // toggle; we just listen for the events it emits.
+    shellEl()?.addEventListener('close', () => show(false));
 
     // <empty-state> custom element dispatches a 'spawn' event with
     // detail.kind. Its cwd picker is wired internally to actions.pickCwd.
@@ -409,14 +382,14 @@ function init() {
     document.addEventListener('keydown', (ev) => {
       if (ev.ctrlKey && ev.shiftKey && ev.key.toLowerCase() === 'a') {
         ev.preventDefault();
-        const isHidden = rootEl().classList.contains('agent-manager--hidden');
-        show(isHidden);
+        const shell = shellEl();
+        show(!shell?.open);
       }
     });
 
     show(true);
     setInterval(() => {
-      if (!rootEl().classList.contains('agent-manager--hidden')) refreshAll();
+      if (shellEl()?.open) refreshAll();
     }, 3000);
   }
 

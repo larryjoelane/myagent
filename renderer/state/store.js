@@ -28,7 +28,7 @@
  * @property {Worker[]} workers
  * @property {string | null} currentTarget    // worker id
  * @property {Set<string>} thinkingWorkers    // worker ids currently mid-turn
- * @property {{ defaultMirror: boolean, toolDetails: 'expanded'|'collapsed'|'hidden', settingsOpen: boolean }} settings
+ * @property {{ defaultMirror: boolean, toolDetails: 'expanded'|'collapsed'|'hidden' }} settings
  * @property {string | null} pendingCwd                   // cwd for the next spawn
  * @property {'cpu'|'auto'|'webgpu'} pendingDevice        // device for the next semantic spawn
  * @property {string} pendingGenerationModelId            // '' = no explain
@@ -43,7 +43,7 @@ const state = {
   workers: [],
   currentTarget: null,
   thinkingWorkers: new Set(),
-  settings: { defaultMirror: true, toolDetails: 'collapsed', settingsOpen: false },
+  settings: { defaultMirror: true, toolDetails: 'collapsed' },
   pendingCwd: null,
   pendingDevice: 'cpu',
   pendingGenerationModelId: '',
