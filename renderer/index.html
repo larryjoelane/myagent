@@ -55,7 +55,13 @@
            spawnWorker(kind). -->
       <empty-state id="am-empty-state"></empty-state>
 
-      <div class="agent-manager__chat" id="am-chat" role="log"></div>
+      <!-- Chat surface — owns all bubbles (user, system, assistant with
+           streaming text + tool cards + semantic cards), context badges,
+           and the @memory bubble (appended as a sibling). The component
+           keeps id="am-chat" so legacy queries via getElementById and
+           e2e selectors that expect the .bubble--* classes in the
+           document tree keep working. -->
+      <chat-log class="agent-manager__chat" id="am-chat"></chat-log>
 
       <!-- Composer: textarea + mention/slash popup + send button. The
            component renders a `submit` event with detail.text whenever

@@ -9,23 +9,16 @@
 // State that's shared with new Lit components (worker list, settings,
 // pendingCwd, etc.) lives in renderer/state/store.js. After mutating
 // a store field this file calls store.bump() so component subscribers
-// re-render. State that's purely chat-surface-internal (openBubbles,
-// optimistic-user, slash popup index, pending context badges) stays
-// here as module-locals — no component needs it today.
+// re-render.
+//
+// <chat-log> owns its own internal state (openBubbles, pendingContextBadges)
+// — see renderer/components/chat-log.js. The only chat-surface state
+// that lives here is pendingUserOptimistic, used to suppress duplicate
+// user bubbles when the optimistic write races with chat:user.
 
 import { store } from './state/store.js';
 
-// Chat-surface-private state. Lives outside the store because no
-// other component reads it.
-//
-//   openBubbles            agentId → { el, bodyEl, typingEl, hasContent, lastTextNode }
-//   pendingUserOptimistic  optimistic { agentId, text } pre-chat:user
-//   slashSelected          highlighted index in the slash popup
-//   pendingContextBadges   agentId → context-used msg, awaiting its user bubble
-const openBubbles = new Map();
 let pendingUserOptimistic = null;
-let slashSelected = 0;
-const pendingContextBadges = new Map();
 
 function init() {
   const transport = window.transport;
@@ -213,102 +206,26 @@ function init() {
   }
 
   // --- Bubbles -----------------------------------------------------------
+  //
+  // <chat-log> owns: assistant bubbles, streaming text, tool cards,
+  // semantic cards, the openBubbles map, context badges, and pending-
+  // badge state. We expose thin pushBubble/closeOpenBubble shims here
+  // because send() and the chat:* handlers below all call them; once
+  // those call sites move into the component (or onto its event API),
+  // these shims go away.
 
   function pushBubble(kind, text, agentId) {
-    const wrap = document.createElement('div');
-    wrap.className = `bubble bubble--${kind}`;
-    if (agentId) wrap.dataset.agentId = agentId;
-
-    if (kind === 'user' || kind === 'system') {
-      wrap.textContent = text || '';
-    } else {
-      const meta = document.createElement('div');
-      meta.className = 'bubble__meta';
-      const w = workerById(agentId);
-      meta.textContent = w ? `@${w.name}` : (agentId || 'assistant');
-      wrap.appendChild(meta);
-      const body = document.createElement('pre');
-      body.className = 'bubble__body';
-      const typing = document.createElement('div');
-      typing.className = 'typing-indicator';
-      typing.innerHTML = '<span></span><span></span><span></span>';
-      body.appendChild(typing);
-      wrap.appendChild(body);
-      wrap._bodyEl = body;
-      wrap._typingEl = typing;
-      if (text) {
-        body.textContent = text;
-        wrap._typingEl = null;
-      }
-    }
-    chatEl().appendChild(wrap);
+    const c = /** @type {any} */ (chatEl());
+    let wrap;
+    if (kind === 'user') wrap = c.pushUser(text, agentId);
+    else if (kind === 'system') wrap = c.pushSystem(text);
+    else wrap = c.pushAssistant(agentId, text);
     renderEmptyState();
-    chatEl().scrollTop = chatEl().scrollHeight;
     return wrap;
   }
 
-  // Auto-context badge: rendered under the user bubble that prompted
-  // a memory-injected send. Click expands to show which memories
-  // were used. Lets the user verify what context Claude saw without
-  // it taking visual space by default.
   function attachContextBadge(msg) {
-    const hits = (msg && msg.usedHits) || [];
-    if (hits.length === 0) return;
-    // Find the most recent user bubble for this agent that doesn't
-    // already have a badge attached. Auto-context fires before
-    // chat:user, OR before the optimistic user bubble lands —
-    // realistically we anchor to whichever bubble already exists,
-    // and otherwise stash the badge until the user bubble appears.
-    const agentId = msg.agentId;
-    const userText = msg.userText || '';
-    const userBubbles = chatEl().querySelectorAll('.bubble--user');
-    let target = null;
-    for (let i = userBubbles.length - 1; i >= 0; i--) {
-      const b = userBubbles[i];
-      if (b.dataset.agentId === agentId && b.textContent === userText && !b._contextBadge) {
-        target = b;
-        break;
-      }
-    }
-    if (!target) {
-      // Bubble hasn't been pushed yet — stash and try again on next
-      // chat:user. Cheap: keep at most one pending badge per agent.
-      pendingContextBadges.set(agentId, msg);
-      return;
-    }
-    renderContextBadge(target, hits);
-  }
-
-  function renderContextBadge(userBubble, hits) {
-    const badge = document.createElement('div');
-    badge.className = 'context-badge';
-    const summary = document.createElement('div');
-    summary.className = 'context-badge__summary';
-    summary.textContent = `+ used ${hits.length} ${hits.length === 1 ? 'memory' : 'memories'} as context · click to view`;
-    badge.appendChild(summary);
-    const detail = document.createElement('div');
-    detail.className = 'context-badge__detail context-badge__detail--hidden';
-    for (const h of hits) {
-      const item = document.createElement('div');
-      item.className = 'context-badge__hit';
-      const meta = document.createElement('div');
-      meta.className = 'context-badge__meta';
-      const conf = (typeof h.confidence === 'number') ? h.confidence.toFixed(2) : '?';
-      meta.textContent = `conf ${conf}`;
-      item.appendChild(meta);
-      const body = document.createElement('div');
-      body.className = 'context-badge__snippet';
-      body.textContent = (h.snippet || h.text || '').slice(0, 300);
-      item.appendChild(body);
-      detail.appendChild(item);
-    }
-    badge.appendChild(detail);
-    summary.addEventListener('click', () => {
-      detail.classList.toggle('context-badge__detail--hidden');
-    });
-    // Insert badge directly after the user bubble (sibling, not child).
-    userBubble.insertAdjacentElement('afterend', badge);
-    userBubble._contextBadge = badge;
+    /** @type {any} */ (chatEl()).attachContextBadge(msg);
   }
 
   // --- @memory built-in --------------------------------------------------
@@ -435,345 +352,6 @@ function init() {
     return el;
   }
 
-  function appendToOpenBubble(agentId, text) {
-    let entry = openBubbles.get(agentId);
-    if (!entry) {
-      const el = pushBubble('assistant', '', agentId);
-      entry = { el, bodyEl: el._bodyEl, typingEl: el._typingEl, hasContent: false };
-      openBubbles.set(agentId, entry);
-    }
-    if (!entry.hasContent) {
-      if (entry.typingEl && entry.typingEl.parentNode) {
-        entry.typingEl.parentNode.removeChild(entry.typingEl);
-      }
-      entry.bodyEl.textContent = '';
-      entry.hasContent = true;
-      entry.lastTextNode = null;
-    }
-    if (!text) return;
-    // Append text as a text node alongside any sibling child elements
-    // (e.g., tool cards). textContent += would serialize children into
-    // a string and destroy the card DOM — that's the bug we hit.
-    //
-    // We track the "current" text node so successive text chunks
-    // extend it in place (more efficient than spawning a node per
-    // chunk, and groups chunks into a single span for selection).
-    if (entry.lastTextNode && entry.lastTextNode.parentNode === entry.bodyEl
-        && entry.bodyEl.lastChild === entry.lastTextNode) {
-      entry.lastTextNode.data += text;
-    } else {
-      const node = document.createTextNode(text);
-      entry.bodyEl.appendChild(node);
-      entry.lastTextNode = node;
-    }
-    chatEl().scrollTop = chatEl().scrollHeight;
-  }
-
-  // Tool calls render as discrete cards inside the open assistant
-  // bubble: header (tool name + status), formatted input, collapsed
-  // result section. Each card is keyed by tool_use_id so the
-  // matching tool_result can find its sibling card.
-  function ensureOpenAssistantBubble(agentId) {
-    let entry = openBubbles.get(agentId);
-    if (!entry) {
-      const el = pushBubble('assistant', '', agentId);
-      entry = { el, bodyEl: el._bodyEl, typingEl: el._typingEl, hasContent: false };
-      openBubbles.set(agentId, entry);
-    }
-    // Tool cards are real content — clear typing dots if still showing.
-    if (!entry.hasContent) {
-      if (entry.typingEl && entry.typingEl.parentNode) {
-        entry.typingEl.parentNode.removeChild(entry.typingEl);
-      }
-      entry.bodyEl.textContent = '';
-      entry.hasContent = true;
-    }
-    return entry;
-  }
-
-  function renderToolUseCard(msg) {
-    const entry = ensureOpenAssistantBubble(msg.agentId);
-    const card = document.createElement('div');
-    // Default visibility comes from the toolDetails preference:
-    //   'expanded'  → body visible
-    //   'collapsed' → body hidden, click header to expand (DEFAULT)
-    //   'hidden'    → tiny badge only, no body, no expand affordance
-    const mode = state.settings.toolDetails || 'collapsed';
-    card.className = 'tool-card tool-card--running';
-    if (mode === 'collapsed') card.classList.add('tool-card--collapsed');
-    if (mode === 'hidden') card.classList.add('tool-card--hidden-mode');
-    card.dataset.toolUseId = msg.toolUseId || '';
-
-    const header = document.createElement('div');
-    header.className = 'tool-card__header';
-    const icon = document.createElement('span');
-    icon.className = 'tool-card__icon';
-    icon.textContent = '●';
-    header.appendChild(icon);
-    const name = document.createElement('span');
-    name.className = 'tool-card__name';
-    name.textContent = msg.name || 'tool';
-    header.appendChild(name);
-    const status = document.createElement('span');
-    status.className = 'tool-card__status';
-    status.textContent = '…running';
-    header.appendChild(status);
-    card.appendChild(header);
-
-    // Input section — formatted, always visible.
-    const input = document.createElement('pre');
-    input.className = 'tool-card__input';
-    input.textContent = formatToolInput(msg.input);
-    card.appendChild(input);
-
-    // Result placeholder. Filled when matching tool-result arrives.
-    const result = document.createElement('pre');
-    result.className = 'tool-card__result tool-card__result--pending';
-    result.textContent = 'waiting for result…';
-    card.appendChild(result);
-
-    // Click header to expand/collapse the result.
-    header.addEventListener('click', () => {
-      card.classList.toggle('tool-card--collapsed');
-    });
-
-    entry.bodyEl.appendChild(card);
-    // Invalidate the streaming-text-node anchor so any text chunk
-    // that comes AFTER this card starts a fresh text node below it
-    // rather than appending to the pre-card text node.
-    entry.lastTextNode = null;
-    chatEl().scrollTop = chatEl().scrollHeight;
-  }
-
-  // Semantic agent results (and help / no-match) render as a structured
-  // card inside the assistant bubble: header with the tool name + Copy,
-  // then the body. Long bodies (>12 lines) start collapsed at ~6 lines
-  // with a "Show more" toggle. Each turn gets its own card; the bubble
-  // closes at chat:turn-end so the next semantic chunk lands in a fresh
-  // bubble (avoids the "results pile into the last bubble" bug).
-  const SEMANTIC_COLLAPSE_LINES = 6;
-  const SEMANTIC_COLLAPSE_THRESHOLD = 12;
-
-  function renderSemanticResult(msg) {
-    // semantic-explain is a streaming append to the most recent
-    // tool-result card for this agent. Each token triggers one
-    // chunk; we look for an existing explain region and append, or
-    // create one inside the most recent semantic-card.
-    if (msg.kind === 'semantic-explain') {
-      appendToExplain(msg);
-      return;
-    }
-    if (msg.kind === 'semantic-explain-error') {
-      appendToExplain({ ...msg, isError: true });
-      return;
-    }
-    const entry = ensureOpenAssistantBubble(msg.agentId);
-    const raw = String(msg.text || '');
-    // Strip the `[Tool Name]\n` annotation the driver prepends, if any —
-    // we render the tool name in the card header instead. This keeps
-    // the body pristine for copying.
-    const headerMatch = raw.match(/^\[([^\]\n]+)\]\n/);
-    const headerName = headerMatch ? headerMatch[1] : labelForKind(msg.kind);
-    const body = headerMatch ? raw.slice(headerMatch[0].length) : raw;
-
-    const card = document.createElement('div');
-    card.className = 'semantic-card';
-    card.dataset.kind = msg.kind || '';
-    if (msg.toolId) card.dataset.toolId = msg.toolId;
-
-    const header = document.createElement('div');
-    header.className = 'semantic-card__header';
-    const name = document.createElement('span');
-    name.className = 'semantic-card__name';
-    name.textContent = headerName;
-    header.appendChild(name);
-
-    const copyBtn = document.createElement('button');
-    copyBtn.className = 'semantic-card__copy';
-    copyBtn.type = 'button';
-    copyBtn.title = 'Copy result text';
-    copyBtn.textContent = 'Copy';
-    copyBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      copyTextToClipboard(body, copyBtn);
-    });
-    header.appendChild(copyBtn);
-    card.appendChild(header);
-
-    const bodyEl = document.createElement('pre');
-    bodyEl.className = 'semantic-card__body';
-    bodyEl.textContent = body;
-    card.appendChild(bodyEl);
-
-    // Auto-collapse long bodies. Toggle is wired on the header (clicking
-    // the name region — the Copy button stops propagation above).
-    const lineCount = body.split('\n').length;
-    if (lineCount > SEMANTIC_COLLAPSE_THRESHOLD) {
-      card.classList.add('semantic-card--collapsible');
-      card.classList.add('semantic-card--collapsed');
-      bodyEl.style.setProperty('--semantic-collapse-lines', String(SEMANTIC_COLLAPSE_LINES));
-      const toggle = document.createElement('button');
-      toggle.className = 'semantic-card__toggle';
-      toggle.type = 'button';
-      toggle.textContent = `Show all ${lineCount} lines`;
-      toggle.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const nowExpanded = card.classList.toggle('semantic-card--collapsed') === false;
-        toggle.textContent = nowExpanded
-          ? 'Collapse'
-          : `Show all ${lineCount} lines`;
-      });
-      card.appendChild(toggle);
-      // Also let the user toggle by clicking the header name region.
-      header.addEventListener('click', (e) => {
-        if (e.target === copyBtn) return;
-        const nowExpanded = card.classList.toggle('semantic-card--collapsed') === false;
-        toggle.textContent = nowExpanded
-          ? 'Collapse'
-          : `Show all ${lineCount} lines`;
-      });
-    }
-
-    entry.bodyEl.appendChild(card);
-    entry.lastTextNode = null;
-    chatEl().scrollTop = chatEl().scrollHeight;
-  }
-
-  // Stream an explanation token into the latest semantic-card for
-   // this agent. Creates the explain region on the first token; later
-   // tokens append (uses cumulativeText when present so missing
-   // tokens don't drift).
-  function appendToExplain(msg) {
-    const bubble = openBubbles.get(msg.agentId);
-    if (!bubble) return;
-    const cards = bubble.bodyEl.querySelectorAll('.semantic-card');
-    const card = cards[cards.length - 1];
-    if (!card) return;
-    let region = card.querySelector('.semantic-card__explain');
-    if (!region) {
-      region = document.createElement('div');
-      region.className = 'semantic-card__explain';
-      const label = document.createElement('div');
-      label.className = 'semantic-card__explain-label';
-      label.textContent = msg.isError ? 'Explain (failed)' : 'Explain';
-      region.appendChild(label);
-      const body = document.createElement('div');
-      body.className = 'semantic-card__explain-body';
-      region.appendChild(body);
-      card.appendChild(region);
-    }
-    const body = region.querySelector('.semantic-card__explain-body');
-    if (msg.isError) {
-      region.classList.add('semantic-card__explain--error');
-      body.textContent = msg.text || '(unknown error)';
-    } else if (msg.cumulativeText) {
-      // Cumulative text is authoritative — preserves correctness if
-      // a token chunk was missed.
-      body.textContent = msg.cumulativeText;
-    } else if (msg.text) {
-      body.textContent += msg.text;
-    }
-    chatEl().scrollTop = chatEl().scrollHeight;
-  }
-
-  function labelForKind(kind) {
-    if (kind === 'semantic-help') return 'Help';
-    if (kind === 'semantic-no-match') return 'No match';
-    if (kind === 'semantic-slash') return 'Slash';
-    return 'Result';
-  }
-
-  // Copy with a quick visual confirmation. Falls back to execCommand
-  // when the Clipboard API isn't available (older Electron, file://).
-  async function copyTextToClipboard(text, button) {
-    let ok = false;
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-        ok = true;
-      }
-    } catch { /* fall through */ }
-    if (!ok) {
-      try {
-        const ta = document.createElement('textarea');
-        ta.value = text;
-        ta.style.position = 'fixed';
-        ta.style.opacity = '0';
-        document.body.appendChild(ta);
-        ta.select();
-        ok = document.execCommand('copy');
-        document.body.removeChild(ta);
-      } catch { ok = false; }
-    }
-    if (button) {
-      const original = button.textContent;
-      button.textContent = ok ? 'Copied' : 'Failed';
-      button.classList.add(ok ? 'semantic-card__copy--ok' : 'semantic-card__copy--err');
-      setTimeout(() => {
-        button.textContent = original;
-        button.classList.remove('semantic-card__copy--ok', 'semantic-card__copy--err');
-      }, 1200);
-    }
-  }
-
-  function renderToolResult(msg) {
-    // Find the card with matching tool_use_id. If the chat is mid-render
-    // and the use card hasn't appeared yet, append a standalone result.
-    const id = msg.toolUseId || '';
-    const card = document.querySelector(`.tool-card[data-tool-use-id="${cssEscape(id)}"]`);
-    if (!card) {
-      // Fall back to inline text — shouldn't happen in normal flow.
-      appendToOpenBubble(msg.agentId, `[tool-result orphan] ${formatToolResultBody(msg.content)}\n`);
-      return;
-    }
-    card.classList.remove('tool-card--running');
-    card.classList.add(msg.isError ? 'tool-card--error' : 'tool-card--ok');
-    const status = card.querySelector('.tool-card__status');
-    if (status) status.textContent = msg.isError ? '✗ error' : '✓ done';
-    const result = card.querySelector('.tool-card__result');
-    if (result) {
-      result.classList.remove('tool-card__result--pending');
-      result.textContent = formatToolResultBody(msg.content);
-    }
-  }
-
-  function formatToolInput(input) {
-    if (input == null) return '';
-    if (typeof input === 'string') return input;
-    try { return JSON.stringify(input, null, 2); }
-    catch { return String(input); }
-  }
-
-  function formatToolResultBody(content) {
-    if (content == null) return '';
-    if (typeof content === 'string') return content;
-    // Anthropic's content can be an array of {type, text} blocks.
-    if (Array.isArray(content)) {
-      return content
-        .map((c) => (c && typeof c === 'object' && 'text' in c) ? c.text : JSON.stringify(c))
-        .join('\n');
-    }
-    try { return JSON.stringify(content, null, 2); }
-    catch { return String(content); }
-  }
-
-  // CSS.escape isn't on every CSS spec; tool_use_ids are alphanumeric
-  // + underscores so a small fallback is plenty.
-  function cssEscape(s) {
-    return String(s).replace(/[^a-zA-Z0-9_-]/g, (c) => '\\' + c);
-  }
-
-  function closeOpenBubble(agentId) {
-    const entry = openBubbles.get(agentId);
-    if (!entry) return;
-    entry.el.classList.add('bubble--done');
-    if (!entry.hasContent && entry.typingEl) {
-      entry.typingEl.parentNode.removeChild(entry.typingEl);
-      entry.bodyEl.textContent = '(no response)';
-      entry.bodyEl.style.color = 'var(--text-faint)';
-    }
-    openBubbles.delete(agentId);
-  }
 
   // --- Sending -----------------------------------------------------------
 
@@ -893,13 +471,7 @@ function init() {
     pushBubble('user', text, target.id);
     compose?.clear();
 
-    const placeholder = pushBubble('assistant', '', target.id);
-    openBubbles.set(target.id, {
-      el: placeholder,
-      bodyEl: placeholder._bodyEl,
-      typingEl: placeholder._typingEl,
-      hasContent: false,
-    });
+    /** @type {any} */ (chatEl()).openAssistantBubble(target.id);
 
     const r = await transport.workers.send({ to: target.id, text });
     if (r && r.ok === false) pushBubble('system', `send failed: ${r.error || 'unknown'}`);
@@ -1003,37 +575,17 @@ function init() {
         // Flush any pending context badge that arrived BEFORE the
         // user bubble was findable. Common in production where the
         // manager fires chat:context-used and chat:user back-to-back.
-        if (pendingContextBadges && pendingContextBadges.has(msg.agentId)) {
-          const pending = pendingContextBadges.get(msg.agentId);
-          pendingContextBadges.delete(msg.agentId);
-          attachContextBadge(pending);
-        }
+        /** @type {any} */ (chatEl()).flushPendingContextBadge(msg.agentId);
       },
       'chat:turn-start': (msg) => {
         state.thinkingWorkers.add(msg.agentId);
         renderWorkers();
       },
       'chat:chunk': (msg) => {
-        const isSemantic = typeof msg.kind === 'string' && msg.kind.startsWith('semantic-');
-        if (isSemantic) {
-          renderSemanticResult(msg);
-          return;
-        }
-        const isPlainText =
-          !msg.kind ||
-          msg.kind === 'text' ||
-          msg.kind === 'shell-output' ||
-          msg.kind === 'thinking';
-        if (isPlainText) {
-          appendToOpenBubble(msg.agentId, msg.text || '');
-        } else if (msg.kind === 'tool-use') {
-          renderToolUseCard(msg);
-        } else if (msg.kind === 'tool-result') {
-          renderToolResult(msg);
-        }
+        /** @type {any} */ (chatEl()).chunk(msg);
       },
       'chat:turn-end': (msg) => {
-        closeOpenBubble(msg.agentId);
+        /** @type {any} */ (chatEl()).closeBubble(msg.agentId);
         state.thinkingWorkers.delete(msg.agentId);
         renderWorkers();
       },

@@ -16,6 +16,7 @@ import './components/worker-chips.js';
 import './components/settings-drawer.js';
 import './components/compose-input.js';
 import './components/memory-bubble.js';
+import './components/chat-log.js';
 
 const transport = window.transport;
 
