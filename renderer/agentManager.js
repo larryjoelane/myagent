@@ -282,23 +282,13 @@ function init() {
     chat.classList.toggle('agent-manager__chat--hidden', showEmpty);
   }
 
+  // <worker-chips> renders the strip from the store. Calling
+  // renderWorkers() is now just "tell subscribers state changed" —
+  // the component handles the DOM. The function name stays for the
+  // existing call sites; once they're all componentized this becomes
+  // dead and goes away.
   function renderWorkers() {
-    const host = workersEl();
-    host.innerHTML = '';
-    for (const w of state.workers) {
-      const chip = document.createElement('div');
-      chip.className = 'worker-chip';
-      if (w.id === state.currentTarget) chip.classList.add('worker-chip--active');
-      if (state.thinkingWorkers.has(w.id)) chip.classList.add('worker-chip--thinking');
-      chip.title = `${w.kind}\ncwd: ${w.cwd || '(default)'}\nid: ${w.id}`;
-
-      const label = document.createElement('span');
-      label.className = 'worker-chip__label';
-      label.textContent = `@${w.name}`;
-      label.addEventListener('click', () => selectTarget(w.id));
-      chip.appendChild(label);
-      host.appendChild(chip);
-    }
+    store.bump();
   }
 
   function renderSettings() {
@@ -376,11 +366,10 @@ function init() {
     }
   }
 
-  function selectTarget(id) {
-    state.currentTarget = id;
-    renderWorkers();
-    inputEl()?.focus();
-  }
+  // <worker-chips> updates state.currentTarget through the store on
+  // click; we only need to focus the compose input afterwards. The
+  // event listener for that is wired in init() — see workersEl()
+  // 'select' handler.
 
   // --- Spawn flow --------------------------------------------------------
 
@@ -1425,6 +1414,11 @@ function init() {
       const kind = ev?.detail?.kind;
       if (kind) spawnWorker(kind);
     });
+    // <worker-chips> dispatches 'select' (detail.id) on click. The
+    // component already calls selectWorker(id) (which updates the
+    // store); here we just refocus the compose input so the user
+    // can immediately type at the chosen worker.
+    $('am-workers')?.addEventListener('select', () => inputEl()?.focus());
     // Settings-drawer cwd picker — same handler, different button.
     // Both write to state.pendingCwd; renderEmptyCwd() syncs both labels.
     $('am-spawn-cwd')?.addEventListener('click', () => pickCwd());
@@ -1666,7 +1660,11 @@ function init() {
     refreshToolDetails();
     // Test hook: tests change the persisted setting then call this
     // to sync the in-renderer cache without waiting for next init.
-    window.__amTestRefreshToolDetails = refreshToolDetails;
+    /** @type {any} */ (window).__amTestRefreshToolDetails = refreshToolDetails;
+    // Test hook: tests close workers via transport directly, then call
+    // this to make the renderer's worker list reflect main-process state
+    // without waiting for the 3-second auto-refresh tick.
+    /** @type {any} */ (window).__amTestRefreshAll = refreshAll;
     for (const mode of ['expanded', 'collapsed', 'hidden']) {
       $(`am-tool-details-${mode}`)?.addEventListener('click', async () => {
         await transport.settings.set('toolDetails', mode);

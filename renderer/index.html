@@ -145,8 +145,11 @@
         <div id="am-workers-detail"></div>
       </div>
 
-      <!-- Always-visible worker chip strip (only shown when workers exist). -->
-      <div class="agent-manager__workers" id="am-workers" aria-label="Attached workers"></div>
+      <!-- Always-visible worker chip strip (only shown when workers exist).
+           The component subscribes to the store and renders one chip per
+           worker. Clicks dispatch a 'select' event which agentManager.js
+           uses to focus the compose input. -->
+      <worker-chips id="am-workers" aria-label="Attached workers"></worker-chips>
 
       <!-- Empty state — shown when no workers exist. The component
            lives in renderer/components/empty-state.js. It reads

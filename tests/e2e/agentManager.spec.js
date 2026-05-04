@@ -435,10 +435,13 @@ test('@memory works with no workers attached', async () => {
   for (const id of ids) {
     await win.evaluate(async (i) => { await window.transport.workers.close({ id: i }); }, id);
   }
-  // Manually remove chip DOM and clear chat. Auto-refresh runs every
-  // 3s — we don't want to wait for it.
-  await win.evaluate(() => {
-    document.getElementById('am-workers').innerHTML = '';
+  // Force a refresh so the renderer's worker list reflects main-
+  // process state (we just closed workers via transport directly,
+  // bypassing the renderer). Then clear the chat DOM.
+  await win.evaluate(async () => {
+    if (typeof window.__amTestRefreshAll === 'function') {
+      await window.__amTestRefreshAll();
+    }
     document.getElementById('am-chat').innerHTML = '';
   });
   await win.waitForTimeout(800);
