@@ -383,58 +383,38 @@ function init() {
     if (opts.minConfidence > 0 && !opts.showAll) flagsLabel.push(`--min ${opts.minConfidence}`);
     const echoQuery = (flagsLabel.length ? flagsLabel.join(' ') + ' ' : '') + query;
     pushUserBubble(`@memory ${echoQuery}`);
-    const wrap = pushMemoryBubble({ query, hits: null });
-    let result;
+    const bubble = pushMemoryBubble(query);
     try {
       const searchOpts = {};
       if (typeof opts.limit === 'number') searchOpts.limit = opts.limit;
       if (typeof opts.minConfidence === 'number' && opts.minConfidence > 0) {
         searchOpts.minConfidence = opts.minConfidence;
       }
-      result = await transport.memory.search(query, searchOpts);
+      const result = await transport.memory.search(query, searchOpts);
+      const hits = (result && result.hits) || [];
+      const totalCandidates = (result && typeof result.totalCandidates === 'number')
+        ? result.totalCandidates
+        : hits.length;
+      bubble.setResults({
+        query, hits, totalCandidates,
+        minConfidence: opts.minConfidence || 0,
+        showAll: !!opts.showAll,
+      });
     } catch (err) {
-      updateMemoryBubble(wrap, { query, error: err.message });
-      return;
+      bubble.setError({ query, error: err.message });
     }
-    const hits = (result && result.hits) || [];
-    const totalCandidates = (result && typeof result.totalCandidates === 'number')
-      ? result.totalCandidates
-      : hits.length;
-    updateMemoryBubble(wrap, {
-      query, hits,
-      totalCandidates,
-      minConfidence: opts.minConfidence || 0,
-      showAll: !!opts.showAll,
-    });
   }
 
   // Help bubble: shows command syntax. Triggered by `@memory`,
   // `@memory --help`, `@memory help`. Doesn't go through the
   // search path — pure documentation.
   function pushMemoryHelpBubble() {
-    const wrap = document.createElement('div');
-    wrap.className = 'bubble bubble--memory bubble--memory-help';
-    const header = document.createElement('div');
-    header.className = 'bubble--memory__header';
-    header.textContent = '@memory — search remembered chats';
-    wrap.appendChild(header);
-    const body = document.createElement('pre');
-    body.className = 'bubble--memory-help__body';
-    body.textContent = [
-      'Usage:',
-      `  @memory <query>             top matches with confidence ≥ ${DEFAULT_MIN_CONFIDENCE} (default)`,
-      '  @memory --all <query>       include weaker matches (no threshold)',
-      '  @memory --limit 20 <query>  custom result count',
-      '  @memory --min 0.7 <query>   custom confidence threshold (0–1)',
-      '',
-      'Click any result to insert its full text into the message box.',
-      'Confidence: 0.7+ strong · 0.4–0.7 plausible · 0.2–0.4 weak.',
-    ].join('\n');
-    wrap.appendChild(body);
-    chatEl().appendChild(wrap);
+    const el = /** @type {any} */ (document.createElement('memory-bubble'));
+    el.setHelp({ defaultMinConfidence: DEFAULT_MIN_CONFIDENCE });
+    chatEl().appendChild(el);
     renderEmptyState();
     chatEl().scrollTop = chatEl().scrollHeight;
-    return wrap;
+    return el;
   }
 
   function pushUserBubble(text) {
@@ -446,109 +426,13 @@ function init() {
     chatEl().scrollTop = chatEl().scrollHeight;
   }
 
-  function pushMemoryBubble({ query }) {
-    const wrap = document.createElement('div');
-    wrap.className = 'bubble bubble--memory';
-    const header = document.createElement('div');
-    header.className = 'bubble--memory__header';
-    header.textContent = `searching memory for "${query}"…`;
-    wrap.appendChild(header);
-    const body = document.createElement('div');
-    body.className = 'bubble--memory__body';
-    wrap.appendChild(body);
-    wrap._headerEl = header;
-    wrap._bodyEl = body;
-    chatEl().appendChild(wrap);
+  function pushMemoryBubble(query) {
+    const el = /** @type {any} */ (document.createElement('memory-bubble'));
+    el.setSearching({ query });
+    chatEl().appendChild(el);
     renderEmptyState();
     chatEl().scrollTop = chatEl().scrollHeight;
-    return wrap;
-  }
-
-  function updateMemoryBubble(wrap, { query, hits, error, totalCandidates, minConfidence, showAll }) {
-    const header = wrap._headerEl;
-    const body = wrap._bodyEl;
-    body.innerHTML = '';
-    if (error) {
-      header.textContent = `memory search failed for "${query}"`;
-      const e = document.createElement('div');
-      e.className = 'bubble--memory__error';
-      e.textContent = error;
-      body.appendChild(e);
-      return;
-    }
-    const total = typeof totalCandidates === 'number' ? totalCandidates : (hits ? hits.length : 0);
-    const shown = hits ? hits.length : 0;
-    const filtered = total - shown;
-    const filtering = !showAll && minConfidence > 0;
-
-    if (shown === 0) {
-      // Two flavors of "no results": truly nothing in the index, vs.
-      // some weaker candidates exist below the threshold.
-      if (filtering && filtered > 0) {
-        header.textContent = `no strong matches for "${query}" — ${filtered} weaker hidden (try @memory --all ${query})`;
-      } else {
-        header.textContent = `no matches for "${query}"`;
-      }
-      return;
-    }
-
-    // Have at least one hit. Compose copy depends on whether we
-    // filtered anything.
-    const matchWord = shown === 1 ? 'match' : 'matches';
-    if (filtering && filtered > 0) {
-      header.textContent = `${shown} strong ${matchWord} for "${query}" · ${filtered} weaker hidden (try @memory --all ${query})`;
-    } else {
-      header.textContent = `${shown} ${matchWord} for "${query}" — click to insert`;
-    }
-    hits.forEach((hit, i) => {
-      const item = document.createElement('div');
-      item.className = 'bubble--memory__hit';
-      item.title = 'Click to append this snippet to the compose box';
-
-      const meta = document.createElement('div');
-      meta.className = 'bubble--memory__meta';
-      const sourceLabel = sourceShortName(hit.file);
-      // Show user-facing confidence (0–1, max of normalized cosine
-      // and per-query BM25). Falls back to RRF score for hits that
-      // predate the confidence field. See docs/memory-search.md.
-      const conf = (typeof hit.confidence === 'number')
-        ? hit.confidence.toFixed(2)
-        : (typeof hit.score === 'number' ? hit.score.toFixed(3) : '?');
-      const ts = (hit.ts || '').slice(0, 19).replace('T', ' ');
-      meta.textContent = `${i + 1}. ${sourceLabel} · ${ts} · conf ${conf}`;
-      meta.title =
-        'Confidence (0–1): max of cosine similarity and per-query BM25 ' +
-        'normalized score. See docs/memory-search.md.';
-      item.appendChild(meta);
-
-      const snippet = document.createElement('div');
-      snippet.className = 'bubble--memory__snippet';
-      snippet.textContent = hit.snippet || '';
-      item.appendChild(snippet);
-
-      // Click → append the FULL memory to compose. We use hit.text
-      // (entire row content) rather than hit.snippet (which is
-      // truncated to 400 chars for compact display). Users want to
-      // ground their next prompt in the complete memory, not a
-      // chopped preview.
-      item.addEventListener('click', () => insertSnippet(hit.text || hit.snippet || ''));
-
-      body.appendChild(item);
-    });
-  }
-
-  // Make the source path readable. Memory rows have file like
-  // "<memory:chat-user:abcdef>" — we surface "chat-user".
-  function sourceShortName(file) {
-    if (!file) return '';
-    const m = String(file).match(/<memory:([^:>]+)/);
-    if (m) return m[1];
-    return file;
-  }
-
-  function insertSnippet(text) {
-    if (!text) return;
-    composeEl()?.appendValue(text);
+    return el;
   }
 
   function appendToOpenBubble(agentId, text) {
@@ -1072,6 +956,13 @@ function init() {
     composeEl()?.addEventListener('submit', (/** @type {any} */ ev) => {
       const text = ev?.detail?.text;
       if (typeof text === 'string') send(text).catch(() => {});
+    });
+
+    // <memory-bubble> dispatches 'insert-snippet' (bubbles, composed) when
+    // a hit is clicked. Route the full snippet text into the compose input.
+    chatEl()?.addEventListener('insert-snippet', (/** @type {any} */ ev) => {
+      const text = ev?.detail?.text;
+      if (typeof text === 'string' && text) composeEl()?.appendValue(text);
     });
 
     // All persisted settings (mirror toggles, auto-context, chat side,

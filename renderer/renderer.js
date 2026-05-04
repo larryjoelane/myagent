@@ -15,6 +15,7 @@ import './components/empty-state.js';
 import './components/worker-chips.js';
 import './components/settings-drawer.js';
 import './components/compose-input.js';
+import './components/memory-bubble.js';
 
 const transport = window.transport;
 
