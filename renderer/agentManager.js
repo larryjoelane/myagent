@@ -17,6 +17,8 @@
 // user bubbles when the optimistic write races with chat:user.
 
 import { store } from './state/store.js';
+import { spawnWorker as spawnWorkerAction } from './state/actions.js';
+import { tryHandleMemoryCommand } from './commands/memory.js';
 
 let pendingUserOptimistic = null;
 
@@ -122,49 +124,25 @@ function init() {
   // 'select' handler.
 
   // --- Spawn flow --------------------------------------------------------
+  //
+  // The transport call, toolkit cache, and refresh all live in
+  // actions.spawnWorker. Here we just surface the user-facing system
+  // bubble: failures always, plus a confirmation for semantic workers
+  // (so an unconfigured --explain isn't silently ignored).
 
   async function spawnWorker(kind) {
-    // Semantic workers get the chosen compute device + explain
-    // configuration; other kinds ignore those.
-    const isSem = kind === 'semantic';
-    const device = isSem ? (state.pendingDevice || undefined) : undefined;
-    const generationModelId = isSem && state.pendingGenerationModelId
-      ? state.pendingGenerationModelId : undefined;
-    // Reuse the chosen device for generation too — model.defaultDevice
-    // can override later when we expose a separate picker.
-    const generationDevice = isSem && generationModelId ? device : undefined;
-    const defaultExplain = isSem && generationModelId ? !!state.pendingDefaultExplain : false;
-    const r = await transport.workers.spawn({
-      kind,
-      cwd: state.pendingCwd || undefined,
-      device,
-      generationModelId,
-      generationDevice,
-      defaultExplain,
-    });
-    if (!r.ok) { pushBubble('system', `spawn failed: ${r.error || 'unknown'}`); return; }
-    state.currentTarget = r.id;
-    // Visible spawn confirmation — surfaces explain config so the
-    // user can immediately see whether --explain will do anything.
-    // Without this, an unconfigured Semantic worker silently ignores
-    // --explain (intentional, but confusing the first time).
-    if (isSem) {
-      const dev = device || 'cpu';
-      const explainBits = generationModelId
-        ? `explain: ${generationModelId} (default ${defaultExplain ? 'on' : 'off'})`
+    const r = await spawnWorkerAction(kind);
+    if (!r.ok) {
+      pushBubble('system', `spawn failed: ${r.error || 'unknown'}`);
+      return;
+    }
+    if (kind === 'semantic') {
+      const dev = r.device || 'cpu';
+      const explainBits = r.generationModelId
+        ? `explain: ${r.generationModelId} (default ${r.defaultExplain ? 'on' : 'off'})`
         : 'explain: disabled (no generation model picked)';
       pushBubble('system', `Spawned "${r.name}" — embed device: ${dev}, ${explainBits}`);
     }
-    // Cache the worker's toolkit for slash autocomplete. Only semantic
-    // workers expose tools; for other kinds the call returns ok:false
-    // and we just skip (popup will not appear).
-    try {
-      const tr = await transport.workers.listTools(r.id);
-      if (tr && tr.ok && Array.isArray(tr.tools)) {
-        state.toolsByWorker.set(r.id, tr.tools);
-      }
-    } catch { /* ignore — autocomplete just won't show */ }
-    await refreshAll();
   }
 
   // --- Bubbles -----------------------------------------------------------
@@ -190,129 +168,8 @@ function init() {
     /** @type {any} */ (chatEl()).attachContextBadge(msg);
   }
 
-  // --- @memory built-in --------------------------------------------------
-
-  // Default min-confidence applied when the user didn't specify
-  // --min or --all. Filters obvious noise without being aggressive.
-  //
-  // Cosine similarity in MiniLM-L6 frequently lands at 0.3–0.4 for
-  // random sentence pairs (noise floor), so 0.5 is the right cutoff
-  // for "this is plausibly related." Users can drop lower with
-  // --min 0.3 or see everything with --all.
-  // See docs/memory-search.md "What 'confidence' means in practice."
-  const DEFAULT_MIN_CONFIDENCE = 0.5;
-
-  // Parse the flags + query out of a "@memory ..." input.
-  //
-  //   @memory query                       → { limit: 10, minConfidence: 0.3 }
-  //   @memory --all query                 → { limit: 10, minConfidence: 0, showAll: true }
-  //   @memory --limit 20 query            → { limit: 20, minConfidence: 0.3 }
-  //   @memory --min 0.5 query             → { limit: undefined, minConfidence: 0.5 }
-  //   @memory --limit 20 --min 0.5 query  → { limit: 20, minConfidence: 0.5 }
-  //
-  // When --min is set without --limit, we leave limit undefined so
-  // the search returns ALL qualifying rows.
-  function parseMemoryArgs(raw) {
-    const tokens = String(raw).trim().split(/\s+/);
-    let limit;
-    let explicitMin;       // user-supplied --min value (sticks even if 0)
-    let showAll = false;
-    let i = 0;
-    while (i < tokens.length) {
-      const t = tokens[i];
-      if (t === '--limit' || t === '-n') {
-        const v = parseInt(tokens[i + 1], 10);
-        if (Number.isFinite(v) && v > 0) limit = v;
-        i += 2;
-      } else if (t === '--min' || t === '--min-confidence') {
-        const v = parseFloat(tokens[i + 1]);
-        if (Number.isFinite(v) && v >= 0 && v <= 1) explicitMin = v;
-        i += 2;
-      } else if (t === '--all') {
-        showAll = true;
-        i += 1;
-      } else {
-        break; // first non-flag token = start of the query
-      }
-    }
-    const query = tokens.slice(i).join(' ').trim();
-
-    // Resolve the effective minConfidence:
-    //   --all          → 0 (no filtering)
-    //   --min X        → X (whatever the user said, even 0)
-    //   neither        → DEFAULT_MIN_CONFIDENCE (smart default)
-    let minConfidence;
-    if (showAll) minConfidence = 0;
-    else if (typeof explicitMin === 'number') minConfidence = explicitMin;
-    else minConfidence = DEFAULT_MIN_CONFIDENCE;
-
-    // Default limit: if user didn't say --limit AND didn't ask for a
-    // threshold-only query (--min/--all), use 10.
-    if (limit === undefined && explicitMin === undefined && !showAll) {
-      limit = 10;
-    }
-
-    return { limit, minConfidence, showAll, query };
-  }
-
-  async function runMemorySearch(query, opts = {}) {
-    const flagsLabel = [];
-    if (opts.showAll) flagsLabel.push('--all');
-    if (typeof opts.limit === 'number') flagsLabel.push(`--limit ${opts.limit}`);
-    if (opts.minConfidence > 0 && !opts.showAll) flagsLabel.push(`--min ${opts.minConfidence}`);
-    const echoQuery = (flagsLabel.length ? flagsLabel.join(' ') + ' ' : '') + query;
-    pushUserBubble(`@memory ${echoQuery}`);
-    const bubble = pushMemoryBubble(query);
-    try {
-      const searchOpts = {};
-      if (typeof opts.limit === 'number') searchOpts.limit = opts.limit;
-      if (typeof opts.minConfidence === 'number' && opts.minConfidence > 0) {
-        searchOpts.minConfidence = opts.minConfidence;
-      }
-      const result = await transport.memory.search(query, searchOpts);
-      const hits = (result && result.hits) || [];
-      const totalCandidates = (result && typeof result.totalCandidates === 'number')
-        ? result.totalCandidates
-        : hits.length;
-      bubble.setResults({
-        query, hits, totalCandidates,
-        minConfidence: opts.minConfidence || 0,
-        showAll: !!opts.showAll,
-      });
-    } catch (err) {
-      bubble.setError({ query, error: err.message });
-    }
-  }
-
-  // Help bubble: shows command syntax. Triggered by `@memory`,
-  // `@memory --help`, `@memory help`. Doesn't go through the
-  // search path — pure documentation.
-  function pushMemoryHelpBubble() {
-    const el = /** @type {any} */ (document.createElement('memory-bubble'));
-    el.setHelp({ defaultMinConfidence: DEFAULT_MIN_CONFIDENCE });
-    chatEl().appendChild(el);
-    renderEmptyState();
-    chatEl().scrollTop = chatEl().scrollHeight;
-    return el;
-  }
-
-  function pushUserBubble(text) {
-    const wrap = document.createElement('div');
-    wrap.className = 'bubble bubble--user';
-    wrap.textContent = text;
-    chatEl().appendChild(wrap);
-    renderEmptyState();
-    chatEl().scrollTop = chatEl().scrollHeight;
-  }
-
-  function pushMemoryBubble(query) {
-    const el = /** @type {any} */ (document.createElement('memory-bubble'));
-    el.setSearching({ query });
-    chatEl().appendChild(el);
-    renderEmptyState();
-    chatEl().scrollTop = chatEl().scrollHeight;
-    return el;
-  }
+  // @memory built-in lives in renderer/commands/memory.js. Wired into
+  // send() below.
 
 
   // --- Sending -----------------------------------------------------------
@@ -381,37 +238,11 @@ function init() {
     const raw = (typeof rawArg === 'string') ? rawArg : (compose?.value || '');
     if (!raw.trim()) return;
 
-    // Built-in @memory command — searches the memory index and
-    // renders results inline. Reserved name; never resolves to a
-    // worker even if one is somehow named "memory".
-    //
-    // Forms:
-    //   @memory                           → help bubble
-    //   @memory --help | help             → help bubble
-    //   @memory <query>                   → top results, default min-confidence
-    //   @memory --all <query>             → no min-confidence (escape hatch)
-    //   @memory --limit N <query>         → custom result count
-    //   @memory --min X <query>           → custom threshold
-    //   (flags compose; flags before query)
-    const memoryRe = /^\s*@memory(?:\s+([\s\S]+))?$/i;
-    const memoryMatch = raw.match(memoryRe);
-    if (memoryMatch) {
-      const tail = (memoryMatch[1] || '').trim();
+    // Built-in @memory command. Reserved name; never resolves to a
+    // worker even if one is somehow named "memory". See
+    // renderer/commands/memory.js for the full command grammar.
+    if (await tryHandleMemoryCommand(raw, chatEl())) {
       compose?.clear();
-      if (!tail || tail === '--help' || tail === '-h' || tail === 'help') {
-        pushMemoryHelpBubble();
-        return;
-      }
-      const parsed = parseMemoryArgs(tail);
-      if (!parsed.query) {
-        pushMemoryHelpBubble();
-        return;
-      }
-      await runMemorySearch(parsed.query, {
-        limit: parsed.limit,
-        minConfidence: parsed.minConfidence,
-        showAll: parsed.showAll,
-      });
       return;
     }
 
