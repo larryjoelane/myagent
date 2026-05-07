@@ -24,27 +24,18 @@ export async function refreshWorkers() {
 }
 
 /**
- * Spawn a worker of the given kind. Semantic workers receive the
- * device / generation-model / explain config from the store.
+ * Spawn a worker of the given kind. The model service (for semantic
+ * workers' embeddings) chooses its own device internally — there's no
+ * per-spawn device picker.
  *
  * @param {'claude'|'shell'|'semantic'} kind
- * @returns {Promise<{ ok: boolean, id?: string, name?: string, error?: string, device?: string, generationModelId?: string, defaultExplain?: boolean }>}
+ * @returns {Promise<{ ok: boolean, id?: string, name?: string, error?: string }>}
  */
 export async function spawnWorker(kind) {
   const s = store.get();
-  const isSem = kind === 'semantic';
-  const device = isSem ? (s.pendingDevice || undefined) : undefined;
-  const generationModelId = isSem && s.pendingGenerationModelId
-    ? s.pendingGenerationModelId : undefined;
-  const generationDevice = isSem && generationModelId ? device : undefined;
-  const defaultExplain = isSem && generationModelId ? !!s.pendingDefaultExplain : false;
   const r = await transport().workers.spawn({
     kind,
     cwd: s.pendingCwd || undefined,
-    device,
-    generationModelId,
-    generationDevice,
-    defaultExplain,
   });
   if (!r.ok) return { ok: false, error: r.error || 'unknown' };
 
@@ -61,10 +52,7 @@ export async function spawnWorker(kind) {
   } catch { /* ignore */ }
 
   await refreshWorkers();
-  return {
-    ok: true, id: r.id, name: r.name,
-    device, generationModelId, defaultExplain: !!defaultExplain,
-  };
+  return { ok: true, id: r.id, name: r.name };
 }
 
 /** @param {string} id */
@@ -119,43 +107,6 @@ export async function hydrateLastCwd() {
     const r = await transport().settings.get('lastCwd');
     if (r.value) store.update({ pendingCwd: r.value });
   } catch { /* ignore */ }
-}
-
-/** Probe the embedder for device support. Cached after first call. */
-export async function loadEmbedderStatus() {
-  const s = store.get();
-  if (s.embedderStatus) return;
-  if (!transport().models?.embedderStatus) return;
-  try {
-    const r = await transport().models.embedderStatus();
-    if (r && r.ok) store.update({ embedderStatus: r });
-  } catch { /* ignore */ }
-}
-
-/** Load the generation-model registry + per-model cache status. */
-export async function loadGenerationModels() {
-  if (!transport().models?.list) return;
-  try {
-    const r = await transport().models.list('generate');
-    if (!r || !r.ok) return;
-    store.update({ generationModels: r.models });
-    // Probe each model's cache status sequentially — calls are cheap
-    // and serializing avoids a thundering herd into the bridge.
-    await refreshGenerationModelStatuses();
-  } catch { /* leave list empty */ }
-}
-
-export async function refreshGenerationModelStatuses() {
-  if (!transport().models?.cacheStatus) return;
-  const models = store.get().generationModels || [];
-  for (const m of models) {
-    try {
-      const r = await transport().models.cacheStatus(m.id);
-      if (!r || !r.ok) continue;
-      m._cacheStatus = r;
-    } catch { /* skip — leave whatever's there */ }
-  }
-  store.bump();
 }
 
 /**

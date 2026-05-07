@@ -32,12 +32,7 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
       if (kind === 'shell') {
         result = await workerManager.spawnShell({ name: body.name, cwd });
       } else if (kind === 'semantic') {
-        result = await workerManager.spawnSemantic({
-          name: body.name, cwd, device: body.device,
-          generationModelId: body.generationModelId,
-          generationDevice: body.generationDevice,
-          defaultExplain: body.defaultExplain,
-        });
+        result = await workerManager.spawnSemantic({ name: body.name, cwd });
       } else {
         result = await workerManager.spawnWorker({
           name: body.name, cwd, permissionMode: body.permissionMode,

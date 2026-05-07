@@ -24,7 +24,6 @@ import { store } from '../state/store.js';
 import {
   pickCwd, closeWorker, renameWorker, refreshWorkers,
   setWorkerMirror, setDefaultMirror,
-  loadEmbedderStatus, loadGenerationModels, refreshGenerationModelStatuses,
   getSetting, setSetting, hydrateLastCwd,
 } from '../state/actions.js';
 import { cmdBtnStyles } from './styles.js';
@@ -294,8 +293,6 @@ export class SettingsDrawer extends LitElement {
     // and the cwd-picker label show the right path on launch.
     hydrateLastCwd();
     this.requestUpdate();
-    loadEmbedderStatus();
-    loadGenerationModels();
   }
 
   // --- Section renderers --------------------------------------------------
@@ -411,207 +408,6 @@ export class SettingsDrawer extends LitElement {
     `;
   }
 
-  _renderDeviceRow() {
-    const s = store.get();
-    const onChange = (/** @type {any} */ e) => {
-      const v = e.target.value;
-      store.update({ pendingDevice: v });
-    };
-    return html`
-      <div class="row row--device">
-        <span class="label--small">Semantic device</span>
-        <select id="am-spawn-device" class="am-select" .value=${s.pendingDevice}
-                title="Compute device for the next Semantic worker spawn"
-                @change=${onChange}>
-          <option value="cpu">CPU</option>
-          <option value="auto">Auto (prefer WebGPU)</option>
-          <option value="webgpu">WebGPU</option>
-        </select>
-      </div>
-      ${this._renderDeviceStatus()}
-      ${this._renderDeviceTools()}
-    `;
-  }
-
-  _renderDeviceStatus() {
-    const s = store.get();
-    const es = s.embedderStatus;
-    const dev = s.pendingDevice || 'cpu';
-    let text = 'Embedder status unknown.';
-    let warn = false;
-    if (es) {
-      const model = es.modelId || 'embedder';
-      if (dev === 'cpu') {
-        text = `${model} on CPU (always available).`;
-      } else if (es.webgpuRuntimeAvailable) {
-        text = `${model} will use ${dev === 'auto' ? 'WebGPU when possible' : 'WebGPU'}.`;
-      } else {
-        text = `${model}: WebGPU not available in current build — will fall back to CPU.`;
-        warn = true;
-      }
-    }
-    return html`
-      <div class="row row--device-status">
-        <span id="am-device-status" class=${warn ? 'device-status--warn' : ''}>${text}</span>
-      </div>
-    `;
-  }
-
-  _renderDeviceTools() {
-    const benchmark = async () => {
-      const dev = store.get().pendingDevice || 'cpu';
-      const btn = /** @type {HTMLButtonElement|null} */ (this.renderRoot.querySelector('#am-device-benchmark'));
-      const orig = btn?.textContent;
-      if (btn) { btn.disabled = true; btn.textContent = `Benchmarking ${dev}…`; }
-      try {
-        const r = await transport().models.embedderBenchmark({ device: dev, iterations: 20 });
-        if (!r.ok) throw new Error(r.error || 'benchmark failed');
-        this.dispatchEvent(new CustomEvent('system-message', {
-          detail: { text: `Benchmark (${dev}, ${r.iterations} embeds): median ${r.medianMs}ms · mean ${r.meanMs}ms · min ${r.minMs}ms · max ${r.maxMs}ms` },
-          bubbles: true, composed: true,
-        }));
-      } catch (err) {
-        this.dispatchEvent(new CustomEvent('system-message', {
-          detail: { text: `Benchmark failed: ${/** @type {Error} */ (err).message}` },
-          bubbles: true, composed: true,
-        }));
-      } finally {
-        if (btn) { btn.disabled = false; btn.textContent = orig || 'Benchmark'; }
-      }
-    };
-    const devtools = async () => {
-      try { await transport().models.embedderDevTools(); }
-      catch (err) {
-        this.dispatchEvent(new CustomEvent('system-message', {
-          detail: { text: `devtools failed: ${/** @type {Error} */ (err).message}` },
-          bubbles: true, composed: true,
-        }));
-      }
-    };
-    return html`
-      <div class="row row--device-tools">
-        <button id="am-device-benchmark" class="cmd-btn cmd-btn--small" type="button"
-                title="Run a 20-embed benchmark with the chosen device"
-                @click=${benchmark}>Benchmark</button>
-        <button id="am-device-devtools" class="cmd-btn cmd-btn--small cmd-btn--muted" type="button"
-                title="Open DevTools on the hidden embedder host (verify WebGPU)"
-                @click=${devtools}>DevTools</button>
-      </div>
-    `;
-  }
-
-  _renderGenModelRow() {
-    const s = store.get();
-    const onChange = (/** @type {any} */ e) => {
-      store.update({ pendingGenerationModelId: e.target.value || '' });
-    };
-    return html`
-      <div class="row row--gen-model">
-        <span class="label--small">Explain model</span>
-        <select id="am-spawn-gen-model" class="am-select" .value=${s.pendingGenerationModelId}
-                title="Generative model used by --explain on Semantic workers"
-                @change=${onChange}>
-          <option value="">(none — explain disabled)</option>
-          ${(s.generationModels || []).map((/** @type {any} */ m) => {
-            const cs = m._cacheStatus;
-            const dot = cs ? (cs.cached ? '●' : '○') : '○';
-            return html`<option value=${m.id}>${dot} ${m.name} — ~${m.approxSizeMB}MB</option>`;
-          })}
-        </select>
-      </div>
-      ${this._renderGenModelInfo()}
-      <label class="row row--explain">
-        <input id="am-default-explain" type="checkbox"
-               .checked=${s.pendingDefaultExplain}
-               @change=${(/** @type {any} */ e) => store.update({ pendingDefaultExplain: !!e.target.checked })} />
-        <span>Explain results by default (use --no-explain to skip)</span>
-      </label>
-    `;
-  }
-
-  _renderGenModelInfo() {
-    const s = store.get();
-    const id = s.pendingGenerationModelId;
-    if (!id) return html`<div id="am-gen-model-info" class="gen-model-info" hidden></div>`;
-    const m = (s.generationModels || []).find((/** @type {any} */ x) => x.id === id);
-    if (!m) return html`<div id="am-gen-model-info" class="gen-model-info" hidden></div>`;
-    const cs = m._cacheStatus;
-    let cacheText = 'checking…';
-    let cacheCls = '';
-    let warmDisabled = true;
-    let warmText = 'Pre-download';
-    let warmTitle = 'Download + load the model now (otherwise happens on first --explain)';
-    if (cs) {
-      warmDisabled = false;
-      if (cs.cached) {
-        const mb = (cs.totalBytes / 1024 / 1024).toFixed(0);
-        cacheText = `cached (${mb}MB on disk in browser cache)`;
-        cacheCls = 'gen-cache--ok';
-        warmText = 'Re-load';
-        warmTitle = 'Force a reload of the model into memory';
-      } else {
-        const partial = cs.totalBytes > 0
-          ? ` (partial: ${(cs.totalBytes / 1024 / 1024).toFixed(0)}MB present, missing ${cs.missingRequired.join(', ')})`
-          : '';
-        cacheText = `not cached — ~${m.approxSizeMB}MB will download on first use${partial}`;
-        cacheCls = 'gen-cache--missing';
-        warmText = 'Pre-download';
-        warmTitle = `Download ~${m.approxSizeMB}MB and load the model now (otherwise happens on first --explain)`;
-      }
-    }
-    const url = `https://huggingface.co/${m.repo}`;
-    const onWarmup = async () => {
-      const btn = /** @type {HTMLButtonElement|null} */ (this.renderRoot.querySelector('#am-gen-model-warmup'));
-      const orig = btn?.textContent;
-      if (btn) { btn.disabled = true; btn.textContent = `Downloading ${m.name}…`; }
-      const wasCached = !!cs?.cached;
-      const t0 = Date.now();
-      try {
-        const r = await transport().models.warmup(m.id, store.get().pendingDevice || undefined);
-        if (!r.ok) throw new Error(r.error || 'warmup failed');
-        const secs = ((Date.now() - t0) / 1000).toFixed(1);
-        const where = r.resolvedDevice?.device || 'unknown';
-        this.dispatchEvent(new CustomEvent('system-message', {
-          detail: { text: `Model "${m.name}" ready on ${where} in ${secs}s${wasCached ? ' (was cached)' : ' (downloaded + loaded)'}.` },
-          bubbles: true, composed: true,
-        }));
-        try {
-          const cs2 = await transport().models.cacheStatus(m.id);
-          if (cs2.ok) m._cacheStatus = cs2;
-          await refreshGenerationModelStatuses();
-        } catch { /* ignore */ }
-        store.bump();
-      } catch (err) {
-        this.dispatchEvent(new CustomEvent('system-message', {
-          detail: { text: `Pre-download of "${m.name}" failed: ${/** @type {Error} */ (err).message}` },
-          bubbles: true, composed: true,
-        }));
-      } finally {
-        if (btn) { btn.disabled = false; btn.textContent = orig || warmText; }
-      }
-    };
-    return html`
-      <div id="am-gen-model-info" class="gen-model-info">
-        <div class="gen-row">
-          <span class="gen-label">Source</span>
-          <a id="am-gen-model-src" class="gen-link" href=${url} target="_blank" rel="noopener" title=${url}>${m.repo}</a>
-        </div>
-        <div class="gen-row">
-          <span class="gen-label">Cache</span>
-          <span id="am-gen-model-cache" class=${`gen-cache ${cacheCls}`}>${cacheText}</span>
-        </div>
-        <div class="gen-row gen-row--actions">
-          <button id="am-gen-model-warmup" class="cmd-btn cmd-btn--small" type="button"
-                  ?disabled=${warmDisabled} title=${warmTitle}
-                  @click=${onWarmup}>${warmText}</button>
-          <button id="am-gen-model-recheck" class="cmd-btn cmd-btn--small cmd-btn--muted" type="button"
-                  title="Re-check the cache for this model"
-                  @click=${async () => { await refreshGenerationModelStatuses(); }}>Recheck</button>
-        </div>
-      </div>
-    `;
-  }
-
   _renderWorkerRows() {
     const s = store.get();
     if (s.workers.length === 0) {
@@ -665,8 +461,6 @@ export class SettingsDrawer extends LitElement {
       ${this._renderToolDetailsRow()}
       ${this._renderWorkersHeader()}
       ${this._renderCwdRow()}
-      ${this._renderDeviceRow()}
-      ${this._renderGenModelRow()}
       ${this._renderWorkerRows()}
     `;
   }

@@ -102,22 +102,13 @@ function init() {
   // --- Spawn flow --------------------------------------------------------
   //
   // The transport call, toolkit cache, and refresh all live in
-  // actions.spawnWorker. Here we just surface the user-facing system
-  // bubble: failures always, plus a confirmation for semantic workers
-  // (so an unconfigured --explain isn't silently ignored).
+  // actions.spawnWorker. Here we just surface failures as a system
+  // bubble — successes are visible via the worker chip strip update.
 
   async function spawnWorker(kind) {
     const r = await spawnWorkerAction(kind);
     if (!r.ok) {
       pushBubble('system', `spawn failed: ${r.error || 'unknown'}`);
-      return;
-    }
-    if (kind === 'semantic') {
-      const dev = r.device || 'cpu';
-      const explainBits = r.generationModelId
-        ? `explain: ${r.generationModelId} (default ${r.defaultExplain ? 'on' : 'off'})`
-        : 'explain: disabled (no generation model picked)';
-      pushBubble('system', `Spawned "${r.name}" — embed device: ${dev}, ${explainBits}`);
     }
   }
 

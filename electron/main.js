@@ -198,17 +198,10 @@ function getSemanticFactory() {
   if (semanticFactory) return semanticFactory;
   const bridge = getEmbedderBridge();
   semanticFactory = buildSemanticDriverFactory({
-    embedder: { embed: (text, opts) => bridge.embed(text, opts || {}) },
-    // Generator uses the same bridge — text-generation pipelines run
-    // in the same hidden renderer that hosts the embedder. The
-    // factory only invokes generate() when the per-spawn opts opt in
-    // (generationModelId set and --explain or defaultExplain).
-    generator: {
-      generate: (prompt, opts, onToken) =>
-        onToken
-          ? bridge.generateStream(prompt, opts, onToken)
-          : bridge.generate(prompt, opts),
-    },
+    // The semantic worker only does routing now — pure embed-based
+    // tool selection. No generator, no per-spawn device. The model
+    // service (renderer/workers/model-worker.js) picks its own device.
+    embedder: { embed: (text) => bridge.embed(text) },
     // Hand the indexHost's search through so the memory-search tool
     // talks to the same SQLite index every other piece of the app uses.
     search: (opts) => indexHost.search(opts),

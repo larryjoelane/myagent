@@ -30,12 +30,7 @@
  * @property {Set<string>} thinkingWorkers    // worker ids currently mid-turn
  * @property {{ defaultMirror: boolean, toolDetails: 'expanded'|'collapsed'|'hidden' }} settings
  * @property {string | null} pendingCwd                   // cwd for the next spawn
- * @property {'cpu'|'auto'|'webgpu'} pendingDevice        // device for the next semantic spawn
- * @property {string} pendingGenerationModelId            // '' = no explain
- * @property {boolean} pendingDefaultExplain
- * @property {Array<object>} generationModels             // registry rows + cache snapshots
  * @property {Map<string, Array<object>>} toolsByWorker
- * @property {object | null} embedderStatus
  */
 
 /** @type {ChatState} */
@@ -45,12 +40,7 @@ const state = {
   thinkingWorkers: new Set(),
   settings: { defaultMirror: true, toolDetails: 'collapsed' },
   pendingCwd: null,
-  pendingDevice: 'cpu',
-  pendingGenerationModelId: '',
-  pendingDefaultExplain: false,
-  generationModels: [],
   toolsByWorker: new Map(),
-  embedderStatus: null,
 };
 
 /** @type {Set<() => void>} */

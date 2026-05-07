@@ -47,8 +47,7 @@ function defaultBuildToolkit({ search, store, root }) {
 }
 
 function buildSemanticDriverFactory({
-  embedder,         // { embed(text, opts?) -> Float32Array }, required
-  generator,        // optional { generate(prompt, opts, onToken?) }
+  embedder,         // { embed(text) -> Float32Array }, required
   search,           // optional async ({query, limit, minConfidence}) -> hits
   store,            // optional async ({text, source, tags}) -> {id}
   root,             // optional absolute path; enables grep/read-file/git-log
@@ -63,30 +62,14 @@ function buildSemanticDriverFactory({
   // change, so embedding them once is the right behavior.
   const toolkit = builder({ search, store, root });
 
-  return function spawn({ agentId, onEvent, cwd, device, generationModelId, generationDevice, defaultExplain, ...rest } = {}) {
+  return function spawn({ agentId, onEvent, cwd, ...rest } = {}) {
     void cwd; void rest;
-    // Per-spawn device wraps the shared embedder so the router/tool-kit
-    // embed() calls go through the user-selected device. The base
-    // embedder caches one pipeline per device, so multiple semantic
-    // workers with different devices share underlying pipelines.
-    const wrapped = device
-      ? { embed: (text) => embedder.embed(text, { device }) }
-      : embedder;
-    const router = new EmbeddingRouter({ embedder: wrapped, toolkit, threshold });
-    // Build the per-spawn generator handle when both a generator
-    // implementation AND a model id were provided. Absent either,
-    // explain becomes a no-op (or, if --explain is requested, an
-    // error chunk so the user knows why nothing happened).
-    let perSpawnGenerator = null;
-    if (generator && typeof generator.generate === 'function' && generationModelId) {
-      perSpawnGenerator = {
-        generate: (prompt, opts, onToken) => generator.generate(prompt, opts, onToken),
-        modelId: generationModelId,
-        device: generationDevice || undefined,
-        defaultExplain: !!defaultExplain,
-      };
-    }
-    return new SemanticDriver({ agentId, router, toolkit, onEvent, generator: perSpawnGenerator });
+    // The semantic driver doesn't pick devices anymore — the model
+    // service (renderer/workers/model-worker.js) decides where to run.
+    // The shared embedder is passed straight through; whatever the
+    // model service picks (CPU/WebGPU/auto) applies to every spawn.
+    const router = new EmbeddingRouter({ embedder, toolkit, threshold });
+    return new SemanticDriver({ agentId, router, toolkit, onEvent });
   };
 }
 
