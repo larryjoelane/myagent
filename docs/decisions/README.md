@@ -11,3 +11,4 @@ One file per decision. Each ADR captures the question, the options considered, w
 | [0005](0005-memory-mirror-and-index.md) | Mirror Claude memory files + per-project index for Obsidian | Accepted |
 | [0006](0006-sft-pipeline.md) | Build SFT export / label / build pipeline for fine-tuning | Accepted |
 | [0007](0007-train-test-split.md) | Add deterministic conversation-level train/test split to `sft-build` | Accepted |
+| [0008](0008-toolkit-scope-policy.md) | Toolkit-level filesystem scope policy (semantic now, Ollama Cloud tool-use next, Claude/shell inert-but-ready) | Accepted |
