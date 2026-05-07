@@ -278,11 +278,11 @@ function init() {
     // → pushBubble('system', ...). Persisted settings (chat side, tool
     // details, auto-context, mirror toggles, generation model, default
     // explain, semantic device) all route through actions/store directly.
-    settingsEl()?.addEventListener('spawn', (/** @type {any} */ ev) => {
+    $('am-settings')?.addEventListener('spawn', (/** @type {any} */ ev) => {
       const kind = ev?.detail?.kind;
       if (kind) spawnWorker(kind);
     });
-    settingsEl()?.addEventListener('system-message', (/** @type {any} */ ev) => {
+    $('am-settings')?.addEventListener('system-message', (/** @type {any} */ ev) => {
       const text = ev?.detail?.text;
       if (text) pushBubble('system', text);
     });

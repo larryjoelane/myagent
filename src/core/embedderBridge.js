@@ -1,131 +1,129 @@
-// Bridge between the Node main process and the renderer-hosted
-// embedder. The semantic agent's router calls `embed(text, opts)`
-// from main; this module fires an IPC request into the hidden
-// BrowserWindow that runs @huggingface/transformers (which can hit
-// WebGPU because onnxruntime-web is browser-only).
+// Bridge between the Node main process and the renderer-hosted model
+// Worker. The semantic agent's router calls `embed(text, opts)` from
+// main; this module sends an IPC request into the chat renderer,
+// which forwards it to a Web Worker that runs
+// @huggingface/transformers against WebGPU.
 //
-// Why a hidden window: the alternative is `onnxruntime-node`, which
-// only supports CUDA/CoreML — not the integrated GPUs most users
-// have. WebGPU through the renderer covers Intel/AMD/NVIDIA
-// integrated and discrete uniformly via the OS's WebGPU
-// implementation.
+// Why a Worker (was: hidden BrowserWindow): only browser-context JS
+// can access WebGPU. `onnxruntime-node` is CPU/CUDA/CoreML only —
+// not the integrated GPUs most users have. Going through a Web
+// Worker keeps WebGPU access while avoiding the cost of a second
+// renderer process; the Worker also runs off-thread, so the chat UI
+// stays responsive while a model loads or generation streams.
 //
-// API:
-//   const bridge = createEmbedderBridge({ projectRoot, BrowserWindow });
-//   await bridge.start();          // spawns the hidden window
+// API (unchanged from the previous hidden-BW implementation — keep
+// SemanticDriver and the rest of the consumers untouched):
+//   const bridge = createEmbedderBridge({ getWebContents });
+//   await bridge.start();          // resolves when the renderer
+//                                   // loads model-bridge.js and
+//                                   // posts model:ready
 //   const v = await bridge.embed('hello', { device: 'auto' });
 //   const s = await bridge.status();
 //   await bridge.stop();
 //
-// Concurrency: each embed() and status() gets a unique request id;
-// pending replies are correlated by id. Calls made before start()
-// queue and resolve once the window is ready.
+// Concurrency: each request gets a unique id; pending replies are
+// correlated by id. Streaming generation calls keep the entry alive
+// across multiple `chunk` messages until the terminal `done:true`.
+//
+// Caller responsibility: pass `getWebContents` — a function that
+// returns the chat renderer's webContents (or null if not ready).
+// We use a getter rather than the WebContents directly because the
+// bridge is constructed during app startup, before the main window
+// has finished loading. The first request will await the renderer's
+// `model:ready` IPC.
 
-const path = require('path');
 const { ipcMain } = require('electron');
 const crypto = require('crypto');
 
 function makeId() { return crypto.randomBytes(8).toString('hex'); }
 
 class EmbedderBridge {
-  constructor({ projectRoot, BrowserWindow }) {
-    if (!projectRoot) throw new Error('EmbedderBridge: projectRoot is required');
-    if (!BrowserWindow) throw new Error('EmbedderBridge: BrowserWindow is required');
-    this.projectRoot = projectRoot;
-    this.BrowserWindow = BrowserWindow;
-    this.win = null;
-    this.ready = null;          // Promise<void>, resolves on first __init__ from host
-    this.pending = new Map();   // id -> { resolve, reject, timer }
+  constructor({ getWebContents }) {
+    if (typeof getWebContents !== 'function') {
+      throw new Error('EmbedderBridge: getWebContents (function) is required');
+    }
+    this.getWebContents = getWebContents;
+    /** @type {Promise<void> | null} */
+    this.ready = null;
+    /** @type {Map<string, {resolve: Function, reject: Function, timer: any, onChunk?: (c: any) => void}>} */
+    this.pending = new Map();
     this.cachedStatus = null;
     this._ipcWired = false;
+    this._readyResolve = null;
   }
 
+  // Resolve once the renderer's model-bridge.js has loaded and
+  // announced itself via `model:ready`. Idempotent — calling start()
+  // a second time returns the same Promise.
   async start() {
-    if (this.win) return this.ready;
+    if (this.ready) return this.ready;
     this._wireIpc();
-    const win = new this.BrowserWindow({
-      show: false,
-      // Tiny — never visible. Some Electron builds reject 0×0.
-      width: 100,
-      height: 100,
-      webPreferences: {
-        preload: path.join(this.projectRoot, 'electron', 'embedder-host-preload.js'),
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: false,         // we need the preload to require('electron')
-        // WebGPU requires no special flag in Electron 41 (Chromium 134
-        // ships it stable), but explicitly enable in case a future
-        // build flips defaults.
-        webgl: true,
-        offscreen: false,
-      },
+    this.ready = new Promise((resolve) => {
+      this._readyResolve = resolve;
+      // Defensive timeout: if the renderer never posts model:ready
+      // within 30s, log and resolve anyway. The first real request
+      // will surface the underlying error.
+      setTimeout(() => {
+        if (this._readyResolve) {
+          // eslint-disable-next-line no-console
+          console.error('[embedder bridge] renderer did not signal ready within 30s');
+          const r = this._readyResolve;
+          this._readyResolve = null;
+          r();
+        }
+      }, 30_000);
     });
-    this.win = win;
-    win.loadFile(path.join(this.projectRoot, 'renderer', 'embedder-host.html'));
-
-    // ready resolves when the host posts its initial __init__ status.
-    this.ready = new Promise((resolve, reject) => {
-      this.pending.set('__init__', {
-        resolve: (msg) => { this.cachedStatus = msg.status || null; resolve(this.cachedStatus); },
-        reject,
-        timer: setTimeout(() => {
-          this.pending.delete('__init__');
-          reject(new Error('embedder host failed to initialize within 30s'));
-        }, 30_000),
-      });
-    });
-
-    win.on('closed', () => {
-      this.win = null;
-      // Reject any in-flight requests so callers don't hang.
-      for (const [id, p] of this.pending) {
-        clearTimeout(p.timer);
-        p.reject(new Error('embedder host closed'));
-        this.pending.delete(id);
-      }
-    });
-
     return this.ready;
   }
 
   _wireIpc() {
     if (this._ipcWired) return;
     this._ipcWired = true;
-    ipcMain.on('embedder:reply', (_e, msg) => {
+
+    ipcMain.on('model:ready', () => {
+      if (this._readyResolve) {
+        const r = this._readyResolve;
+        this._readyResolve = null;
+        r();
+      }
+    });
+
+    ipcMain.on('model:reply', (_e, msg) => {
       if (!msg || msg.id == null) return;
       const p = this.pending.get(msg.id);
       if (!p) return;
-      // Two reply shapes:
-      //   - terminal: { ok, ... }                       — resolves
-      //               { ok: false, error }              — rejects
-      //   - streaming chunk: { chunk: {...}, done: false }
-      //               (no ok field; doesn't resolve, calls onChunk)
-      if (msg.chunk !== undefined && !msg.done) {
-        if (typeof p.onChunk === 'function') p.onChunk(msg.chunk);
-        // Keep the entry — more chunks coming.
-        return;
-      }
       this.pending.delete(msg.id);
       clearTimeout(p.timer);
       if (msg.ok) p.resolve(msg);
-      else p.reject(new Error(msg.error || 'embedder reply failed'));
+      else p.reject(new Error(msg.error || 'model reply failed'));
+    });
+
+    ipcMain.on('model:chunk', (_e, msg) => {
+      if (!msg || msg.id == null) return;
+      const p = this.pending.get(msg.id);
+      if (!p) return;
+      if (typeof p.onChunk === 'function') p.onChunk(msg.chunk);
+      // Keep the entry — more chunks (and the terminal reply) coming.
     });
   }
 
   // Send a request to the host and await its reply. When `onChunk`
   // is provided, intermediate `{chunk}` messages route there; the
-  // final `{ok:true, done:true}` reply still resolves the promise.
+  // final terminal reply still resolves the promise.
   _request(type, payload, { timeoutMs = 60_000, onChunk } = {}) {
-    if (!this.win) throw new Error('embedder bridge not started');
+    const wc = this.getWebContents();
+    if (!wc || wc.isDestroyed()) {
+      return Promise.reject(new Error('model bridge: chat renderer not available'));
+    }
     const id = makeId();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`embedder ${type} timed out after ${timeoutMs}ms`));
+        reject(new Error(`model ${type} timed out after ${timeoutMs}ms`));
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer, onChunk });
       try {
-        this.win.webContents.send('embedder:request', { id, type, payload });
+        wc.send('model:request', { id, type, payload });
       } catch (err) {
         this.pending.delete(id);
         clearTimeout(timer);
@@ -159,15 +157,6 @@ class EmbedderBridge {
     return this.cachedStatus;
   }
 
-  // Run text generation. Resolves with { text, tokensUsed,
-  // tokensPerSec, modelLoadMs?, finishReason }. The `modelId`
-  // option picks which model to use (must be a generative entry
-  // from src/core/models/registry.js); device defaults to the
-  // model's preferred device.
-  //
-  // First call for a model on a device pays the load cost — can
-  // be many seconds for ~370MB Qwen on first run. Hence the long
-  // default timeout.
   async generate(prompt, opts = {}) {
     if (!this.ready) await this.start();
     await this.ready;
@@ -182,9 +171,6 @@ class EmbedderBridge {
     };
   }
 
-  // Streaming variant — `onToken({token, cumulativeText, index})`
-  // fires for each generated token. Resolves with the same final
-  // shape as generate().
   async generateStream(prompt, opts = {}, onToken) {
     if (!this.ready) await this.start();
     await this.ready;
@@ -199,35 +185,28 @@ class EmbedderBridge {
     };
   }
 
-  // Inspect the renderer's cache for a model. Returns a manifest
-  // describing which expected files are present, total bytes, and
-  // a `cached` boolean (true iff every required file + a weight
-  // file are present). Cheap — no network, no model load.
   async cacheStatus(modelId) {
     if (!this.ready) await this.start();
     await this.ready;
     return this._request('cache-status', { modelId }, { timeoutMs: 30_000 });
   }
 
-  // Pre-load a model onto the chosen device without running
-  // inference. Used by the UI's pre-download button so the user can
-  // pay the multi-GB download cost deliberately. Resolves with
-  // { modelId, resolvedDevice, loadMs }.
   async warmup(modelId, opts = {}) {
     if (!this.ready) await this.start();
     await this.ready;
     return this._request('warmup', { modelId, opts }, { timeoutMs: 30 * 60_000 });
   }
 
-  // Open DevTools on the hidden embedder window — for verifying
-  // WebGPU is actually firing. Detached so the tools window opens
-  // separately rather than trying to dock against an invisible host.
+  // Open DevTools on the chat renderer (where the Worker lives).
+  // Workers show in the main renderer's DevTools as a separate
+  // tab — there's no separate window to open anymore.
   openDevTools() {
-    if (!this.win || this.win.isDestroyed()) {
-      throw new Error('embedder bridge not started');
+    const wc = this.getWebContents();
+    if (!wc || wc.isDestroyed()) {
+      throw new Error('model bridge: chat renderer not available');
     }
-    if (!this.win.webContents.isDevToolsOpened()) {
-      this.win.webContents.openDevTools({ mode: 'detach' });
+    if (!wc.isDevToolsOpened()) {
+      wc.openDevTools({ mode: 'detach' });
     }
     return { opened: true };
   }
@@ -240,8 +219,6 @@ class EmbedderBridge {
     if (!this.ready) await this.start();
     await this.ready;
     const text = 'the quick brown fox jumps over the lazy dog';
-    // Warmup — pays the device's pipeline load + first-inference
-    // shader compile cost so the timed runs measure steady state.
     await this.embed(text, { device });
     const samples = [];
     for (let i = 0; i < iterations; i++) {
@@ -264,11 +241,14 @@ class EmbedderBridge {
   }
 
   async stop() {
-    if (this.win && !this.win.isDestroyed()) {
-      try { this.win.destroy(); } catch { /* ignore */ }
+    // Reject any in-flight requests so callers don't hang.
+    for (const [id, p] of this.pending) {
+      clearTimeout(p.timer);
+      p.reject(new Error('model bridge: stopped'));
+      this.pending.delete(id);
     }
-    this.win = null;
     this.ready = null;
+    this._readyResolve = null;
   }
 }
 

@@ -166,20 +166,20 @@ async function autoContextProvider({ text }) {
 
 // ---- Lazy heavy dependencies -----------------------------------------------
 
-// Embedder bridge — hosts @huggingface/transformers in a hidden
-// renderer BrowserWindow so it can target WebGPU. The semantic
-// factory closes over this bridge so all semantic workers share
-// one model load (and one hidden window).
+// Embedder bridge — talks to the model Worker hosted by the chat
+// renderer (so it can target WebGPU; main is Node and can't). The
+// semantic factory closes over this bridge so all semantic workers
+// share one model load (and one Worker).
 let embedderBridge = null;
 function getEmbedderBridge() {
   if (embedderBridge) return embedderBridge;
   embedderBridge = createEmbedderBridge({
-    projectRoot: PROJECT_ROOT,
-    BrowserWindow,
+    getWebContents: () => (mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null),
   });
-  // Spawn the hidden window now (lazy was: on-first-spawn). Spawning
-  // here means the WebGPU probe completes before the user clicks
-  // "+ Spawn Semantic worker", so the device dropdown reflects truth.
+  // Begin waiting for the renderer's `model:ready` IPC. start() is
+  // resolved by that signal; the WebGPU probe completes before the
+  // user clicks "+ Spawn Semantic worker" so the device dropdown
+  // reflects truth.
   embedderBridge.start().catch((err) => {
     // Non-fatal: a failed bridge means semantic spawn will surface
     // the error when it tries to embed. Log so we at least see it.
@@ -302,6 +302,11 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+// Track the main window so the embedder bridge can target its
+// webContents when the SemanticDriver requests an embed/generate.
+// The bridge needs the same renderer that hosts the model Worker.
+let mainWindow = null;
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1100,
@@ -313,6 +318,7 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
+  mainWindow = win;
   // In dev (npm run dev), Vite serves the renderer at this URL; in prod,
   // load the built bundle from renderer/dist/. VITE_DEV_SERVER_URL is set
   // by the dev script in package.json — its absence is the prod signal.
@@ -327,6 +333,7 @@ function createWindow() {
     ptyHandlers.killForWebContents(id);
     agentRegistry.dropWhere((a) => a.webContentsId === id);
     browserManager.destroyAllForWindow(win);
+    if (mainWindow === win) mainWindow = null;
   });
 }
 

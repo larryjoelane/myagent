@@ -4,10 +4,11 @@
 // `onnxruntime-node` backend.
 //
 // CPU-only by design. WebGPU acceleration lives in
-// src/core/embedderBridge.js + renderer/embedder-host.* — they host
-// the model in a hidden BrowserWindow where `onnxruntime-web` can
-// reach the GPU. This module is only used by code that can't reach
-// the renderer (worker threads, CLI shims).
+// src/core/embedderBridge.js + renderer/workers/model-worker.js —
+// the bridge talks to a Web Worker hosted by the chat renderer
+// where `onnxruntime-web` can reach the GPU. This module is only
+// used by code that can't reach the renderer (worker threads, CLI
+// shims).
 //
 // Model: sentence-transformers/all-MiniLM-L6-v2 — 384-dim, ~25MB on
 // disk, English-tuned. Vectors come out L2-normalized so cosine

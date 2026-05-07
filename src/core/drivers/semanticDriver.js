@@ -266,7 +266,7 @@ class SemanticDriver {
       // Higher temp + top-p widens the candidate pool so the model
       // doesn't fall into the lowest-entropy loop. Repetition penalty
       // and no_repeat_ngram_size are applied in the host (see
-      // renderer/embedder-host.js#handleGenerate).
+      // renderer/workers/model-worker.js#handleGenerate).
       temperature: 0.7,
       topP: 0.9,
       repetitionPenalty: 1.2,

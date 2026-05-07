@@ -32,6 +32,11 @@ for (const ev of ['browser:nav', 'browser:title', 'browser:loading', 'browser:er
 // Generation streaming chunks. Subscribers filter by requestId.
 ipcRenderer.on('models:generate-chunk', (_e, msg) => emit('models:generate-chunk', msg));
 
+// Model service host requests from main. The chat renderer's
+// model-bridge.js subscribes via transport.modelHost.onRequest()
+// and routes to the singleton Web Worker.
+ipcRenderer.on('model:request', (_e, msg) => emit('model:request', msg));
+
 function emit(event, msg) {
   const set = listeners.get(event);
   if (set) for (const fn of set) fn(msg);
@@ -154,6 +159,21 @@ contextBridge.exposeInMainWorld('transport', {
       listeners.get(event).add(fn);
       return () => listeners.get(event).delete(fn);
     },
+  },
+  // Model service host — only the chat renderer's model-bridge.js
+  // uses this. Spawns a Web Worker to run @huggingface/transformers
+  // (which can target WebGPU here; can't in main since it's Node).
+  // Receives `model:request` from main and replies via `model:reply`
+  // or streams chunks via `model:chunk`.
+  modelHost: {
+    onRequest: (fn) => {
+      if (!listeners.has('model:request')) listeners.set('model:request', new Set());
+      listeners.get('model:request').add(fn);
+      return () => listeners.get('model:request').delete(fn);
+    },
+    reply: (msg) => ipcRenderer.send('model:reply', msg),
+    chunk: (msg) => ipcRenderer.send('model:chunk', msg),
+    ready: () => ipcRenderer.send('model:ready'),
   },
   pty: {
     // All calls take a paneId so multiple PTYs can coexist (one per pane).

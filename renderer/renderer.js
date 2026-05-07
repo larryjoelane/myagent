@@ -10,6 +10,10 @@ import '@xterm/xterm/css/xterm.css';
 
 import { PaneManager } from './shell.js';
 import './agentManager.js';
+// Model service host — owns the Web Worker that runs
+// @huggingface/transformers (WebGPU-capable). Spawns lazily on
+// first request from main. See renderer/model-bridge.js.
+import './model-bridge.js';
 import './components/app-root.js';
 import './components/empty-state.js';
 import './components/worker-chips.js';

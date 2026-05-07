@@ -17,8 +17,8 @@
     "strictNullChecks": false,
 
     "skipLibCheck": true,
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "types": ["node"]
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "WebWorker"],
+    "types": ["node", "@webgpu/types"]
   },
 
   "include": [
