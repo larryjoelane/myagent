@@ -28,14 +28,17 @@ export async function refreshWorkers() {
  * workers' embeddings) chooses its own device internally — there's no
  * per-spawn device picker.
  *
- * @param {'claude'|'shell'|'semantic'} kind
+ * @param {'claude'|'shell'|'semantic'|'ollama-cloud'} kind
+ * @param {{ model?: string }} [opts] - kind-specific overrides; `model`
+ *   is honored by `ollama-cloud` and ignored elsewhere.
  * @returns {Promise<{ ok: boolean, id?: string, name?: string, error?: string }>}
  */
-export async function spawnWorker(kind) {
+export async function spawnWorker(kind, opts = {}) {
   const s = store.get();
   const r = await transport().workers.spawn({
     kind,
     cwd: s.pendingCwd || undefined,
+    ...(opts.model ? { model: opts.model } : {}),
   });
   if (!r.ok) return { ok: false, error: r.error || 'unknown' };
 

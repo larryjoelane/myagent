@@ -19,6 +19,13 @@ const { WorkerChannel } = require('./workerChannel');
 
 function makeId() { return crypto.randomBytes(6).toString('hex'); }
 
+function shortModelHint(model) {
+  if (!model || typeof model !== 'string') return '';
+  // "ibm/granite-docling" -> "granite-docling"; "gpt-oss:120b-cloud" -> "gpt-oss"
+  const afterSlash = model.includes('/') ? model.split('/').pop() : model;
+  return afterSlash.split(':')[0] || '';
+}
+
 class WorkerManager {
   constructor({ factories, onEvent, memoryStore, memoryMirrorDefault, contextProvider } = {}) {
     if (!factories || typeof factories.claude !== 'function' || typeof factories.shell !== 'function') {
@@ -75,6 +82,17 @@ class WorkerManager {
       kind: 'semantic',
       name: name || this._nextSemanticName(),
       driverOpts: { cwd },
+    });
+  }
+
+  async spawnOllamaCloud({ name, cwd, model } = {}) {
+    if (typeof this.factories['ollama-cloud'] !== 'function') {
+      throw new Error('ollama-cloud agent type is not available (no factories[\'ollama-cloud\'])');
+    }
+    return this._spawn({
+      kind: 'ollama-cloud',
+      name: name || this._nextOllamaCloudName(model),
+      driverOpts: { cwd, model },
     });
   }
 
@@ -207,6 +225,20 @@ class WorkerManager {
       if (!used.has(candidate)) return candidate;
     }
     return `Semantic ${Date.now()}`;
+  }
+
+  _nextOllamaCloudName(model) {
+    // Use the short model tag (text after last `/` or `:`) as a name
+    // hint when the caller picked a model — makes it easy to tell
+    // "Ollama gpt-oss" apart from "Ollama granite-docling" in the list.
+    const used = new Set([...this.workers.values()].map((w) => w.name));
+    const hint = shortModelHint(model);
+    const base = hint ? `Ollama ${hint}` : 'Ollama';
+    for (let i = 1; i < 1000; i++) {
+      const candidate = i === 1 && hint ? base : `${base} ${i}`;
+      if (!used.has(candidate)) return candidate;
+    }
+    return `${base} ${Date.now()}`;
   }
 
   async _spawn({ kind, name, driverOpts, record: extra }) {

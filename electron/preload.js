@@ -84,6 +84,9 @@ contextBridge.exposeInMainWorld('transport', {
     // return {ok:false}). Used by the renderer to drive slash-command
     // autocomplete.
     listTools: (id) => ipcRenderer.invoke('worker:list-tools', { id }),
+    // Ollama Cloud model picker — returns { ok, models[], default }.
+    // Renderer populates the spawn-time dropdown from this list.
+    ollamaCloudModels: () => ipcRenderer.invoke('worker:ollama-cloud-models'),
   },
   // In-process model registry (Cut A: just the embedder). Renderer
   // reads embedder status to populate the Device dropdown on the

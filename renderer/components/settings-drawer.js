@@ -41,6 +41,10 @@ function shortenPath(/** @type {string|null|undefined} */ p) {
 export class SettingsDrawer extends LitElement {
   static properties = {
     open: { type: Boolean, reflect: true },
+    /** Available Ollama Cloud models (from main via .env). */
+    _ollamaModels: { state: true },
+    /** Currently-selected Ollama Cloud model in the spawn dropdown. */
+    _ollamaModel: { state: true },
   };
 
   static styles = [
@@ -88,7 +92,13 @@ export class SettingsDrawer extends LitElement {
         justify-content: space-between;
         align-items: center;
       }
-      .spawn-buttons { display: inline-flex; gap: 4px; }
+      .spawn-buttons { display: inline-flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+      .am-select--inline {
+        flex: 0 0 auto;
+        max-width: 160px;
+        font-size: 10px;
+        padding: 2px 4px;
+      }
       .row--cwd { margin-top: 4px; padding-bottom: 8px; gap: 8px; }
       .label--small {
         font-size: 10px;
@@ -253,6 +263,10 @@ export class SettingsDrawer extends LitElement {
     this._chatSide = 'left';
     /** @type {boolean} */
     this._autoContext = true;
+    /** @type {string[]} */
+    this._ollamaModels = [];
+    /** @type {string} */
+    this._ollamaModel = '';
   }
 
   connectedCallback() {
@@ -292,7 +306,22 @@ export class SettingsDrawer extends LitElement {
     // Restore the persisted lastCwd into pendingCwd so empty-state
     // and the cwd-picker label show the right path on launch.
     hydrateLastCwd();
+    // Fetch the Ollama Cloud model list from .env (main process).
+    // Failure leaves the dropdown hidden — the spawn button still
+    // works, falling back to the env default model.
+    try {
+      const r = await transport().workers.ollamaCloudModels?.();
+      if (r?.ok && Array.isArray(r.models) && r.models.length > 0) {
+        this._ollamaModels = r.models;
+        this._ollamaModel = r.default || r.models[0];
+      }
+    } catch { /* ignore */ }
     this.requestUpdate();
+  }
+
+  _onOllamaModelChange(/** @type {Event} */ ev) {
+    const target = /** @type {HTMLSelectElement} */ (ev.target);
+    this._ollamaModel = target.value;
   }
 
   // --- Section renderers --------------------------------------------------
@@ -369,9 +398,14 @@ export class SettingsDrawer extends LitElement {
     `;
   }
 
-  _emitSpawn(/** @type {'claude'|'shell'|'semantic'} */ kind) {
+  /**
+   * @param {'claude'|'shell'|'semantic'|'ollama-cloud'} kind
+   * @param {{ model?: string }} [opts]
+   */
+  _emitSpawn(kind, opts = {}) {
     this.dispatchEvent(new CustomEvent('spawn', {
-      detail: { kind }, bubbles: true, composed: true,
+      detail: { kind, ...(opts.model ? { model: opts.model } : {}) },
+      bubbles: true, composed: true,
     }));
   }
 
@@ -389,6 +423,20 @@ export class SettingsDrawer extends LitElement {
           <button id="am-spawn-semantic" class="cmd-btn cmd-btn--small" type="button"
                   title="Spawn a semantic-routing agent (in-process, no LLM)"
                   @click=${() => this._emitSpawn('semantic')}>+ Semantic</button>
+          <button id="am-spawn-ollama-cloud" class="cmd-btn cmd-btn--small" type="button"
+                  title="Spawn a hosted Ollama Cloud worker (uses OLLAMA_API_KEY from .env)"
+                  @click=${() => this._emitSpawn('ollama-cloud',
+                    this._ollamaModel ? { model: this._ollamaModel } : {})}>+ Ollama</button>
+          ${this._ollamaModels.length > 0 ? html`
+            <select id="am-spawn-ollama-model" class="am-select am-select--inline"
+                    title="Choose the model for the next Ollama Cloud worker"
+                    .value=${this._ollamaModel}
+                    @change=${this._onOllamaModelChange}>
+              ${this._ollamaModels.map((m) => html`
+                <option value=${m} ?selected=${m === this._ollamaModel}>${m}</option>
+              `)}
+            </select>
+          ` : ''}
         </span>
       </div>
     `;

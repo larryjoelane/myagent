@@ -24,15 +24,20 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
   // Workers are headless agents (claude / shell / semantic) the chat drives.
   ipcMain.handle('worker:spawn', async (_e, body = {}) => {
     try {
-      const kind = body.kind === 'shell'    ? 'shell'
-                 : body.kind === 'semantic' ? 'semantic'
-                                            : 'claude';
+      const kind = body.kind === 'shell'         ? 'shell'
+                 : body.kind === 'semantic'      ? 'semantic'
+                 : body.kind === 'ollama-cloud'  ? 'ollama-cloud'
+                                                 : 'claude';
       const cwd = body.cwd || appSettings.get('lastCwd') || projectRoot;
       let result;
       if (kind === 'shell') {
         result = await workerManager.spawnShell({ name: body.name, cwd });
       } else if (kind === 'semantic') {
         result = await workerManager.spawnSemantic({ name: body.name, cwd });
+      } else if (kind === 'ollama-cloud') {
+        result = await workerManager.spawnOllamaCloud({
+          name: body.name, cwd, model: body.model,
+        });
       } else {
         result = await workerManager.spawnWorker({
           name: body.name, cwd, permissionMode: body.permissionMode,
@@ -73,6 +78,18 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
   });
 
   ipcMain.handle('worker:list', () => ({ ok: true, workers: workerManager.list() }));
+
+  // Ollama Cloud model picker. Reads OLLAMA_MODELS (comma-separated)
+  // from .env; falls back to a sensible default list. The first entry
+  // — or OLLAMA_MODEL when set — is the default selection.
+  ipcMain.handle('worker:ollama-cloud-models', () => {
+    const raw = (process.env.OLLAMA_MODELS || '').trim();
+    const models = raw
+      ? raw.split(',').map((s) => s.trim()).filter(Boolean)
+      : ['gpt-oss:120b-cloud', 'ibm/granite-docling'];
+    const def = (process.env.OLLAMA_MODEL || models[0] || '').trim();
+    return { ok: true, models, default: def };
+  });
 
   // Tool list for a single worker (semantic only today). Returns
   // {ok:true, tools:[...]} or {ok:false, error} when the worker

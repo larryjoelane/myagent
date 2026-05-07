@@ -24,13 +24,24 @@ class FakeDriver {
 
 function fakeFactories() {
   // Each factory returns a fresh FakeDriver instance and stashes a
-  // reference so tests can drive it.
-  const created = { claude: [], shell: [], semantic: [] };
+  // reference so tests can drive it. The driver also captures the
+  // full opts object so tests can assert kind-specific args (model,
+  // cwd, etc.) flow through.
+  const created = { claude: [], shell: [], semantic: [], 'ollama-cloud': [] };
+  function track(kind) {
+    return (opts) => {
+      const d = new FakeDriver({ ...opts, kind });
+      d.opts = opts;
+      created[kind].push(d);
+      return d;
+    };
+  }
   return {
     factories: {
-      claude: (opts) => { const d = new FakeDriver({ ...opts, kind: 'claude' }); created.claude.push(d); return d; },
-      shell: (opts) => { const d = new FakeDriver({ ...opts, kind: 'shell' }); created.shell.push(d); return d; },
-      semantic: (opts) => { const d = new FakeDriver({ ...opts, kind: 'semantic' }); created.semantic.push(d); return d; },
+      claude: track('claude'),
+      shell: track('shell'),
+      semantic: track('semantic'),
+      'ollama-cloud': track('ollama-cloud'),
     },
     created,
   };
@@ -439,6 +450,37 @@ function run(t) {
     eq(used.payload.userText, 'real prompt');
     eq(used.payload.usedHits.length, 1);
     eq(used.payload.usedHits[0].id, 7);
+  });
+
+  t.test('spawnOllamaCloud threads model + cwd into the factory', async () => {
+    const { factories, created } = fakeFactories();
+    const mgr = new WorkerManager({ factories, onEvent: () => {} });
+    const result = await mgr.spawnOllamaCloud({ model: 'ibm/granite-docling', cwd: '/tmp' });
+    eq(result.kind, 'ollama-cloud');
+    contains(result.name, 'granite-docling');
+    eq(created['ollama-cloud'].length, 1);
+    const drv = created['ollama-cloud'][0];
+    eq(drv.opts.model, 'ibm/granite-docling');
+    eq(drv.opts.cwd, '/tmp');
+  });
+
+  t.test('spawnOllamaCloud falls back to plain "Ollama N" when no model picked', async () => {
+    const { factories } = fakeFactories();
+    const mgr = new WorkerManager({ factories, onEvent: () => {} });
+    const a = await mgr.spawnOllamaCloud({});
+    const b = await mgr.spawnOllamaCloud({});
+    eq(a.name, 'Ollama 1');
+    eq(b.name, 'Ollama 2');
+  });
+
+  t.test('spawnOllamaCloud throws when factory not registered', async () => {
+    const { factories } = fakeFactories();
+    delete factories['ollama-cloud'];
+    const mgr = new WorkerManager({ factories, onEvent: () => {} });
+    let err = null;
+    try { await mgr.spawnOllamaCloud({}); } catch (e) { err = e; }
+    ok(err, 'expected throw');
+    contains(err.message, 'ollama-cloud');
   });
 
   t.test('chat:driver-exit causes worker to be removed from list', async () => {

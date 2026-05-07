@@ -33,6 +33,10 @@ export class EmptyState extends LitElement {
   static properties = {
     /** Caller controls visibility — driven by the chat surface. */
     hidden: { type: Boolean, reflect: true },
+    /** Available Ollama Cloud models (from main via .env). */
+    _ollamaModels: { state: true },
+    /** Currently-selected Ollama Cloud model in the dropdown. */
+    _ollamaModel: { state: true },
   };
 
   static styles = [
@@ -72,6 +76,30 @@ export class EmptyState extends LitElement {
         align-items: stretch;
       }
       .actions .cmd-btn { padding: 8px 12px; }
+
+      /* Row that pairs the Ollama Cloud spawn button with its model
+         dropdown. Stacks vertically inside the same .actions column. */
+      .ollama-row {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .ollama-row .cmd-btn { width: 100%; }
+      .ollama-model {
+        width: 100%;
+        background: #2a2a2a;
+        color: var(--text);
+        border: 1px solid #3a3a3a;
+        border-radius: 3px;
+        padding: 4px 6px;
+        font: inherit;
+        font-size: 11px;
+        cursor: pointer;
+      }
+      .ollama-model:focus {
+        outline: none;
+        border-color: var(--accent);
+      }
 
       .cwd {
         display: flex;
@@ -117,6 +145,9 @@ export class EmptyState extends LitElement {
     /** @type {(() => void) | null} */
     this._unsubscribe = null;
     this._hasChatContent = false;
+    /** @type {string[]} */
+    this._ollamaModels = [];
+    this._ollamaModel = '';
     this._onContentChanged = (/** @type {any} */ ev) => {
       const next = !!(ev?.detail?.hasContent);
       if (next === this._hasChatContent) return;
@@ -140,6 +171,21 @@ export class EmptyState extends LitElement {
     const chat = document.getElementById('am-chat');
     this._hasChatContent = !!(chat && /** @type {any} */ (chat).hasBubbles?.());
     this._refreshVisibility();
+    // Fetch the Ollama Cloud model list lazily — fire-and-forget.
+    // Failure leaves _ollamaModels empty; the dropdown is hidden in
+    // that case and the user gets the env default.
+    this._loadOllamaModels();
+  }
+
+  async _loadOllamaModels() {
+    try {
+      const t = /** @type {any} */ (window).transport;
+      if (!t?.workers?.ollamaCloudModels) return;
+      const r = await t.workers.ollamaCloudModels();
+      if (!r?.ok || !Array.isArray(r.models) || r.models.length === 0) return;
+      this._ollamaModels = r.models;
+      this._ollamaModel = r.default || r.models[0];
+    } catch { /* ignore — leave dropdown hidden */ }
   }
 
   disconnectedCallback() {
@@ -161,11 +207,20 @@ export class EmptyState extends LitElement {
     if (chat) chat.classList.toggle('agent-manager__chat--hidden', showEmpty);
   }
 
-  /** @param {'claude'|'shell'|'semantic'} kind */
-  _emitSpawn(kind) {
+  /**
+   * @param {'claude'|'shell'|'semantic'|'ollama-cloud'} kind
+   * @param {{ model?: string }} [opts]
+   */
+  _emitSpawn(kind, opts = {}) {
     this.dispatchEvent(new CustomEvent('spawn', {
-      detail: { kind }, bubbles: true, composed: true,
+      detail: { kind, ...(opts.model ? { model: opts.model } : {}) },
+      bubbles: true, composed: true,
     }));
+  }
+
+  _onOllamaModelChange(/** @type {Event} */ ev) {
+    const target = /** @type {HTMLSelectElement} */ (ev.target);
+    this._ollamaModel = target.value;
   }
 
   render() {
@@ -194,6 +249,24 @@ export class EmptyState extends LitElement {
                 @click=${() => this._emitSpawn('semantic')}>
           + Spawn Semantic worker
         </button>
+        <div class="ollama-row">
+          <button id="am-empty-spawn-ollama-cloud" class="cmd-btn" type="button"
+                  title="Spawn a hosted Ollama Cloud worker (uses OLLAMA_API_KEY from .env)"
+                  @click=${() => this._emitSpawn('ollama-cloud',
+                    this._ollamaModel ? { model: this._ollamaModel } : {})}>
+            + Spawn Ollama Cloud worker
+          </button>
+          ${this._ollamaModels.length > 0 ? html`
+            <select id="am-empty-ollama-model" class="ollama-model"
+                    title="Choose the model for this Ollama Cloud worker"
+                    .value=${this._ollamaModel}
+                    @change=${this._onOllamaModelChange}>
+              ${this._ollamaModels.map((m) => html`
+                <option value=${m} ?selected=${m === this._ollamaModel}>${m}</option>
+              `)}
+            </select>
+          ` : ''}
+        </div>
       </div>
       <div class="cwd">
         <span class="cwd__label">Working directory:</span>

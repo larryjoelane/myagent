@@ -10,8 +10,12 @@
 // IPC handlers live in electron/ipc/*. main.js wires them up at startup with
 // register({...deps}) — each module closes over the deps it needs.
 
-const { app, BrowserWindow, ipcMain, Menu, dialog, session } = require('electron');
 const path = require('path');
+// Load .env from the project root before any module reads process.env.
+// Keeps secrets like OLLAMA_API_KEY out of settings.json by design.
+require('dotenv').config({ path: path.resolve(__dirname, '..', '.env') });
+
+const { app, BrowserWindow, ipcMain, Menu, dialog, session } = require('electron');
 
 const csp = require('./csp');
 
@@ -25,6 +29,8 @@ const { createAgentRegistry } = require('../src/core/agentRegistry');
 const { WorkerManager } = require('../src/core/workerManager');
 const { ClaudeDriver } = require('../src/core/drivers/claudeDriver');
 const { ShellDriver } = require('../src/core/drivers/shellDriver');
+const { OllamaCloudDriver } = require('../src/core/drivers/ollamaCloudDriver');
+const { OllamaRunner } = require('../src/core/runners/ollama');
 const { AppSettings } = require('../src/core/appSettings');
 const { BrowserManager } = require('../src/core/browserManager');
 const { buildSemanticDriverFactory } = require('../src/core/semantic');
@@ -241,6 +247,14 @@ const workerManager = new WorkerManager({
     // Trampoline through getSemanticFactory so model load is deferred
     // until first spawn (saves ~3s + ~25MB on app startup).
     semantic: (opts) => getSemanticFactory()({ ...opts, cwd: opts.cwd || PROJECT_ROOT }),
+    // Hosted Ollama Cloud. Reads OLLAMA_API_KEY / OLLAMA_MODEL /
+    // OLLAMA_HOST from process.env (loaded via dotenv at the top of
+    // this file). The driver itself surfaces a clean error if the key
+    // is missing, so we don't gate the factory on it here.
+    'ollama-cloud': (opts) => new OllamaCloudDriver({
+      ...opts,
+      runnerFactory: (runnerOpts) => new OllamaRunner(runnerOpts),
+    }),
   },
   onEvent: (name, payload) => broadcastChat(name, payload),
   memoryStore: { store: (body) => indexHost.storeMemory(body) },

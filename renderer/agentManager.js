@@ -105,8 +105,8 @@ function init() {
   // actions.spawnWorker. Here we just surface failures as a system
   // bubble — successes are visible via the worker chip strip update.
 
-  async function spawnWorker(kind) {
-    const r = await spawnWorkerAction(kind);
+  async function spawnWorker(kind, opts = {}) {
+    const r = await spawnWorkerAction(kind, opts);
     if (!r.ok) {
       pushBubble('system', `spawn failed: ${r.error || 'unknown'}`);
     }
@@ -257,7 +257,8 @@ function init() {
     // detail.kind. Its cwd picker is wired internally to actions.pickCwd.
     $('am-empty-state')?.addEventListener('spawn', (/** @type {any} */ ev) => {
       const kind = ev?.detail?.kind;
-      if (kind) spawnWorker(kind);
+      const model = ev?.detail?.model;
+      if (kind) spawnWorker(kind, model ? { model } : {});
     });
     // <worker-chips> dispatches 'select' (detail.id) on click. The
     // component already calls selectWorker(id) (which updates the
@@ -271,7 +272,8 @@ function init() {
     // explain, semantic device) all route through actions/store directly.
     $('am-settings')?.addEventListener('spawn', (/** @type {any} */ ev) => {
       const kind = ev?.detail?.kind;
-      if (kind) spawnWorker(kind);
+      const model = ev?.detail?.model;
+      if (kind) spawnWorker(kind, model ? { model } : {});
     });
     $('am-settings')?.addEventListener('system-message', (/** @type {any} */ ev) => {
       const text = ev?.detail?.text;

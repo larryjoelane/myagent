@@ -59,11 +59,18 @@ function profileFor(modelId) {
 }
 
 class OllamaRunner {
-  constructor({ host = DEFAULT_HOST, model = DEFAULT_MODEL, think } = {}) {
+  constructor({ host = DEFAULT_HOST, model = DEFAULT_MODEL, think, apiKey } = {}) {
     this.host = host.replace(/\/$/, '');
     this.model = model;
+    this.apiKey = apiKey || null;
     this.profile = profileFor(model);
     this.think = think !== undefined ? !!think : this.profile.defaultThink;
+  }
+
+  _headers() {
+    const h = { 'content-type': 'application/json' };
+    if (this.apiKey) h.authorization = `Bearer ${this.apiKey}`;
+    return h;
   }
 
   get capabilities() {
@@ -90,7 +97,7 @@ class OllamaRunner {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
-      const res = await fetch(`${this.host}/api/version`, { signal: ctrl.signal });
+      const res = await fetch(`${this.host}/api/version`, { signal: ctrl.signal, headers: this._headers() });
       if (!res.ok) return { ok: false, reason: `http ${res.status}` };
       const body = await res.json();
       return { ok: true, version: body.version };
@@ -119,7 +126,7 @@ class OllamaRunner {
 
     const res = await fetch(`${this.host}/api/chat`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: this._headers(),
       body: JSON.stringify({ model: this.model, messages: prepared, stream: true }),
       signal,
     });
