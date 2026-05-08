@@ -22,14 +22,24 @@ process.env.MYAGENT_TEST_PRELOAD_NOINSTALL = '1';
 const fs = require('fs');
 const path = require('path');
 const { eq, ok, contains, deepEq } = require('./assert');
-const { installEventForwarders, buildTransport } = require('../electron/preload');
+// preload.js is the runtime source of truth — its sandbox can't do
+// relative requires, so the channel list lives inline there. We
+// import it for the actual coverage assertions.
+const {
+  installEventForwarders,
+  buildTransport,
+  ALL_FORWARDED_CHANNELS,
+} = require('../electron/preload');
+// preload-events.js is a documentation/reference module exporting the
+// same list grouped by purpose. We assert it stays in sync with the
+// runtime list so future readers don't get conflicting answers.
 const {
   CHAT_EVENTS,
   AGENT_EVENT_MAP,
   PTY_EVENTS,
   BROWSER_EVENTS,
   MODEL_EVENTS,
-  ALL_FORWARDED_CHANNELS,
+  ALL_FORWARDED_CHANNELS: REFERENCE_CHANNELS,
 } = require('../electron/preload-events');
 
 // Fake ipcRenderer that records on() registrations and lets tests
@@ -151,6 +161,21 @@ function readChatEventsEmittedByDrivers() {
 }
 
 exports.run = (ctx) => {
+  // ----- Source-of-truth alignment -------------------------------------
+
+  ctx.test('preload.js inline channel list matches preload-events.js reference list', () => {
+    // preload.js inlines the list because Electron's preload sandbox
+    // can't resolve relative requires (require('./preload-events') in
+    // the preload throws "module not found" at app start). We keep
+    // preload-events.js as a documentation/reference module and
+    // assert here that the two stay in sync — if you add a channel
+    // to one, this test fails until you add it to the other.
+    const fromPreload = ALL_FORWARDED_CHANNELS.map((c) => `${c.channel}->${c.emitAs}`).sort();
+    const fromReference = REFERENCE_CHANNELS.map((c) => `${c.channel}->${c.emitAs}`).sort();
+    deepEq(fromPreload, fromReference,
+      'preload.js ALL_FORWARDED_CHANNELS and preload-events.js are out of sync');
+  });
+
   // ----- Forwarder installation ----------------------------------------
 
   ctx.test('installEventForwarders registers ipcRenderer.on for every canonical channel', () => {
@@ -315,6 +340,30 @@ exports.run = (ctx) => {
     ipc._fire('pty:exit', { paneId: 1, code: 0 });
     eq(data.length, 1);
     eq(exits.length, 1);
+  });
+
+  // ----- Sandbox-relative-require regression guard ---------------------
+  // Electron's preload sandbox can't resolve relative requires
+  // (require('./foo')). A previous refactor extracted the channel
+  // list to ./preload-events.js and the preload imported it — works
+  // in tests, fails at app start with "module not found". This test
+  // statically scans preload.js for any relative require that would
+  // trip the sandbox.
+  ctx.test('preload.js makes no relative requires (Electron sandbox restriction)', () => {
+    const raw = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.js'), 'utf8');
+    // Strip /* … */ block comments and // line comments so a comment
+    // mentioning a relative require (e.g. in the explanatory header)
+    // doesn't trip the scanner. Naive but correct for this codebase
+    // where strings don't contain `*/` or unescaped `//` sequences.
+    const src = raw
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/[^\n]*/g, '');
+    const re = /require\s*\(\s*['"](\.\.?\/[^'"]+)['"]\s*\)/g;
+    const offenders = [];
+    let m;
+    while ((m = re.exec(src)) !== null) offenders.push(m[1]);
+    eq(offenders.length, 0,
+      `preload.js requires relative module(s) ${offenders.join(', ')} — Electron's sandbox preloadRequire cannot resolve these. Inline the dependency or move the code so it doesn't need a relative require.`);
   });
 };
 

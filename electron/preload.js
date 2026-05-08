@@ -8,8 +8,44 @@
 // + transport-method coverage. This catches the failure mode where
 // main emits a new event but the preload forgets to forward it —
 // silent in production until a user reports the symptom.
-
-const { ALL_FORWARDED_CHANNELS } = require('./preload-events');
+//
+// IMPORTANT: Electron's preload runs under a sandbox that uses its
+// own restricted `preloadRequire`. It cannot resolve relative
+// requires the way Node does — `require('./preload-events')` throws
+// "module not found" inside the sandbox even though it works fine
+// in tests and plain Node. So we INLINE the canonical channel list
+// here. The matching list in tests/preload.test.js is asserted to
+// match this one; if you add a channel here, also add it there
+// (the bridge tests will fail otherwise).
+const ALL_FORWARDED_CHANNELS = [
+  // Worker channel events — every chat-driven driver. The renderer
+  // subscribes via transport.chat.on(...).
+  { channel: 'chat:user',          emitAs: 'chat:user' },
+  { channel: 'chat:turn-start',    emitAs: 'chat:turn-start' },
+  { channel: 'chat:chunk',         emitAs: 'chat:chunk' },
+  { channel: 'chat:turn-end',      emitAs: 'chat:turn-end' },
+  { channel: 'chat:context-used',  emitAs: 'chat:context-used' },
+  { channel: 'chat:error',         emitAs: 'chat:error' },
+  { channel: 'chat:driver-exit',   emitAs: 'chat:driver-exit' },
+  // Legacy agent-handler events. Renderer maps to short names for
+  // backward compat.
+  { channel: 'agent:chunk',        emitAs: 'chunk' },
+  { channel: 'agent:done',         emitAs: 'done' },
+  { channel: 'agent:error',        emitAs: 'error' },
+  { channel: 'agent:tool-start',   emitAs: 'tool-start' },
+  { channel: 'agent:tool-end',     emitAs: 'tool-end' },
+  // PTY data/exit. Each carries { paneId, ... }; subscriber filters.
+  { channel: 'pty:data',           emitAs: 'pty:data' },
+  { channel: 'pty:exit',           emitAs: 'pty:exit' },
+  // BrowserView events. Each carries { tabId, ... }; subscriber filters.
+  { channel: 'browser:nav',        emitAs: 'browser:nav' },
+  { channel: 'browser:title',      emitAs: 'browser:title' },
+  { channel: 'browser:loading',    emitAs: 'browser:loading' },
+  { channel: 'browser:error',      emitAs: 'browser:error' },
+  // Generation streams + model-host requests.
+  { channel: 'models:generate-chunk', emitAs: 'models:generate-chunk' },
+  { channel: 'model:request',         emitAs: 'model:request' },
+];
 
 /**
  * Install ipcRenderer listeners that re-emit incoming events through
@@ -158,7 +194,7 @@ function buildTransport({ ipcRenderer, clipboard, listeners }) {
   };
 }
 
-module.exports = { installEventForwarders, buildTransport };
+module.exports = { installEventForwarders, buildTransport, ALL_FORWARDED_CHANNELS };
 
 // --- Real-environment installer -----------------------------------------
 // Skipped under MYAGENT_TEST_PRELOAD_NOINSTALL so unit tests can import
