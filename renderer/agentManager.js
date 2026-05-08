@@ -344,15 +344,18 @@ function init() {
         /** @type {any} */ (chatEl()).chunk(msg);
       },
       'chat:turn-end': (msg) => {
-        /** @type {any} */ (chatEl()).closeBubble(msg.agentId);
+        // Pass the whole payload — closeBubble reads msg.error so the
+        // error renders in-bubble even if chat:error didn't arrive
+        // first (across-channel IPC ordering isn't guaranteed).
+        /** @type {any} */ (chatEl()).closeBubble(msg.agentId, msg);
         state.thinkingWorkers.delete(msg.agentId);
         renderWorkers();
       },
       'chat:error': (msg) => {
         pushBubble('system', msg.error || 'error');
         // Also stash the error on any open assistant bubble for this
-        // agent — closeBubble() renders it in place of the "(no response)"
-        // placeholder so the user sees the cause where they're looking.
+        // agent — covers the case where chat:error arrives before the
+        // turn-end (the common case from drivers that emit both).
         if (msg.agentId) {
           /** @type {any} */ (chatEl()).errorBubble?.(msg.agentId, msg.error || 'error');
           state.thinkingWorkers.delete(msg.agentId);

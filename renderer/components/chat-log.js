@@ -135,18 +135,22 @@ export class ChatLog extends HTMLElement {
     }
   }
 
-  // chat:turn-end for an agent.
-  closeBubble(agentId) {
+  // chat:turn-end for an agent. The optional `payload` is the full
+  // turn-end message — when ok:false it carries the error string, which
+  // we render in-bubble so the user sees the cause where they're
+  // looking. Falls back to errorBubble()'s stashed value, which covers
+  // a chat:error that arrived ahead of turn-end.
+  closeBubble(agentId, payload) {
     const entry = this._openBubbles.get(agentId);
     if (!entry) return;
     entry.el.classList.add('bubble--done');
     if (!entry.hasContent && entry.typingEl) {
       entry.typingEl.parentNode?.removeChild(entry.typingEl);
-      // If an error fired during this turn, render it on the bubble so
-      // users see WHY there's no response, not just "(no response)".
-      // The error text was stashed by errorBubble() during the turn.
-      if (entry.errorText) {
-        entry.bodyEl.textContent = entry.errorText;
+      const errorText = (payload && payload.error)
+        || entry.errorText
+        || null;
+      if (errorText) {
+        entry.bodyEl.textContent = errorText;
         entry.bodyEl.style.color = 'var(--warn, #c87a4a)';
       } else {
         entry.bodyEl.textContent = '(no response)';
