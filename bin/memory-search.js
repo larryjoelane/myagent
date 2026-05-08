@@ -18,7 +18,13 @@ const path = require('path');
 const sessionClient = require('../src/core/sessionClient');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
-const SESSIONS_DIR = path.join(PROJECT_ROOT, '.myagent', 'sessions');
+// Honor MYAGENT_SESSIONS_DIR so tests + alternate-profile setups can
+// point at a separate index. Matches electron/main.js:47 — same env
+// var, same fallback. Without this, e2e tests that pre-populate a
+// temp sessions dir for the running app would not be visible to this
+// CLI, which is what the e2e harness uses to verify memory mirroring.
+const SESSIONS_DIR = process.env.MYAGENT_SESSIONS_DIR
+  || path.join(PROJECT_ROOT, '.myagent', 'sessions');
 const INDEX_DB_PATH = path.join(SESSIONS_DIR, 'index.db');
 
 // Lazy-required so a CLI run that goes entirely through the running
