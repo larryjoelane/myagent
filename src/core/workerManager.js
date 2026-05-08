@@ -46,6 +46,16 @@ class WorkerManager {
     this.contextProvider = (typeof contextProvider === 'function') ? contextProvider : null;
     this.workers = new Map(); // id -> { id, kind, name, channel, memoryMirror }
     this._workerCounter = 0;
+    // Per-worker original user text for the in-flight turn. Populated
+    // when auto-context augments the prompt; consulted in _handleEvent
+    // so chat:user (UI bubble) and chat:turn-end.userText (memory mirror)
+    // both reflect what the USER typed, not the augmented prompt the
+    // driver sees. Cleared on turn-end. Without this, the augmented
+    // text gets mirrored to memory, then retrieved on the next turn,
+    // then augmented again — a recursive preamble loop the user sees
+    // as growing duplicated context in their bubbles.
+    /** @type {Map<string, string>} */
+    this._pendingOriginalUserText = new Map();
   }
 
   list() {
@@ -152,6 +162,13 @@ class WorkerManager {
         userText: text,
         usedHits,
       });
+    }
+    // Stash the original so _handleEvent can rewrite chat:user and
+    // chat:turn-end.userText back to it before forwarding/mirroring.
+    // Only stash when augmentation actually changed the text — saves
+    // a Map entry on the no-hit path.
+    if (augmented !== text) {
+      this._pendingOriginalUserText.set(target.id, text);
     }
     target.channel.send(augmented);
   }
@@ -271,15 +288,35 @@ class WorkerManager {
   }
 
   _handleEvent(id, eventName, payload) {
+    // Rewrite augmented user text back to the original before anything
+    // downstream sees it. Drivers receive the augmented prompt (preamble
+    // + text) and naturally echo that on chat:user / chat:turn-end —
+    // but the UI must show what the USER typed, and the memory mirror
+    // must store the original (otherwise the next turn retrieves the
+    // augmented version, augments it again, and we get a recursive
+    // preamble loop visible in the chat bubbles).
+    let outgoing = payload;
+    const original = this._pendingOriginalUserText.get(id);
+    if (original !== undefined) {
+      if (eventName === 'chat:user' && payload && typeof payload.text === 'string') {
+        outgoing = { ...payload, text: original };
+      } else if (eventName === 'chat:turn-end' && payload && typeof payload.userText === 'string') {
+        outgoing = { ...payload, userText: original };
+      }
+    }
     // Forward upward.
-    this.onEvent(eventName, payload);
-    // Memory mirror on turn-end.
+    this.onEvent(eventName, outgoing);
+    // Memory mirror on turn-end. Use the rewritten payload so the
+    // mirror writes the ORIGINAL user text, not the augmented one.
     if (eventName === 'chat:turn-end') {
-      this._mirrorTurn(id, payload);
+      this._mirrorTurn(id, outgoing);
+      // Turn is over; clear the stash so the next turn starts clean.
+      this._pendingOriginalUserText.delete(id);
     }
     // Auto-cleanup on driver exit so a crashed worker doesn't linger.
     if (eventName === 'chat:driver-exit') {
       this.workers.delete(id);
+      this._pendingOriginalUserText.delete(id);
     }
   }
 

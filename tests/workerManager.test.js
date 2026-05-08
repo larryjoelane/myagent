@@ -430,8 +430,11 @@ function run(t) {
 
   t.test('chat:user event reflects the ORIGINAL text (not the augmented one)', async () => {
     // Users see what they typed, not the auto-injected preamble.
-    // The driver and the upstream UI both need to know what to show.
-    // We pass usedHits via a separate event so the UI can render a badge.
+    // The driver receives the augmented prompt for the model, but the
+    // manager rewrites chat:user back to the original before forwarding
+    // — otherwise the augmented text shows up in the user bubble AND
+    // gets mirrored to memory, where it'd be retrieved next turn and
+    // augmented again (recursive preamble loop).
     const r = recorder();
     const { factories, created } = fakeFactories();
     const contextProvider = async () => ({
@@ -450,6 +453,59 @@ function run(t) {
     eq(used.payload.userText, 'real prompt');
     eq(used.payload.usedHits.length, 1);
     eq(used.payload.usedHits[0].id, 7);
+    // Driver received the AUGMENTED prompt (preamble + text) — that's
+    // the input the model needs.
+    eq(created.claude[0].sent[0], '[ctx]\n\nreal prompt', 'driver got augmented');
+    // Now have the driver emit chat:user back upward (real drivers do
+    // this; FakeDriver needs an explicit nudge).
+    created.claude[0].emit('chat:user', { text: '[ctx]\n\nreal prompt' });
+    const userEv = r.last('chat:user');
+    ok(userEv, 'chat:user emitted');
+    eq(userEv.payload.text, 'real prompt', 'manager rewrote text to original');
+  });
+
+  t.test('chat:turn-end.userText is rewritten to original for memory mirror', async () => {
+    // The mirror writes payload.userText. If it sees the augmented text
+    // we get a recursive preamble loop on subsequent turns. The manager
+    // must rewrite it back to the original before mirroring.
+    const memory = fakeMemoryStore();
+    const { factories, created } = fakeFactories();
+    const contextProvider = async () => ({
+      preamble: '[ctx]\n\n',
+      usedHits: [{ id: 9, confidence: 0.6, snippet: 'past' }],
+    });
+    const mgr = new WorkerManager({
+      factories, onEvent: () => {}, contextProvider,
+      memoryStore: memory, memoryMirrorDefault: true,
+    });
+    const a = await mgr.spawnWorker({});
+    mgr.send({ to: a.id, text: 'remember this' });
+    await new Promise((r) => setImmediate(r));
+    // Driver emits turn-end with the augmented userText (real drivers
+    // echo whatever they received).
+    created.claude[0].emit('chat:turn-end', {
+      userText: '[ctx]\n\nremember this',
+      assistantText: 'sure',
+      ok: true,
+    });
+    await new Promise((r) => setImmediate(r));
+    const userMirror = memory.stored.find((s) => s.tags?.includes('user'));
+    ok(userMirror, 'user-side mirror written');
+    eq(userMirror.text, 'remember this', 'mirror got the ORIGINAL, not the augmented prompt');
+  });
+
+  t.test('no auto-context = no rewrite (passthrough)', async () => {
+    // Pure regression guard: when contextProvider returns no preamble,
+    // chat:user must pass through unchanged. We don't want the rewrite
+    // path to accidentally swallow legitimate driver echoes.
+    const r = recorder();
+    const { factories, created } = fakeFactories();
+    const mgr = new WorkerManager({ factories, onEvent: r.onEvent });
+    const a = await mgr.spawnWorker({});
+    mgr.send({ to: a.id, text: 'plain' });
+    await new Promise((r) => setImmediate(r));
+    created.claude[0].emit('chat:user', { text: 'plain' });
+    eq(r.last('chat:user').payload.text, 'plain');
   });
 
   t.test('spawnOllamaCloud threads model + cwd into the factory', async () => {
