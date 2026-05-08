@@ -1,231 +1,177 @@
-const { contextBridge, ipcRenderer, clipboard } = require('electron');
-
-const listeners = new Map();
-
-const FORWARD = {
-  'agent:chunk': 'chunk',
-  'agent:done': 'done',
-  'agent:error': 'error',
-  'agent:tool-start': 'tool-start',
-  'agent:tool-end': 'tool-end',
-};
-for (const [channel, event] of Object.entries(FORWARD)) {
-  ipcRenderer.on(channel, (_e, msg) => emit(event, msg));
-}
-
-// PTY events carry { paneId, ... } so multiple panes can coexist. The
-// shell subscribes via transport.pty.onData(paneId, fn) / onExit(...).
-ipcRenderer.on('pty:data', (_e, msg) => emit('pty:data', msg));
-ipcRenderer.on('pty:exit', (_e, msg) => emit('pty:exit', msg));
-
-// Chat passthrough events from worker channels. agentId routes which
-// chat tab the message belongs to.
+// Preload script. Bridges the renderer (sandboxed, no Node) to the
+// main process (Electron main, full Node) over IPC.
 //
-// chat:context-used carries auto-context retrieval hits — without
-// forwarding it, the renderer's "+ used N memories" badge never
-// appears, and the user-bubble shows the augmented preamble instead
-// of a clean prompt + clickable badge.
-//
-// chat:error fires when a turn fails (HTTP 4xx, runner exception).
-// Without forwarding it, the user sees the assistant bubble close
-// silently and only learns there was a problem if the turn-end
-// payload carries an `error` field.
-for (const ev of [
-  'chat:user',
-  'chat:turn-start',
-  'chat:chunk',
-  'chat:turn-end',
-  'chat:context-used',
-  'chat:error',
-  'chat:driver-exit',
-]) {
-  ipcRenderer.on(ev, (_e, msg) => emit(ev, msg));
+// Layout: pure functions for each piece of the bridge, then a thin
+// installer at the bottom that wires them up using the real
+// `electron` runtime. Tests import the pure functions directly with
+// fake `ipcRenderer` / `contextBridge` and assert event forwarding
+// + transport-method coverage. This catches the failure mode where
+// main emits a new event but the preload forgets to forward it —
+// silent in production until a user reports the symptom.
+
+const { ALL_FORWARDED_CHANNELS } = require('./preload-events');
+
+/**
+ * Install ipcRenderer listeners that re-emit incoming events through
+ * the local listener registry. Pure: no side effects beyond the
+ * provided `ipcRenderer.on` calls.
+ *
+ * @param {object} opts
+ * @param {{ on: (channel: string, fn: (e: any, msg: any) => void) => void }} opts.ipcRenderer
+ * @param {Map<string, Set<(msg: any) => void>>} opts.listeners - subscriber registry, mutated by transport.on
+ * @param {Array<{channel: string, emitAs: string}>} [opts.channels] - defaults to ALL_FORWARDED_CHANNELS
+ */
+function installEventForwarders({ ipcRenderer, listeners, channels = ALL_FORWARDED_CHANNELS }) {
+  for (const { channel, emitAs } of channels) {
+    ipcRenderer.on(channel, (_e, msg) => emit(listeners, emitAs, msg));
+  }
 }
 
-// Browser tab events. Renderer subscribers filter by tabId.
-for (const ev of ['browser:nav', 'browser:title', 'browser:loading', 'browser:error']) {
-  ipcRenderer.on(ev, (_e, msg) => emit(ev, msg));
-}
-
-// Generation streaming chunks. Subscribers filter by requestId.
-ipcRenderer.on('models:generate-chunk', (_e, msg) => emit('models:generate-chunk', msg));
-
-// Model service host requests from main. The chat renderer's
-// model-bridge.js subscribes via transport.modelHost.onRequest()
-// and routes to the singleton Web Worker.
-ipcRenderer.on('model:request', (_e, msg) => emit('model:request', msg));
-
-function emit(event, msg) {
+function emit(listeners, event, msg) {
   const set = listeners.get(event);
   if (set) for (const fn of set) fn(msg);
 }
 
-contextBridge.exposeInMainWorld('transport', {
-  kind: 'electron',
-  // All agent calls accept an optional { runnerName, model } so the
-  // renderer can target a specific runner+model picked via /agent flags.
-  // Without those, the main process uses defaults (Ollama + env model).
-  health: (opts) => ipcRenderer.invoke('agent:health', opts || {}),
-  thinkStatus: (opts) => ipcRenderer.invoke('agent:think-status', opts || {}),
-  setThink: (on, opts) => ipcRenderer.invoke('agent:set-think', { on, ...(opts || {}) }),
-  runners: () => ipcRenderer.invoke('agent:runners'),
-  run: (sessionId, prompt, opts) =>
-    ipcRenderer.send('agent:run', { sessionId, prompt, ...(opts || {}) }),
-  on: (event, fn) => {
+/**
+ * Build the `transport` object the renderer sees on
+ * window.transport. Pure: takes the IPC + clipboard + listener
+ * registry as deps, returns the object. The real installer calls
+ * contextBridge.exposeInMainWorld with the result.
+ *
+ * @param {object} opts
+ * @param {any} opts.ipcRenderer
+ * @param {{ readText: () => string, writeText: (s: string) => void }} opts.clipboard
+ * @param {Map<string, Set<(msg: any) => void>>} opts.listeners
+ */
+function buildTransport({ ipcRenderer, clipboard, listeners }) {
+  const subscribe = (event, fn) => {
     if (!listeners.has(event)) listeners.set(event, new Set());
-    listeners.get(event).add(fn);
-    return () => listeners.get(event).delete(fn);
-  },
-  clipboard: {
-    readText: () => clipboard.readText(),
-    writeText: (text) => clipboard.writeText(text),
-  },
-  memory: {
-    // Hybrid (BM25 + cosine) search over indexed session logs. Resolves
-    // after any pending ingest completes, so freshly-written turns are
-    // searchable as soon as agent:done fires.
-    search: (query, opts) => ipcRenderer.invoke('memory:search', { query, ...(opts || {}) }),
-    ingest: () => ipcRenderer.invoke('memory:ingest'),
-    // Write a freeform memory directly. Body: { text, source?, tags?, ts? }.
-    store: (body) => ipcRenderer.invoke('memory:store', body || {}),
-  },
-  // Headless workers — claude or shell — driven through the chat. The
-  // chat UI calls these directly; previous "attach a PTY pane"
-  // concept is gone.
-  workers: {
-    spawn: (body) => ipcRenderer.invoke('worker:spawn', body || {}),
-    list: () => ipcRenderer.invoke('worker:list'),
-    send: (body) => ipcRenderer.invoke('worker:send', body || {}),
-    close: (body) => ipcRenderer.invoke('worker:close', body || {}),
-    rename: (body) => ipcRenderer.invoke('worker:rename', body || {}),
-    // Tools available to a worker (semantic kind only — claude/shell
-    // return {ok:false}). Used by the renderer to drive slash-command
-    // autocomplete.
-    listTools: (id) => ipcRenderer.invoke('worker:list-tools', { id }),
-    // Ollama Cloud model picker — returns { ok, models[], default }.
-    // Renderer populates the spawn-time dropdown from this list.
-    ollamaCloudModels: () => ipcRenderer.invoke('worker:ollama-cloud-models'),
-  },
-  // In-process model registry (Cut A: just the embedder). Renderer
-  // reads embedder status to populate the Device dropdown on the
-  // semantic-worker spawn UI.
-  models: {
-    embedderStatus: () => ipcRenderer.invoke('models:embedder-status'),
-    embedderDevTools: () => ipcRenderer.invoke('models:embedder-devtools'),
-    embedderBenchmark: (body) => ipcRenderer.invoke('models:embedder-benchmark', body || {}),
-    list: (kind) => ipcRenderer.invoke('models:list', { kind }),
-    cacheStatus: (modelId) => ipcRenderer.invoke('models:cache-status', { modelId }),
-    warmup: (modelId, device) => ipcRenderer.invoke('models:warmup', { modelId, device }),
-    generate: (body) => ipcRenderer.invoke('models:generate', body || {}),
-    onGenerateChunk: (fn) => {
-      if (!listeners.has('models:generate-chunk')) listeners.set('models:generate-chunk', new Set());
-      listeners.get('models:generate-chunk').add(fn);
-      return () => listeners.get('models:generate-chunk').delete(fn);
+    /** @type {Set<any>} */ (listeners.get(event)).add(fn);
+    return () => /** @type {Set<any>} */ (listeners.get(event))?.delete(fn);
+  };
+
+  return {
+    kind: 'electron',
+    // All agent calls accept an optional { runnerName, model } so the
+    // renderer can target a specific runner+model picked via /agent flags.
+    health: (opts) => ipcRenderer.invoke('agent:health', opts || {}),
+    thinkStatus: (opts) => ipcRenderer.invoke('agent:think-status', opts || {}),
+    setThink: (on, opts) => ipcRenderer.invoke('agent:set-think', { on, ...(opts || {}) }),
+    runners: () => ipcRenderer.invoke('agent:runners'),
+    run: (sessionId, prompt, opts) =>
+      ipcRenderer.send('agent:run', { sessionId, prompt, ...(opts || {}) }),
+    on: subscribe,
+    clipboard: {
+      readText: () => clipboard.readText(),
+      writeText: (text) => clipboard.writeText(text),
     },
-  },
-  // Filesystem API for the editor's file-tree, viewer, and save flow.
-  // Bounded by a global Scope (ADR-0008): paths outside the scope are
-  // refused with `{ ok: false, reason: 'out-of-scope' }`. The Scopes
-  // panel in settings-drawer grows the scope via fs.scopeAdd / scopeRemove.
-  fs: {
-    listDir: (path, opts) => ipcRenderer.invoke('fs:list-dir', { path, ...(opts || {}) }),
-    readFile: (path) => ipcRenderer.invoke('fs:read-file', { path }),
-    writeFile: (path, content, opts) =>
-      ipcRenderer.invoke('fs:write-file', { path, content, ...(opts || {}) }),
-    stat: (path) => ipcRenderer.invoke('fs:stat', { path }),
-    scopeList: () => ipcRenderer.invoke('fs:scope-list'),
-    scopeAdd: (path) => ipcRenderer.invoke('fs:scope-add', { path }),
-    scopeRemove: (path) => ipcRenderer.invoke('fs:scope-remove', { path }),
-  },
-  // Native dialogs + persisted settings, used by the spawn UX.
-  dialog: {
-    chooseDirectory: (opts) => ipcRenderer.invoke('dialog:choose-directory', opts || {}),
-  },
-  settings: {
-    get: (key, fallback) => ipcRenderer.invoke('settings:get', { key, fallback }),
-    set: (key, value) => ipcRenderer.invoke('settings:set', { key, value }),
-  },
-  // Lower-level multi-terminal registry. Used by bin/agent.js CLI and
-  // the diagnostic test panel only — not by the chat UI.
-  agents: {
-    register: (body) => ipcRenderer.invoke('agent:register', body || {}),
-    heartbeat: (body) => ipcRenderer.invoke('agent:heartbeat', body || {}),
-    send: (body) => ipcRenderer.invoke('agent:send', body || {}),
-    inbox: (body) => ipcRenderer.invoke('agent:inbox', body || {}),
-    list: () => ipcRenderer.invoke('agent:list'),
-    unregister: (body) => ipcRenderer.invoke('agent:unregister', body || {}),
-    rename: (body) => ipcRenderer.invoke('agent:rename', body || {}),
-  },
-  chat: {
-    getSettings: () => ipcRenderer.invoke('chat:get-settings'),
-    setDefaultMirror: (on) => ipcRenderer.invoke('chat:set-default-mirror', { on }),
-    setWorkerMirror: (id, on) => ipcRenderer.invoke('chat:set-worker-mirror', { id, on }),
-    on: (event, fn) => {
-      if (!listeners.has(event)) listeners.set(event, new Set());
-      listeners.get(event).add(fn);
-      return () => listeners.get(event).delete(fn);
+    memory: {
+      search: (query, opts) => ipcRenderer.invoke('memory:search', { query, ...(opts || {}) }),
+      ingest: () => ipcRenderer.invoke('memory:ingest'),
+      store: (body) => ipcRenderer.invoke('memory:store', body || {}),
     },
-  },
-  // Embedded Chromium tabs. Each tab has a string `tabId` chosen by the
-  // renderer; the main process tracks one BrowserView per id. Agent
-  // control (click/type/eval/wait/screenshot) is on the same surface so
-  // worker tools can drive it through the same handles the UI uses.
-  browser: {
-    create: (body) => ipcRenderer.invoke('browser:create', body || {}),
-    destroy: (tabId) => ipcRenderer.invoke('browser:destroy', { tabId }),
-    setBounds: (tabId, bounds) => ipcRenderer.send('browser:set-bounds', { tabId, bounds }),
-    show: (tabId) => ipcRenderer.send('browser:show', { tabId }),
-    hide: (tabId) => ipcRenderer.send('browser:hide', { tabId }),
-    loadURL: (tabId, url) => ipcRenderer.invoke('browser:load-url', { tabId, url }),
-    back: (tabId) => ipcRenderer.invoke('browser:back', { tabId }),
-    forward: (tabId) => ipcRenderer.invoke('browser:forward', { tabId }),
-    reload: (tabId) => ipcRenderer.invoke('browser:reload', { tabId }),
-    stop: (tabId) => ipcRenderer.invoke('browser:stop', { tabId }),
-    click: (tabId, selector) => ipcRenderer.invoke('browser:click', { tabId, selector }),
-    type: (tabId, selector, text) => ipcRenderer.invoke('browser:type', { tabId, selector, text }),
-    eval: (tabId, expression) => ipcRenderer.invoke('browser:eval', { tabId, expression }),
-    waitFor: (tabId, selector, opts) => ipcRenderer.invoke('browser:wait-for', { tabId, selector, ...(opts || {}) }),
-    screenshot: (tabId) => ipcRenderer.invoke('browser:screenshot', { tabId }),
-    getText: (tabId) => ipcRenderer.invoke('browser:get-text', { tabId }),
-    info: (tabId) => ipcRenderer.invoke('browser:info', { tabId }),
-    // Subscribe to events. Caller filters by msg.tabId.
-    on: (event, fn) => {
-      if (!listeners.has(event)) listeners.set(event, new Set());
-      listeners.get(event).add(fn);
-      return () => listeners.get(event).delete(fn);
+    workers: {
+      spawn: (body) => ipcRenderer.invoke('worker:spawn', body || {}),
+      list: () => ipcRenderer.invoke('worker:list'),
+      send: (body) => ipcRenderer.invoke('worker:send', body || {}),
+      close: (body) => ipcRenderer.invoke('worker:close', body || {}),
+      rename: (body) => ipcRenderer.invoke('worker:rename', body || {}),
+      listTools: (id) => ipcRenderer.invoke('worker:list-tools', { id }),
+      ollamaCloudModels: () => ipcRenderer.invoke('worker:ollama-cloud-models'),
     },
-  },
-  // Model service host — only the chat renderer's model-bridge.js
-  // uses this. Spawns a Web Worker to run @huggingface/transformers
-  // (which can target WebGPU here; can't in main since it's Node).
-  // Receives `model:request` from main and replies via `model:reply`
-  // or streams chunks via `model:chunk`.
-  modelHost: {
-    onRequest: (fn) => {
-      if (!listeners.has('model:request')) listeners.set('model:request', new Set());
-      listeners.get('model:request').add(fn);
-      return () => listeners.get('model:request').delete(fn);
+    models: {
+      embedderStatus: () => ipcRenderer.invoke('models:embedder-status'),
+      embedderDevTools: () => ipcRenderer.invoke('models:embedder-devtools'),
+      embedderBenchmark: (body) => ipcRenderer.invoke('models:embedder-benchmark', body || {}),
+      list: (kind) => ipcRenderer.invoke('models:list', { kind }),
+      cacheStatus: (modelId) => ipcRenderer.invoke('models:cache-status', { modelId }),
+      warmup: (modelId, device) => ipcRenderer.invoke('models:warmup', { modelId, device }),
+      generate: (body) => ipcRenderer.invoke('models:generate', body || {}),
+      onGenerateChunk: (fn) => subscribe('models:generate-chunk', fn),
     },
-    reply: (msg) => ipcRenderer.send('model:reply', msg),
-    chunk: (msg) => ipcRenderer.send('model:chunk', msg),
-    ready: () => ipcRenderer.send('model:ready'),
-  },
-  pty: {
-    // All calls take a paneId so multiple PTYs can coexist (one per pane).
-    start: (opts) => ipcRenderer.invoke('pty:start', opts || {}),
-    write: (paneId, data) => ipcRenderer.send('pty:input', { paneId, data }),
-    resize: (paneId, cols, rows) => ipcRenderer.send('pty:resize', { paneId, cols, rows }),
-    kill: (paneId) => ipcRenderer.send('pty:kill', { paneId }),
-    // onData/onExit fire for ALL panes; subscriber must filter on paneId.
-    onData: (fn) => {
-      if (!listeners.has('pty:data')) listeners.set('pty:data', new Set());
-      listeners.get('pty:data').add(fn);
-      return () => listeners.get('pty:data').delete(fn);
+    fs: {
+      listDir: (path, opts) => ipcRenderer.invoke('fs:list-dir', { path, ...(opts || {}) }),
+      readFile: (path) => ipcRenderer.invoke('fs:read-file', { path }),
+      writeFile: (path, content, opts) =>
+        ipcRenderer.invoke('fs:write-file', { path, content, ...(opts || {}) }),
+      stat: (path) => ipcRenderer.invoke('fs:stat', { path }),
+      scopeList: () => ipcRenderer.invoke('fs:scope-list'),
+      scopeAdd: (path) => ipcRenderer.invoke('fs:scope-add', { path }),
+      scopeRemove: (path) => ipcRenderer.invoke('fs:scope-remove', { path }),
     },
-    onExit: (fn) => {
-      if (!listeners.has('pty:exit')) listeners.set('pty:exit', new Set());
-      listeners.get('pty:exit').add(fn);
-      return () => listeners.get('pty:exit').delete(fn);
+    dialog: {
+      chooseDirectory: (opts) => ipcRenderer.invoke('dialog:choose-directory', opts || {}),
     },
-  },
-});
+    settings: {
+      get: (key, fallback) => ipcRenderer.invoke('settings:get', { key, fallback }),
+      set: (key, value) => ipcRenderer.invoke('settings:set', { key, value }),
+    },
+    agents: {
+      register: (body) => ipcRenderer.invoke('agent:register', body || {}),
+      heartbeat: (body) => ipcRenderer.invoke('agent:heartbeat', body || {}),
+      send: (body) => ipcRenderer.invoke('agent:send', body || {}),
+      inbox: (body) => ipcRenderer.invoke('agent:inbox', body || {}),
+      list: () => ipcRenderer.invoke('agent:list'),
+      unregister: (body) => ipcRenderer.invoke('agent:unregister', body || {}),
+      rename: (body) => ipcRenderer.invoke('agent:rename', body || {}),
+    },
+    chat: {
+      getSettings: () => ipcRenderer.invoke('chat:get-settings'),
+      setDefaultMirror: (on) => ipcRenderer.invoke('chat:set-default-mirror', { on }),
+      setWorkerMirror: (id, on) => ipcRenderer.invoke('chat:set-worker-mirror', { id, on }),
+      on: subscribe,
+    },
+    browser: {
+      create: (body) => ipcRenderer.invoke('browser:create', body || {}),
+      destroy: (tabId) => ipcRenderer.invoke('browser:destroy', { tabId }),
+      setBounds: (tabId, bounds) => ipcRenderer.send('browser:set-bounds', { tabId, bounds }),
+      show: (tabId) => ipcRenderer.send('browser:show', { tabId }),
+      hide: (tabId) => ipcRenderer.send('browser:hide', { tabId }),
+      loadURL: (tabId, url) => ipcRenderer.invoke('browser:load-url', { tabId, url }),
+      back: (tabId) => ipcRenderer.invoke('browser:back', { tabId }),
+      forward: (tabId) => ipcRenderer.invoke('browser:forward', { tabId }),
+      reload: (tabId) => ipcRenderer.invoke('browser:reload', { tabId }),
+      stop: (tabId) => ipcRenderer.invoke('browser:stop', { tabId }),
+      click: (tabId, selector) => ipcRenderer.invoke('browser:click', { tabId, selector }),
+      type: (tabId, selector, text) => ipcRenderer.invoke('browser:type', { tabId, selector, text }),
+      eval: (tabId, expression) => ipcRenderer.invoke('browser:eval', { tabId, expression }),
+      waitFor: (tabId, selector, opts) => ipcRenderer.invoke('browser:wait-for', { tabId, selector, ...(opts || {}) }),
+      screenshot: (tabId) => ipcRenderer.invoke('browser:screenshot', { tabId }),
+      getText: (tabId) => ipcRenderer.invoke('browser:get-text', { tabId }),
+      info: (tabId) => ipcRenderer.invoke('browser:info', { tabId }),
+      on: subscribe,
+    },
+    modelHost: {
+      onRequest: (fn) => subscribe('model:request', fn),
+      reply: (msg) => ipcRenderer.send('model:reply', msg),
+      chunk: (msg) => ipcRenderer.send('model:chunk', msg),
+      ready: () => ipcRenderer.send('model:ready'),
+    },
+    pty: {
+      start: (opts) => ipcRenderer.invoke('pty:start', opts || {}),
+      write: (paneId, data) => ipcRenderer.send('pty:input', { paneId, data }),
+      resize: (paneId, cols, rows) => ipcRenderer.send('pty:resize', { paneId, cols, rows }),
+      kill: (paneId) => ipcRenderer.send('pty:kill', { paneId }),
+      onData: (fn) => subscribe('pty:data', fn),
+      onExit: (fn) => subscribe('pty:exit', fn),
+    },
+  };
+}
+
+module.exports = { installEventForwarders, buildTransport };
+
+// --- Real-environment installer -----------------------------------------
+// Skipped under MYAGENT_TEST_PRELOAD_NOINSTALL so unit tests can import
+// this module without invoking electron's contextBridge / ipcRenderer
+// (which only exist inside a real preload context). Tests set the env
+// var, import the pure functions, and drive them with fakes.
+
+if (!process.env.MYAGENT_TEST_PRELOAD_NOINSTALL) {
+  const { contextBridge, ipcRenderer, clipboard } = require('electron');
+  const listeners = new Map();
+  installEventForwarders({ ipcRenderer, listeners });
+  contextBridge.exposeInMainWorld(
+    'transport',
+    buildTransport({ ipcRenderer, clipboard, listeners }),
+  );
+}
