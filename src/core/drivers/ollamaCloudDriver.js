@@ -13,7 +13,7 @@
 // for the memory mirror. close() aborts the in-flight request.
 
 const DEFAULT_HOST = 'https://ollama.com';
-const DEFAULT_MODEL = 'gpt-oss:120b-cloud';
+const DEFAULT_MODEL = 'glm-5.1:cloud';
 
 class OllamaCloudDriver {
   constructor({ agentId, runnerFactory, apiKey, host, model, onEvent } = {}) {

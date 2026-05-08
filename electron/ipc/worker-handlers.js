@@ -80,14 +80,30 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
   ipcMain.handle('worker:list', () => ({ ok: true, workers: workerManager.list() }));
 
   // Ollama Cloud model picker. Reads OLLAMA_MODELS (comma-separated)
-  // from .env; falls back to a sensible default list. The first entry
-  // — or OLLAMA_MODEL when set — is the default selection.
+  // from .env; falls back to a curated default list. OLLAMA_MODEL
+  // (when set) overrides which entry is selected by default; otherwise
+  // we default to glm-5.1:cloud.
+  //
+  // Note: ibm/granite-docling is local-only — it has no -cloud tag and
+  // will error if selected for an Ollama Cloud worker. Kept in the list
+  // by request; will be addressed when a separate local-Ollama worker
+  // kind is added.
   ipcMain.handle('worker:ollama-cloud-models', () => {
     const raw = (process.env.OLLAMA_MODELS || '').trim();
     const models = raw
       ? raw.split(',').map((s) => s.trim()).filter(Boolean)
-      : ['gpt-oss:120b-cloud', 'ibm/granite-docling'];
-    const def = (process.env.OLLAMA_MODEL || models[0] || '').trim();
+      : [
+          'gpt-oss:20b-cloud',
+          'gpt-oss:120b-cloud',
+          'qwen3-coder:480b-cloud',
+          'kimi-k2:1t-cloud',
+          'glm-4.6:cloud',
+          'glm-5.1:cloud',
+          'ibm/granite-docling',
+        ];
+    const envDefault = (process.env.OLLAMA_MODEL || '').trim();
+    const def = envDefault
+      || (models.includes('glm-5.1:cloud') ? 'glm-5.1:cloud' : models[0] || '');
     return { ok: true, models, default: def };
   });
 
