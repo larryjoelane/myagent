@@ -6,7 +6,6 @@
   "scripts": {
     "postinstall": "node scripts/ensure-native.js electron && node scripts/copy-transformers.js",
     "rebuild:electron": "node scripts/ensure-native.js electron",
-    "rebuild:node": "node scripts/ensure-native.js node",
     "vendor:transformers": "node scripts/copy-transformers.js",
     "prestart": "node scripts/ensure-native.js electron && node scripts/copy-transformers.js && vite build",
     "predev": "node scripts/ensure-native.js electron && node scripts/copy-transformers.js",
@@ -15,7 +14,7 @@
     "build": "vite build",
     "typecheck": "tsc -p tsconfig.json",
     "start:web": "node web/server.js",
-    "memory:search": "node scripts/ensure-native.js node && node bin/memory-search.js",
+    "memory:search": "node bin/memory-search.js",
     "sft:export": "node scripts/sft-export.js",
     "sft:label": "node scripts/sft-label.js",
     "sft:build": "node scripts/sft-build.js",
