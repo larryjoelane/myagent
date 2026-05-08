@@ -20,7 +20,25 @@ ipcRenderer.on('pty:exit', (_e, msg) => emit('pty:exit', msg));
 
 // Chat passthrough events from worker channels. agentId routes which
 // chat tab the message belongs to.
-for (const ev of ['chat:user', 'chat:turn-start', 'chat:chunk', 'chat:turn-end']) {
+//
+// chat:context-used carries auto-context retrieval hits — without
+// forwarding it, the renderer's "+ used N memories" badge never
+// appears, and the user-bubble shows the augmented preamble instead
+// of a clean prompt + clickable badge.
+//
+// chat:error fires when a turn fails (HTTP 4xx, runner exception).
+// Without forwarding it, the user sees the assistant bubble close
+// silently and only learns there was a problem if the turn-end
+// payload carries an `error` field.
+for (const ev of [
+  'chat:user',
+  'chat:turn-start',
+  'chat:chunk',
+  'chat:turn-end',
+  'chat:context-used',
+  'chat:error',
+  'chat:driver-exit',
+]) {
   ipcRenderer.on(ev, (_e, msg) => emit(ev, msg));
 }
 
