@@ -102,8 +102,14 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
           'ibm/granite-docling',
         ];
     const envDefault = (process.env.OLLAMA_MODEL || '').trim();
+    // Default to gpt-oss:120b-cloud — it's available on every Ollama
+    // Cloud tier (free included). glm-5.1:cloud and kimi-k2:1t-cloud
+    // require a paid subscription; selecting them on the free tier
+    // returns HTTP 403. They're kept in the dropdown so users with
+    // access can still pick them, but the default has to be something
+    // that actually works without configuration.
     const def = envDefault
-      || (models.includes('glm-5.1:cloud') ? 'glm-5.1:cloud' : models[0] || '');
+      || (models.includes('gpt-oss:120b-cloud') ? 'gpt-oss:120b-cloud' : models[0] || '');
     return { ok: true, models, default: def };
   });
 

@@ -350,7 +350,11 @@ function init() {
       },
       'chat:error': (msg) => {
         pushBubble('system', msg.error || 'error');
+        // Also stash the error on any open assistant bubble for this
+        // agent — closeBubble() renders it in place of the "(no response)"
+        // placeholder so the user sees the cause where they're looking.
         if (msg.agentId) {
+          /** @type {any} */ (chatEl()).errorBubble?.(msg.agentId, msg.error || 'error');
           state.thinkingWorkers.delete(msg.agentId);
           renderWorkers();
         }

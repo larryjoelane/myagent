@@ -43,7 +43,7 @@ export class ChatLog extends HTMLElement {
     // Per-agent state for the currently OPEN assistant bubble. Each
     // chunk arriving for an agent mutates this entry. Cleared on
     // closeBubble (chat:turn-end), the next assistant chunk re-creates.
-    /** @type {Map<string, {el: HTMLElement, bodyEl: HTMLElement, typingEl: HTMLElement|null, hasContent: boolean, lastTextNode: Text|null}>} */
+    /** @type {Map<string, {el: HTMLElement, bodyEl: HTMLElement, typingEl: HTMLElement|null, hasContent: boolean, lastTextNode: Text|null, errorText?: string}>} */
     this._openBubbles = new Map();
     // Auto-context badges that arrived BEFORE the matching user bubble
     // existed. Flushed by attachContextBadge after the user bubble
@@ -142,10 +142,30 @@ export class ChatLog extends HTMLElement {
     entry.el.classList.add('bubble--done');
     if (!entry.hasContent && entry.typingEl) {
       entry.typingEl.parentNode?.removeChild(entry.typingEl);
-      entry.bodyEl.textContent = '(no response)';
-      entry.bodyEl.style.color = 'var(--text-faint)';
+      // If an error fired during this turn, render it on the bubble so
+      // users see WHY there's no response, not just "(no response)".
+      // The error text was stashed by errorBubble() during the turn.
+      if (entry.errorText) {
+        entry.bodyEl.textContent = entry.errorText;
+        entry.bodyEl.style.color = 'var(--warn, #c87a4a)';
+      } else {
+        entry.bodyEl.textContent = '(no response)';
+        entry.bodyEl.style.color = 'var(--text-faint)';
+      }
     }
     this._openBubbles.delete(agentId);
+  }
+
+  // chat:error for an agent. Stash the error text on the open bubble
+  // so closeBubble() can surface it where the user is looking. The
+  // agentManager still pushes a system bubble too — both are useful:
+  // the system bubble carries timestamp + visual emphasis, the
+  // assistant-bubble error tells the user "this is what happened
+  // instead of an answer."
+  errorBubble(agentId, errorText) {
+    const entry = this._openBubbles.get(agentId);
+    if (!entry) return;
+    entry.errorText = errorText;
   }
 
   // chat:context-used. Find the matching user bubble and attach an
