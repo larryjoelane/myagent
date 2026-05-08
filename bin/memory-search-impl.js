@@ -59,8 +59,8 @@ function printHelp() {
     '',
     'Options:',
     '  -n, --limit N        max hits to return (default 10)',
-    '  -k, --kind KIND      filter to one row kind (agent-in | agent-out | pty-agent-summary)',
-    '      --ingest         re-scan NDJSON logs and exit',
+    '  -k, --kind KIND      filter to one row kind (agent-in | agent-out | pty-agent-summary | auto-memory | memory)',
+    '      --ingest         re-scan NDJSON logs + auto-memory and exit',
     '      --stats          print index stats and exit',
     '      --local          skip the running Electron app server, search in-process',
     '  -h, --help           show this help',
@@ -120,8 +120,34 @@ async function main() {
   const db = sessionIndex.open(INDEX_DB_PATH);
   await sessionIndex.ingestDir(db, SESSIONS_DIR);
 
+  // Auto-memory ingest: walk ~/.claude/projects/<encoded-cwd>/memory/
+  // and mirror each .md body (frontmatter stripped) into the index.
+  // Searched against `cwd` so this only walks the auto-memory for the
+  // project we're sitting in. Idempotent via mtime.
+  const autoMemoryDir = sessionIndex.autoMemoryDirFor(process.cwd());
+  const autoMemoryResult = await sessionIndex.ingestAutoMemoryDir(db, autoMemoryDir);
+  if (args.ingest && autoMemoryResult.stripped.length > 0) {
+    // One-time audit of what frontmatter got stripped during this run.
+    // Only fires when --ingest is the requested action so search runs
+    // stay quiet. Goes to stderr so the JSON on stdout is unaffected.
+    process.stderr.write(`auto-memory: ingested ${autoMemoryResult.ingested.length} file(s) from ${autoMemoryDir}\n`);
+    for (const s of autoMemoryResult.stripped) {
+      const fm = s.frontmatter.trim();
+      process.stderr.write(`--- stripped frontmatter from ${path.basename(s.file)}:\n`);
+      process.stderr.write(fm.split('\n').map((l) => `    ${l}`).join('\n') + '\n');
+    }
+  }
+
   if (args.ingest) {
-    process.stdout.write(JSON.stringify({ ok: true, stats: sessionIndex.stats(db) }) + '\n');
+    process.stdout.write(JSON.stringify({
+      ok: true,
+      stats: sessionIndex.stats(db),
+      autoMemory: {
+        dir: autoMemoryDir,
+        ingested: autoMemoryResult.ingested.length,
+        skipped: autoMemoryResult.skipped.length,
+      },
+    }) + '\n');
     return;
   }
   if (args.stats) {

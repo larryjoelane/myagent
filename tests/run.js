@@ -2,6 +2,35 @@
 // the exported `run(context)` and tallies. Tests register cases via
 // context.test(name, fn). No framework dep — keeps the test layer
 // trivially debuggable with `node --inspect`.
+//
+// Runs under Electron's bundled Node (via ELECTRON_RUN_AS_NODE=1) so
+// it shares the running app's better-sqlite3 ABI. Without this any
+// test that touches the SQLite session index fails with a
+// NODE_MODULE_VERSION mismatch on a developer machine that has a
+// different host Node ABI than Electron's bundled Node. If we're
+// already running under Electron, skip the re-exec.
+
+const RUNNING_UNDER_ELECTRON =
+  process.env.ELECTRON_RUN_AS_NODE === '1' ||
+  Boolean(process.versions.electron);
+
+if (!RUNNING_UNDER_ELECTRON) {
+  let electronBin;
+  try { electronBin = require('electron'); }
+  catch (err) {
+    process.stderr.write(`tests/run.js: cannot find Electron — run \`npm install\`. (${err.message})\n`);
+    process.exit(1);
+  }
+  const child = require('child_process').spawnSync(electronBin, [__filename, ...process.argv.slice(2)], {
+    stdio: 'inherit',
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+  });
+  if (child.error) {
+    process.stderr.write(`tests/run.js: failed to launch Electron — ${child.error.message}\n`);
+    process.exit(1);
+  }
+  process.exit(child.status == null ? 1 : child.status);
+}
 
 const fs = require('fs');
 const path = require('path');

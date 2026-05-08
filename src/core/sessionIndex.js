@@ -70,6 +70,17 @@ CREATE TABLE IF NOT EXISTS ingest_cursor (
   updated_at TEXT    NOT NULL
 );
 
+-- Cursor for auto-memory .md files (separate ingest path, content
+-- changes in place rather than appending). Stores the mtime so we
+-- can detect edits and re-index, and the row id so we can delete
+-- the previous version without a file scan.
+CREATE TABLE IF NOT EXISTS auto_memory_cursor (
+  file       TEXT PRIMARY KEY,
+  mtime_ms   INTEGER NOT NULL,
+  row_id     INTEGER NOT NULL,
+  updated_at TEXT    NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT
@@ -84,6 +95,10 @@ function open(dbPath) {
   const db = new D(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('synchronous = NORMAL');
+  // Foreign keys are off by default in SQLite. The vectors table has
+  // ON DELETE CASCADE referencing rows; without this pragma deletes
+  // from rows leave orphaned vectors and stale semantic-search hits.
+  db.pragma('foreign_keys = ON');
   db.exec(SCHEMA);
   return db;
 }
@@ -138,6 +153,152 @@ async function insertRow(db, { file, lineNo, byteOff, ts, pane, kind, sessionId,
     // searchable via FTS; the vector can be backfilled later.
   }
   return rowId;
+}
+
+// Delete a row by id from rows + rows_fts + vectors. The vectors table
+// cascades automatically; rows_fts is an external-content FTS5 table
+// and needs the explicit 'delete' command, not a DELETE statement.
+function deleteRow(db, rowId) {
+  const existing = db.prepare('SELECT text FROM rows WHERE id = ?').get(rowId);
+  if (!existing) return false;
+  // FTS5 external-content table: deleting from rows doesn't update the
+  // index. The 'delete' command takes the original rowid + text — must
+  // come BEFORE the rows DELETE so we can read the original text.
+  db.prepare("INSERT INTO rows_fts(rows_fts, rowid, text) VALUES ('delete', ?, ?)")
+    .run(rowId, existing.text);
+  // Explicit vector delete in addition to the FK cascade. Defensive:
+  // older databases predate `PRAGMA foreign_keys = ON` being set in
+  // open() and may have orphaned vectors; the redundant DELETE evicts
+  // those too.
+  db.prepare('DELETE FROM vectors WHERE row_id = ?').run(rowId);
+  db.prepare('DELETE FROM rows WHERE id = ?').run(rowId);
+  return true;
+}
+
+// --- Auto-memory ingestion ----------------------------------------------
+// Walk a directory of .md files (the auto-memory store at
+// ~/.claude/projects/<encoded-cwd>/memory/) and mirror their bodies
+// into the searchable index. Frontmatter is stripped — we only index
+// the prose under the closing `---`. Idempotent: each file's mtime
+// is tracked in auto_memory_cursor; unchanged files are skipped, edited
+// files trigger a delete+reinsert.
+//
+// Returns { ingested, skipped, stripped } where:
+//   ingested: array of { file, frontmatter, bodyChars }
+//   skipped:  array of { file, reason }
+//   stripped: array of { file, frontmatter } for the one-time audit log
+//             (only populated for newly-indexed or re-indexed files;
+//             unchanged files don't re-strip).
+
+// Strip YAML frontmatter from a markdown file's text, returning
+// { frontmatter, body }. Both fields are strings; either may be empty.
+// No YAML parsing — we only need to peel the frontmatter off so the
+// body is what gets indexed. Handles LF and CRLF line endings.
+function stripFrontmatter(text) {
+  const open = /^---\r?\n/;
+  const m = text.match(open);
+  if (!m) return { frontmatter: '', body: text };
+  const start = m[0].length;
+  // Look for `\n---` followed by EOL (next char must be \r or \n).
+  let close = -1;
+  let scan = start;
+  while (scan < text.length) {
+    const i = text.indexOf('\n---', scan);
+    if (i === -1) break;
+    const afterDashes = i + 4;
+    if (afterDashes >= text.length) { close = i; break; }
+    const next = text[afterDashes];
+    if (next === '\n' || next === '\r') { close = i; break; }
+    scan = afterDashes;
+  }
+  if (close === -1) return { frontmatter: '', body: text };
+  const frontmatter = text.slice(start, close);
+  // Skip past the closing `---` and its line terminator(s).
+  let after = close + 4;
+  if (text[after] === '\r') after += 1;
+  if (text[after] === '\n') after += 1;
+  return { frontmatter, body: text.slice(after) };
+}
+
+async function ingestAutoMemoryDir(db, memoryDir) {
+  const result = { ingested: [], skipped: [], stripped: [] };
+  let names;
+  try { names = fs.readdirSync(memoryDir); }
+  catch { return result; }
+
+  const cursorGet = db.prepare('SELECT mtime_ms, row_id FROM auto_memory_cursor WHERE file = ?');
+  const cursorUpsert = db.prepare(`
+    INSERT INTO auto_memory_cursor(file, mtime_ms, row_id, updated_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(file) DO UPDATE SET
+      mtime_ms = excluded.mtime_ms,
+      row_id = excluded.row_id,
+      updated_at = excluded.updated_at
+  `);
+
+  for (const n of names) {
+    if (!n.endsWith('.md')) continue;
+    // Skip MEMORY.md — it's a hand-maintained index of pointers to the
+    // other files, not content worth searching on its own. Searching it
+    // would just return the one-line hooks we already see in every hit.
+    if (n === 'MEMORY.md') continue;
+    const full = path.join(memoryDir, n);
+    let stat;
+    try { stat = fs.statSync(full); } catch { continue; }
+    if (!stat.isFile()) continue;
+
+    const mtimeMs = Math.floor(stat.mtimeMs);
+    const cursor = cursorGet.get(full);
+    if (cursor && cursor.mtime_ms === mtimeMs) {
+      result.skipped.push({ file: full, reason: 'unchanged' });
+      continue;
+    }
+
+    let raw;
+    try { raw = fs.readFileSync(full, 'utf8'); }
+    catch (err) { result.skipped.push({ file: full, reason: `read failed: ${err.message}` }); continue; }
+    const { frontmatter, body } = stripFrontmatter(raw);
+    const trimmedBody = body.trim();
+    if (!trimmedBody) {
+      result.skipped.push({ file: full, reason: 'empty body after frontmatter' });
+      continue;
+    }
+
+    // Edited file — delete the old row before inserting the new one
+    // so search doesn't return both versions.
+    if (cursor && cursor.row_id) deleteRow(db, cursor.row_id);
+
+    const newId = await insertRow(db, {
+      file: full,
+      lineNo: 1,
+      byteOff: 0,
+      ts: new Date(mtimeMs).toISOString(),
+      pane: null,
+      kind: 'auto-memory',
+      sessionId: null,
+      text: trimmedBody,
+    });
+    if (newId == null) {
+      result.skipped.push({ file: full, reason: 'insert returned null' });
+      continue;
+    }
+    cursorUpsert.run(full, mtimeMs, newId, new Date().toISOString());
+    result.ingested.push({ file: full, frontmatter, bodyChars: trimmedBody.length });
+    result.stripped.push({ file: full, frontmatter });
+  }
+  return result;
+}
+
+// Resolve the auto-memory directory for a given working directory. Claude
+// Code stores per-project memory at ~/.claude/projects/<encoded>/memory/
+// where <encoded> is the absolute cwd with `:` and path separators
+// replaced by `-`. This matches Claude Code's own encoding scheme.
+function autoMemoryDirFor(cwd) {
+  const home = require('os').homedir();
+  const absolute = path.resolve(cwd);
+  // Encode: replace drive-letter colon and path separators with `-`.
+  const encoded = absolute.replace(/[:\\/]/g, '-');
+  return path.join(home, '.claude', 'projects', encoded, 'memory');
 }
 
 // Ingest one NDJSON file from its last cursor offset onward. Reads the
@@ -462,6 +623,8 @@ module.exports = {
   open,
   ingestFile,
   ingestDir,
+  ingestAutoMemoryDir,
+  autoMemoryDirFor,
   storeMemory,
   search,
   stats,
@@ -469,4 +632,5 @@ module.exports = {
   extractIndexable,
   ftsQuote,
   fuse,
+  stripFrontmatter,
 };
