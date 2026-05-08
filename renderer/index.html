@@ -17,6 +17,12 @@
       <topbar-commands close-pane-disabled></topbar-commands>
     </header>
     <div id="app-row">
+    <!-- File explorer — collapsible left rail. Closed by default;
+         the "Files" button in topbar-commands toggles it. Reads the
+         editor scope (transport.fs.scopeList) on first open. Files
+         clicked here will open in the editor window in a later
+         phase; for now the file-open event has no consumer. -->
+    <file-tree id="am-file-tree"></file-tree>
     <!-- Agent-manager shell — wraps the chat surface. Component owns
          the header (title, settings ⚙, close ×), the visibility class
          (`agent-manager--hidden` driven by .open), and toggling the

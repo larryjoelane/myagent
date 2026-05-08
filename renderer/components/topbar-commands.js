@@ -12,6 +12,7 @@
 //
 // Events (bubbling, composed):
 //   chat-toggle    — Chat button clicked
+//   files-toggle   — Files button clicked (toggles the <file-tree> rail)
 //   new-shell      — + Terminal clicked
 //   new-browser    — + Browser clicked
 //   close-pane     — Close clicked
@@ -46,6 +47,9 @@ export class TopbarCommands extends LitElement {
       <button id="cmd-agent-manager" class="cmd-btn cmd-btn--primary" type="button"
               title="Toggle chat (Ctrl+Shift+A)"
               @click=${() => this._emit('chat-toggle')}>Chat</button>
+      <button id="cmd-files" class="cmd-btn" type="button"
+              title="Toggle file explorer"
+              @click=${() => this._emit('files-toggle')}>Files</button>
       <button id="cmd-new-shell" class="cmd-btn" type="button"
               title="New terminal tab (Ctrl+Shift+T)"
               @click=${() => this._emit('new-shell')}>+ Terminal</button>

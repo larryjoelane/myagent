@@ -23,6 +23,7 @@ import './components/memory-bubble.js';
 import './components/chat-log.js';
 import './components/topbar-commands.js';
 import './components/agent-manager.js';
+import './components/file-tree.js';
 
 const transport = window.transport;
 
@@ -69,3 +70,14 @@ manager.start();
 // Terminal area is hidden by default — the chat fills the window.
 // Clicking + Terminal opens the area; closing the last tab hides
 // it again. See PaneManager.cmdNewShell / closeTab in shell.js.
+
+// File-tree toggle from <topbar-commands>. The tree owns its own
+// open state + persistence (transport.settings.fileTreeOpen); we
+// just call setOpen(!current) on click.
+{
+  const tree = /** @type {any} */ (document.getElementById('am-file-tree'));
+  document.querySelector('topbar-commands')?.addEventListener('files-toggle', () => {
+    if (!tree) return;
+    void tree.setOpen?.(!tree.open);
+  });
+}
