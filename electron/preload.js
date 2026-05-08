@@ -105,6 +105,20 @@ contextBridge.exposeInMainWorld('transport', {
       return () => listeners.get('models:generate-chunk').delete(fn);
     },
   },
+  // Filesystem API for the editor's file-tree, viewer, and save flow.
+  // Bounded by a global Scope (ADR-0008): paths outside the scope are
+  // refused with `{ ok: false, reason: 'out-of-scope' }`. The Scopes
+  // panel in settings-drawer grows the scope via fs.scopeAdd / scopeRemove.
+  fs: {
+    listDir: (path, opts) => ipcRenderer.invoke('fs:list-dir', { path, ...(opts || {}) }),
+    readFile: (path) => ipcRenderer.invoke('fs:read-file', { path }),
+    writeFile: (path, content, opts) =>
+      ipcRenderer.invoke('fs:write-file', { path, content, ...(opts || {}) }),
+    stat: (path) => ipcRenderer.invoke('fs:stat', { path }),
+    scopeList: () => ipcRenderer.invoke('fs:scope-list'),
+    scopeAdd: (path) => ipcRenderer.invoke('fs:scope-add', { path }),
+    scopeRemove: (path) => ipcRenderer.invoke('fs:scope-remove', { path }),
+  },
   // Native dialogs + persisted settings, used by the spawn UX.
   dialog: {
     chooseDirectory: (opts) => ipcRenderer.invoke('dialog:choose-directory', opts || {}),

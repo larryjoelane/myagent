@@ -1,0 +1,260 @@
+// fs IPC handler tests. We exercise the extracted pure handler
+// functions directly rather than spinning up a real ipcMain — same
+// shape, simpler harness. Scope guard, mtime conflict, oversize
+// refusal, hidden-file filtering, binary detection.
+
+const fs = require('fs');
+const fsp = fs.promises;
+const os = require('os');
+const path = require('path');
+const { Scope } = require('../src/core/scope');
+const { listDir, readFile, writeFile, stat } = require('../electron/ipc/fs-handlers');
+const { eq, ok, notOk, contains, deepEq } = require('./assert');
+
+async function tmpdir() {
+  return await fsp.mkdtemp(path.join(os.tmpdir(), 'fs-handlers-'));
+}
+async function rmrf(p) {
+  try { await fsp.rm(p, { recursive: true, force: true }); }
+  catch { /* ignore */ }
+}
+
+exports.run = (ctx) => {
+  ctx.test('listDir: returns dirs first, files second, alphabetical within each', async () => {
+    const root = await tmpdir();
+    try {
+      await fsp.mkdir(path.join(root, 'zeta'));
+      await fsp.mkdir(path.join(root, 'alpha'));
+      await fsp.writeFile(path.join(root, 'b.txt'), 'b');
+      await fsp.writeFile(path.join(root, 'a.txt'), 'a');
+      const r = await listDir({ path: root, scope: new Scope([root]) });
+      eq(r.ok, true);
+      const names = r.entries.map((e) => e.name);
+      deepEq(names, ['alpha', 'zeta', 'a.txt', 'b.txt']);
+    } finally { await rmrf(root); }
+  });
+
+  ctx.test('listDir: hides node_modules/.git/dist/.myagent by default', async () => {
+    const root = await tmpdir();
+    try {
+      await fsp.mkdir(path.join(root, 'node_modules'));
+      await fsp.mkdir(path.join(root, '.git'));
+      await fsp.mkdir(path.join(root, 'dist'));
+      await fsp.mkdir(path.join(root, '.myagent'));
+      await fsp.mkdir(path.join(root, 'src'));
+      const hidden = await listDir({ path: root, scope: new Scope([root]) });
+      const visibleNames = hidden.entries.map((e) => e.name);
+      deepEq(visibleNames, ['src']);
+      const shown = await listDir({ path: root, showHidden: true, scope: new Scope([root]) });
+      const allNames = shown.entries.map((e) => e.name).sort();
+      deepEq(allNames, ['.git', '.myagent', 'dist', 'node_modules', 'src']);
+    } finally { await rmrf(root); }
+  });
+
+  ctx.test('listDir: out-of-scope path is refused with reason "out-of-scope"', async () => {
+    const a = await tmpdir();
+    const b = await tmpdir();
+    try {
+      const r = await listDir({ path: b, scope: new Scope([a]) });
+      eq(r.ok, false);
+      eq(r.reason, 'out-of-scope');
+      contains(r.error, 'Settings');
+    } finally { await rmrf(a); await rmrf(b); }
+  });
+
+  ctx.test('listDir: bad input rejected', async () => {
+    const r = await listDir({ scope: new Scope() });
+    eq(r.ok, false);
+    eq(r.reason, 'bad-input');
+  });
+
+  ctx.test('readFile: returns content + mtime for a normal text file', async () => {
+    const root = await tmpdir();
+    try {
+      const f = path.join(root, 'hello.txt');
+      await fsp.writeFile(f, 'hello world');
+      const r = await readFile({
+        path: f, scope: new Scope([root]), maxFileSize: 1024,
+      });
+      eq(r.ok, true);
+      eq(r.content, 'hello world');
+      eq(r.encoding, 'utf8');
+      ok(typeof r.mtime === 'number' && r.mtime > 0, 'mtime is set');
+    } finally { await rmrf(root); }
+  });
+
+  ctx.test('readFile: refuses out-of-scope', async () => {
+    const a = await tmpdir();
+    const b = await tmpdir();
+    try {
+      const f = path.join(b, 'leaked.txt');
+      await fsp.writeFile(f, 'shh');
+      const r = await readFile({
+        path: f, scope: new Scope([a]), maxFileSize: 1024,
+      });
+      eq(r.ok, false);
+      eq(r.reason, 'out-of-scope');
+    } finally { await rmrf(a); await rmrf(b); }
+  });
+
+  ctx.test('readFile: refuses files over the size cap', async () => {
+    const root = await tmpdir();
+    try {
+      const f = path.join(root, 'big.txt');
+      await fsp.writeFile(f, 'x'.repeat(2048));
+      const r = await readFile({
+        path: f, scope: new Scope([root]), maxFileSize: 100,
+      });
+      eq(r.ok, false);
+      eq(r.reason, 'too-large');
+      eq(r.size, 2048);
+      eq(r.max, 100);
+    } finally { await rmrf(root); }
+  });
+
+  ctx.test('readFile: refuses binary files', async () => {
+    const root = await tmpdir();
+    try {
+      const f = path.join(root, 'image.bin');
+      // NUL byte in the first 8KB triggers binary detection.
+      await fsp.writeFile(f, Buffer.from([0x89, 0x50, 0x4E, 0x00, 0x47]));
+      const r = await readFile({
+        path: f, scope: new Scope([root]), maxFileSize: 1024,
+      });
+      eq(r.ok, false);
+      eq(r.reason, 'binary');
+    } finally { await rmrf(root); }
+  });
+
+  ctx.test('readFile: refuses directories', async () => {
+    const root = await tmpdir();
+    try {
+      const r = await readFile({
+        path: root, scope: new Scope([root]), maxFileSize: 1024,
+      });
+      eq(r.ok, false);
+      eq(r.reason, 'not-a-file');
+    } finally { await rmrf(root); }
+  });
+
+  ctx.test('writeFile: writes content and returns new mtime', async () => {
+    const root = await tmpdir();
+    try {
+      const f = path.join(root, 'out.txt');
+      const r = await writeFile({
+        path: f, content: 'fresh', scope: new Scope([root]),
+      });
+      eq(r.ok, true);
+      const back = await fsp.readFile(f, 'utf8');
+      eq(back, 'fresh');
+      ok(r.mtime > 0);
+    } finally { await rmrf(root); }
+  });
+
+  ctx.test('writeFile: refuses out-of-scope', async () => {
+    const a = await tmpdir();
+    const b = await tmpdir();
+    try {
+      const f = path.join(b, 'naughty.txt');
+      const r = await writeFile({
+        path: f, content: 'x', scope: new Scope([a]),
+      });
+      eq(r.ok, false);
+      eq(r.reason, 'out-of-scope');
+    } finally { await rmrf(a); await rmrf(b); }
+  });
+
+  ctx.test('writeFile: mtime-conflict when expectedMtime mismatches disk', async () => {
+    const root = await tmpdir();
+    try {
+      const f = path.join(root, 'locked.txt');
+      await fsp.writeFile(f, 'v1');
+      const stale = (await fsp.stat(f)).mtimeMs - 1000; // pretend we loaded earlier
+      const r = await writeFile({
+        path: f, content: 'v2', expectedMtime: stale, scope: new Scope([root]),
+      });
+      eq(r.ok, false);
+      eq(r.reason, 'mtime-conflict');
+      ok(r.currentMtime !== stale);
+      eq(await fsp.readFile(f, 'utf8'), 'v1', 'file unchanged on conflict');
+    } finally { await rmrf(root); }
+  });
+
+  ctx.test('writeFile: expectedMtime that matches goes through', async () => {
+    const root = await tmpdir();
+    try {
+      const f = path.join(root, 'fresh.txt');
+      await fsp.writeFile(f, 'v1');
+      const mtime = (await fsp.stat(f)).mtimeMs;
+      const r = await writeFile({
+        path: f, content: 'v2', expectedMtime: mtime, scope: new Scope([root]),
+      });
+      eq(r.ok, true);
+      eq(await fsp.readFile(f, 'utf8'), 'v2');
+    } finally { await rmrf(root); }
+  });
+
+  ctx.test('writeFile: missing expectedMtime allows unconditional write', async () => {
+    // Unlocked tabs pass no expectedMtime — the manager must accept the
+    // write even if the file changed externally.
+    const root = await tmpdir();
+    try {
+      const f = path.join(root, 'unlocked.txt');
+      await fsp.writeFile(f, 'v1');
+      const r = await writeFile({
+        path: f, content: 'v2', scope: new Scope([root]),
+      });
+      eq(r.ok, true);
+    } finally { await rmrf(root); }
+  });
+
+  ctx.test('writeFile: creates a new file when the path does not exist', async () => {
+    const root = await tmpdir();
+    try {
+      const f = path.join(root, 'nested', 'created.txt');
+      // Ensure the parent dir exists; fs:write-file is not a mkdir-p.
+      await fsp.mkdir(path.dirname(f));
+      const r = await writeFile({
+        path: f, content: 'born', scope: new Scope([root]),
+      });
+      eq(r.ok, true);
+      eq(await fsp.readFile(f, 'utf8'), 'born');
+    } finally { await rmrf(root); }
+  });
+
+  ctx.test('stat: existing file returns metadata', async () => {
+    const root = await tmpdir();
+    try {
+      const f = path.join(root, 'thing.txt');
+      await fsp.writeFile(f, 'data');
+      const r = await stat({ path: f, scope: new Scope([root]) });
+      eq(r.ok, true);
+      eq(r.exists, true);
+      eq(r.type, 'file');
+      eq(r.size, 4);
+      ok(r.mtime > 0);
+    } finally { await rmrf(root); }
+  });
+
+  ctx.test('stat: nonexistent path returns exists:false (not an error)', async () => {
+    const root = await tmpdir();
+    try {
+      const r = await stat({
+        path: path.join(root, 'gone.txt'),
+        scope: new Scope([root]),
+      });
+      eq(r.ok, true);
+      eq(r.exists, false);
+    } finally { await rmrf(root); }
+  });
+
+  ctx.test('stat: out-of-scope refused', async () => {
+    const a = await tmpdir();
+    const b = await tmpdir();
+    try {
+      const r = await stat({ path: b, scope: new Scope([a]) });
+      eq(r.ok, false);
+      eq(r.reason, 'out-of-scope');
+    } finally { await rmrf(a); await rmrf(b); }
+  });
+};

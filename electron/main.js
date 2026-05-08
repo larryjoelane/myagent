@@ -27,6 +27,7 @@ const sessionServer = require('../src/core/sessionServer');
 const { WorkerHost } = require('../src/core/sessionWorkerHost');
 const { createAgentRegistry } = require('../src/core/agentRegistry');
 const { WorkerManager } = require('../src/core/workerManager');
+const { Scope } = require('../src/core/scope');
 const { ClaudeDriver } = require('../src/core/drivers/claudeDriver');
 const { ShellDriver } = require('../src/core/drivers/shellDriver');
 const { OllamaCloudDriver } = require('../src/core/drivers/ollamaCloudDriver');
@@ -40,6 +41,7 @@ const browserHandlers = require('./ipc/browser-handlers');
 const agentHandlers = require('./ipc/agent-handlers');
 const memoryHandlers = require('./ipc/memory-handlers');
 const workerHandlers = require('./ipc/worker-handlers');
+const fsHandlers = require('./ipc/fs-handlers');
 const modelHandlers = require('./ipc/model-handlers');
 const ptyHandlers = require('./ipc/pty-handlers');
 
@@ -262,6 +264,16 @@ const workerManager = new WorkerManager({
   contextProvider: autoContextProvider,
 });
 
+// ---- Editor scope ----------------------------------------------------------
+// The editor's file-tree, viewer, and save flow are bounded by a single
+// global Scope (per ADR-0008). Initial root is the persisted lastCwd
+// (or PROJECT_ROOT as a fallback). Users grow the scope at runtime via
+// the settings-drawer Scopes panel, which mutates this object through
+// fs:scope-add / fs:scope-remove IPC.
+const editorScope = new Scope([
+  appSettings.get('lastCwd') || PROJECT_ROOT,
+]);
+
 // ---- Window + menu ---------------------------------------------------------
 
 // Application menu. Replaces Electron's default so we can add a DevTools
@@ -385,6 +397,7 @@ function registerIpcHandlers() {
     ipcMain, BrowserWindow, dialog, workerManager, appSettings,
     projectRoot: PROJECT_ROOT,
   });
+  fsHandlers.register({ ipcMain, scope: editorScope });
   modelHandlers.register({ ipcMain, getEmbedderBridge });
   ptyHandlers.register({
     ipcMain, sessionLog, agentRegistry,
