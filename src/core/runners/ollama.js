@@ -15,6 +15,17 @@ const DEFAULT_MODEL =
 // Match a model id (e.g. "hf.co/.../SmolLM3-3B-GGUF:Q4_K_M",
 // "qwen3:8b", "llama3.2:3b") against profile keys. Keys are matched as
 // case-insensitive substrings of the model id.
+//
+// Profiles describe how a model handles reasoning, so the runner knows:
+//   - whether to inject /think /no_think directives into the system prompt
+//     (legacy SmolLM3/Qwen3 GGUF ports, not honored by the cloud API)
+//   - whether reasoning is wrapped in in-band <think>...</think> tags
+//     (GGUF community ports; the runner strips them when think is off)
+//   - whether to send the structured top-level `think` flag in the
+//     /api/chat request body (Ollama Cloud reasoning models like
+//     gpt-oss, glm-5.1, deepseek-v4 — the cloud surfaces reasoning
+//     in `message.thinking` separately from `message.content` when
+//     this flag is on)
 const MODEL_PROFILES = {
   // SmolLM3: hybrid thinker. Gated by /think and /no_think system-prompt
   // directives (the Ollama top-level `think` flag is unreliable for
@@ -35,13 +46,26 @@ const MODEL_PROFILES = {
     offDirective: '/no_think',
     defaultThink: false,
   },
-  // DeepSeek-R1: always reasons; can't be turned off. Reasoning is in
-  // <think>...</think>.
+  // DeepSeek-R1 (local GGUF): always reasons; can't be turned off.
+  // Reasoning is in <think>...</think>.
   'deepseek-r1': {
     thinking: 'always-on',
     tagPair: ['<think>', '</think>'],
     defaultThink: true,
   },
+  // Cloud reasoning models. These honor the structured top-level `think`
+  // flag in the request body, and surface reasoning in message.thinking
+  // (NOT in-band tags). Without sending think=true, GLM 5.1 streams
+  // thinking-only chunks and never yields message.content — manifests as
+  // "(no response)" on the chat surface. Always send think.
+  'glm-5.1': { thinking: 'api-field', apiThink: true, defaultThink: true },
+  'glm-5':   { thinking: 'api-field', apiThink: true, defaultThink: true },
+  'glm-4.6': { thinking: 'api-field', apiThink: true, defaultThink: true },
+  'gpt-oss': { thinking: 'api-field', apiThink: true, defaultThink: true },
+  // qwen3-coder and kimi-k2 cloud variants — surface reasoning when asked,
+  // but don't strictly require it. Send think=true for parity.
+  'qwen3-coder': { thinking: 'api-field', apiThink: true, defaultThink: true },
+  'kimi-k2':     { thinking: 'api-field', apiThink: true, defaultThink: true },
   // Llama 3.x, Mistral, Gemma, etc.: no reasoning step.
   llama: { thinking: 'never', defaultThink: false },
   mistral: { thinking: 'never', defaultThink: false },
@@ -124,10 +148,21 @@ class OllamaRunner {
   async *stream(messages, { signal } = {}) {
     const prepared = this.prepareMessages(messages);
 
+    // Build the request body. For models with `thinking: 'api-field'`
+    // we send the structured top-level `think` flag so the cloud
+    // produces both a thinking trace AND a final content answer. Without
+    // it, GLM 5.1 (and other reasoner cloud models) stream thinking-only
+    // chunks and never yield message.content — surfaces as "(no response)".
+    /** @type {Record<string, unknown>} */
+    const body = { model: this.model, messages: prepared, stream: true };
+    if (this.profile.thinking === 'api-field') {
+      body.think = !!this.think;
+    }
+
     const res = await fetch(`${this.host}/api/chat`, {
       method: 'POST',
       headers: this._headers(),
-      body: JSON.stringify({ model: this.model, messages: prepared, stream: true }),
+      body: JSON.stringify(body),
       signal,
     });
 
@@ -140,7 +175,9 @@ class OllamaRunner {
     const decoder = new TextDecoder();
     // Strip in-band reasoning tags only when (a) the model uses them and
     // (b) thinking is off. When thinking is on we let it stream so the
-    // user can see what the model is doing.
+    // user can see what the model is doing. Cloud reasoning models
+    // (api-field) don't use in-band tags — they surface reasoning in a
+    // separate message.thinking field — so the filter is a no-op for them.
     const filter = makeTagFilter(
       this.profile.tagPair && !this.think ? this.profile.tagPair : null
     );
@@ -161,6 +198,10 @@ class OllamaRunner {
         try { json = JSON.parse(line); } catch { continue; }
 
         if (json.error) throw new Error(json.error);
+        // Cloud reasoning models stream `message.thinking` chunks during
+        // the reasoning phase and `message.content` chunks for the final
+        // answer. We only yield content — reasoning UX is a future pass
+        // (a separate channel so it can be styled/hidden by the renderer).
         const piece = json.message?.content;
         if (piece) {
           const cleaned = filter.push(piece);
