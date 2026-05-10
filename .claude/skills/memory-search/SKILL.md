@@ -23,6 +23,18 @@ Returns JSON on stdout — `hits[]` with `text`/`snippet`, `confidence`
 (0–1), `file`, `lineNo`, `ts`, `kind` — plus a `stats` block. Errors
 go to stderr.
 
+## Output policy
+
+By default, return ONLY the raw JSON the command produced — do not
+write a prose summary, do not paraphrase the hits, do not interpret.
+Just surface the JSON. The user will read it and decide what matters.
+
+Summarize only when the user explicitly asks ("summarize", "what does
+this say", "tldr", etc.). If the user asked the search as part of a
+larger question (e.g. "what was done in phase 5"), that counts as an
+explicit ask — answer the question. But for a bare `/memory-search
+<query>` invocation with no follow-up question, just return the JSON.
+
 ## Workflow
 
 1. Run with a focused natural-language query. `--limit 10` is the

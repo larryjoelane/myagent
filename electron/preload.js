@@ -25,6 +25,8 @@ const ALL_FORWARDED_CHANNELS = [
   { channel: 'chat:chunk',         emitAs: 'chat:chunk' },
   { channel: 'chat:turn-end',      emitAs: 'chat:turn-end' },
   { channel: 'chat:context-used',  emitAs: 'chat:context-used' },
+  { channel: 'chat:tool-call',     emitAs: 'chat:tool-call' },
+  { channel: 'chat:tool-result',   emitAs: 'chat:tool-result' },
   { channel: 'chat:error',         emitAs: 'chat:error' },
   { channel: 'chat:driver-exit',   emitAs: 'chat:driver-exit' },
   // Legacy agent-handler events. Renderer maps to short names for
@@ -45,6 +47,9 @@ const ALL_FORWARDED_CHANNELS = [
   // Generation streams + model-host requests.
   { channel: 'models:generate-chunk', emitAs: 'models:generate-chunk' },
   { channel: 'model:request',         emitAs: 'model:request' },
+  // Editor BrowserWindow: main pushes a file to load via this channel.
+  // Subscribed by transport.editor.onLoadFile in the editor renderer.
+  { channel: 'editor:load-file',      emitAs: 'editor:load-file' },
 ];
 
 /**
@@ -114,6 +119,9 @@ function buildTransport({ ipcRenderer, clipboard, listeners }) {
       rename: (body) => ipcRenderer.invoke('worker:rename', body || {}),
       listTools: (id) => ipcRenderer.invoke('worker:list-tools', { id }),
       ollamaCloudModels: () => ipcRenderer.invoke('worker:ollama-cloud-models'),
+      listScope: (id) => ipcRenderer.invoke('worker:list-scope', { id }),
+      addScope: (id, path) => ipcRenderer.invoke('worker:add-scope', { id, path }),
+      removeScope: (id, path) => ipcRenderer.invoke('worker:remove-scope', { id, path }),
     },
     models: {
       embedderStatus: () => ipcRenderer.invoke('models:embedder-status'),
@@ -137,6 +145,7 @@ function buildTransport({ ipcRenderer, clipboard, listeners }) {
     },
     dialog: {
       chooseDirectory: (opts) => ipcRenderer.invoke('dialog:choose-directory', opts || {}),
+      saveFile: (opts) => ipcRenderer.invoke('dialog:save-file', opts || {}),
     },
     settings: {
       get: (key, fallback) => ipcRenderer.invoke('settings:get', { key, fallback }),
@@ -182,6 +191,23 @@ function buildTransport({ ipcRenderer, clipboard, listeners }) {
       reply: (msg) => ipcRenderer.send('model:reply', msg),
       chunk: (msg) => ipcRenderer.send('model:chunk', msg),
       ready: () => ipcRenderer.send('model:ready'),
+    },
+    editor: {
+      // Agent renderer asks main to open a file in the editor window.
+      openFile: (path) => ipcRenderer.invoke('editor:open-file', { path }),
+      // Editor renderer signals "I'm loaded, push pending opens".
+      ready: () => ipcRenderer.send('editor:ready'),
+      // File-tree change-root flow: persists editorRoot AND adds the
+      // path to the editor scope in one IPC.
+      setRoot: (path) => ipcRenderer.invoke('editor:set-root', { path }),
+      // Editor renderer subscribes to load-file pushes from main.
+      onLoadFile: (fn) => subscribe('editor:load-file', fn),
+      // Editor renderer reports its active-tab title so main can
+      // update the OS window title.
+      setTitle: (title) => ipcRenderer.send('editor:set-title', { title }),
+      // Editor renderer publishes the active tab's content/dirty/mtime
+      // so main can prepend it to chat-worker prompts. Pass null to clear.
+      reportActiveTab: (tab) => ipcRenderer.send('editor:active-tab', tab || {}),
     },
     pty: {
       start: (opts) => ipcRenderer.invoke('pty:start', opts || {}),

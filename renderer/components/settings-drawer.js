@@ -250,6 +250,55 @@ export class SettingsDrawer extends LitElement {
         font-size: 11px;
         padding: 6px 0;
       }
+      /* Per-worker scope chip strip (ADR-0008). */
+      .worker-row__scopes {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+        padding: 0 0 6px 12px;
+        font-size: 10px;
+        color: var(--text-dim);
+      }
+      .scope-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 2px 6px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        font-family: 'Cascadia Code', Consolas, Menlo, monospace;
+        font-size: 10px;
+        color: var(--text-dim);
+      }
+      .scope-chip--fenced {
+        border-color: var(--accent, #4a4a4a);
+        color: var(--text);
+      }
+      .scope-chip--empty {
+        color: var(--text-faint);
+        font-style: italic;
+        border-style: dashed;
+      }
+      .scope-chip__icon { font-size: 10px; }
+      .scope-chip__path {
+        max-width: 200px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .scope-chip__remove {
+        background: transparent;
+        border: none;
+        color: var(--text-dim);
+        cursor: pointer;
+        padding: 0 2px;
+        font: inherit;
+        font-size: 11px;
+        line-height: 1;
+      }
+      .scope-chip__remove:hover { color: var(--warn, #f88); }
     `,
   ];
 
@@ -263,6 +312,8 @@ export class SettingsDrawer extends LitElement {
     this._chatSide = 'left';
     /** @type {boolean} */
     this._autoContext = true;
+    /** @type {boolean} */
+    this._autoFileContext = true;
     /** @type {string[]} */
     this._ollamaModels = [];
     /** @type {string} */
@@ -295,6 +346,7 @@ export class SettingsDrawer extends LitElement {
     const row = document.getElementById('app-row');
     if (row) row.classList.toggle('app-row--chat-right', this._chatSide === 'right');
     this._autoContext = (await getSetting('autoContext', true)) !== false;
+    this._autoFileContext = (await getSetting('autoFileContext', true)) !== false;
     // Hydrate the persisted toolDetails into the store so chat-bubble
     // and tool-card render with the right default mode.
     const td = await getSetting('toolDetails', 'collapsed');
@@ -343,6 +395,15 @@ export class SettingsDrawer extends LitElement {
                  await setSetting('autoContext', this._autoContext);
                }} />
         <span>Auto-include relevant memories</span>
+      </label>
+      <label class="row" title="Prepend the editor's active tab (path + content) to chat-worker prompts so the model sees the file you're looking at.">
+        <input id="am-auto-file-context" type="checkbox"
+               .checked=${this._autoFileContext}
+               @change=${async (/** @type {any} */ e) => {
+                 this._autoFileContext = !!e.target.checked;
+                 await setSetting('autoFileContext', this._autoFileContext);
+               }} />
+        <span>Auto-include active editor file</span>
       </label>
     `;
   }
@@ -496,8 +557,55 @@ export class SettingsDrawer extends LitElement {
               <button class="cmd-btn cmd-btn--small" type="button"
                       @click=${() => closeWorker(w.id)}>Close</button>
             </div>
+            ${this._renderScopeChips(w)}
           `;
         })}
+      </div>
+    `;
+  }
+
+  /** Per-worker scope chip strip. Lives directly under each worker row.
+   *  Each scope root is a chip; the cwd row gets a 🔒 badge and no
+   *  remove button (it's the spawn-time fence). + Add directory opens
+   *  a native picker via worker:add-scope (path arg omitted). */
+  _renderScopeChips(/** @type {any} */ w) {
+    // scopeRoots arrives via WorkerManager.list() — see workerManager.js.
+    /** @type {string[]} */
+    const roots = Array.isArray(w.scopeRoots) ? w.scopeRoots : [];
+    const cwdNorm = (w.cwd || '').replace(/[\\/]+$/, '').toLowerCase();
+    const isFenced = (root) => root.replace(/[\\/]+$/, '').toLowerCase() === cwdNorm;
+    const onAdd = async () => {
+      const t = /** @type {any} */ (window).transport;
+      try { await t?.workers?.addScope?.(w.id); } catch { /* ignore */ }
+      // Refresh the worker list so scopeRoots updates.
+      try { await refreshWorkers(); } catch { /* ignore */ }
+    };
+    const onRemove = async (root) => {
+      const t = /** @type {any} */ (window).transport;
+      try { await t?.workers?.removeScope?.(w.id, root); } catch { /* ignore */ }
+      try { await refreshWorkers(); } catch { /* ignore */ }
+    };
+    return html`
+      <div class="worker-row__scopes">
+        <span class="label--small">Scope</span>
+        ${roots.length === 0
+          ? html`<span class="scope-chip scope-chip--empty">(none)</span>`
+          : roots.map((root) => html`
+              <span class="scope-chip ${isFenced(root) ? 'scope-chip--fenced' : ''}"
+                    title=${root}>
+                ${isFenced(root) ? html`<span class="scope-chip__icon">🔒</span>` : ''}
+                <span class="scope-chip__path">${shortenPath(root)}</span>
+                ${isFenced(root) ? '' : html`
+                  <button class="scope-chip__remove" type="button"
+                          title="Remove from scope"
+                          @click=${() => onRemove(root)}>×</button>
+                `}
+              </span>
+            `)
+        }
+        <button class="cmd-btn cmd-btn--small" type="button"
+                title="Add a directory to this worker's scope"
+                @click=${onAdd}>+ Add</button>
       </div>
     `;
   }

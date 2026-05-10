@@ -508,6 +508,239 @@ function run(t) {
     eq(r.last('chat:user').payload.text, 'plain');
   });
 
+  t.test('originalText: caller-augmented send still rewrites chat:user back to the original', async () => {
+    // Renderer-side /attach prepends a preamble before invoking
+    // worker:send. The chat UI shows the typed text, not the file
+    // content; chat:user must reflect that, just like auto-context.
+    const r = recorder();
+    let providerCalled = 0;
+    const { factories, created } = fakeFactories();
+    const contextProvider = async () => { providerCalled++; return { preamble: 'IGNORED', usedHits: [] }; };
+    const mgr = new WorkerManager({ factories, onEvent: r.onEvent, contextProvider });
+    const a = await mgr.spawnWorker({});
+    mgr.send({
+      to: a.id,
+      text: '[Attached: a.js]\n```\nx\n```\n\nfix this',
+      originalText: 'fix this',
+    });
+    await new Promise((r) => setImmediate(r));
+    // Provider must NOT have been called — caller-augmented sends
+    // skip the auto-context wrapper.
+    eq(providerCalled, 0, 'caller augmentation bypasses contextProvider');
+    // Driver received the augmented (full) text.
+    eq(created.claude[0].sent[0], '[Attached: a.js]\n```\nx\n```\n\nfix this');
+    // Now simulate the driver echoing chat:user with the augmented
+    // text — manager rewrites it back to the user's original.
+    created.claude[0].emit('chat:user', { text: '[Attached: a.js]\n```\nx\n```\n\nfix this' });
+    eq(r.last('chat:user').payload.text, 'fix this');
+  });
+
+  t.test('originalText: turn-end userText is rewritten too (memory mirror sees the original)', async () => {
+    const r = recorder();
+    const { factories, created } = fakeFactories();
+    const mgr = new WorkerManager({ factories, onEvent: r.onEvent });
+    const a = await mgr.spawnWorker({});
+    mgr.send({
+      to: a.id,
+      text: '[Attached: x.go]\nbody\n\noriginal',
+      originalText: 'original',
+    });
+    await new Promise((r) => setImmediate(r));
+    created.claude[0].emit('chat:turn-end', {
+      userText: '[Attached: x.go]\nbody\n\noriginal',
+      assistantText: 'reply',
+    });
+    eq(r.last('chat:turn-end').payload.userText, 'original');
+  });
+
+  t.test('originalText equal to text = no rewrite (treated as a normal send)', async () => {
+    const r = recorder();
+    const { factories, created } = fakeFactories();
+    const mgr = new WorkerManager({ factories, onEvent: r.onEvent });
+    const a = await mgr.spawnWorker({});
+    mgr.send({ to: a.id, text: 'hello', originalText: 'hello' });
+    await new Promise((r) => setImmediate(r));
+    eq(created.claude[0].sent[0], 'hello');
+    created.claude[0].emit('chat:user', { text: 'hello' });
+    eq(r.last('chat:user').payload.text, 'hello');
+  });
+
+  t.test('chat:context-used carries fileSource when the provider returned one', async () => {
+    const r = recorder();
+    const { factories } = fakeFactories();
+    const contextProvider = async () => ({
+      preamble: '[Active editor: /p/foo.js]\n```js\nx\n```\n',
+      usedHits: [],
+      fileSource: { path: '/p/foo.js', dirty: true },
+    });
+    const mgr = new WorkerManager({ factories, onEvent: r.onEvent, contextProvider });
+    const a = await mgr.spawnWorker({});
+    mgr.send({ to: a.id, text: 'hello' });
+    await new Promise((r) => setImmediate(r));
+    const ev = r.last('chat:context-used');
+    ok(ev, 'chat:context-used emitted');
+    deepEq(ev.payload.fileSource, { path: '/p/foo.js', dirty: true });
+    deepEq(ev.payload.usedHits, []);
+  });
+
+  t.test('chat:context-used is NOT emitted when neither memory nor file context applied', async () => {
+    const r = recorder();
+    const { factories } = fakeFactories();
+    const contextProvider = async () => ({ preamble: '', usedHits: [], fileSource: null });
+    const mgr = new WorkerManager({ factories, onEvent: r.onEvent, contextProvider });
+    const a = await mgr.spawnWorker({});
+    mgr.send({ to: a.id, text: 'hello' });
+    await new Promise((r) => setImmediate(r));
+    eq(r.countOf('chat:context-used'), 0);
+  });
+
+  // ---- Per-worker scope (ADR-0008) ------------------------------------
+  t.test('per-worker scope: spawn seeds Scope with [cwd, ...editorRoots]', async () => {
+    const { Scope } = require('../src/core/scope');
+    const path = require('path');
+    const os = require('os');
+    const fs = require('fs');
+    const editorScope = new Scope([os.tmpdir()]);
+    const { factories, created } = fakeFactories();
+    const mgr = new WorkerManager({ factories, onEvent: () => {}, editorScope });
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'wm-scope-'));
+    try {
+      const a = await mgr.spawnWorker({ cwd });
+      const opts = created.claude[0].opts || {};
+      ok(opts.scope, 'factory received scope');
+      const roots = opts.scope.list();
+      ok(opts.scope.containsSync(cwd), 'cwd in scope');
+      ok(opts.scope.containsSync(os.tmpdir()), 'editor root in scope');
+      ok(roots.length >= 2, `expected ≥2 roots, got: ${roots.join(', ')}`);
+      const listed = mgr.listScope({ id: a.id });
+      eq(listed.ok, true);
+      ok(listed.roots.length >= 2);
+      eq(listed.cwd, cwd);
+    } finally {
+      try { fs.rmSync(cwd, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+
+  t.test('per-worker scope: editorScope mutations after spawn do NOT propagate (snapshot at spawn)', async () => {
+    const { Scope } = require('../src/core/scope');
+    const path = require('path');
+    const os = require('os');
+    const fs = require('fs');
+    // Use an isolated parent so otherDir isn't a descendant of the
+    // initial editor scope root (which would make containsSync true
+    // because of transitive reach, masking the snapshot semantics).
+    const isoParent = fs.mkdtempSync(path.join(os.tmpdir(), 'wm-iso-'));
+    const initialEditorRoot = fs.mkdtempSync(path.join(isoParent, 'init-'));
+    const editorScope = new Scope([initialEditorRoot]);
+    const { factories, created } = fakeFactories();
+    const mgr = new WorkerManager({ factories, onEvent: () => {}, editorScope });
+    const cwd = fs.mkdtempSync(path.join(isoParent, 'cwd-'));
+    const otherDir = fs.mkdtempSync(path.join(isoParent, 'other-'));
+    try {
+      await mgr.spawnWorker({ cwd });
+      const workerScope = created.claude[0].opts.scope;
+      // Sanity: before mutation, otherDir is NOT in the worker's scope.
+      ok(!workerScope.containsSync(otherDir), 'precondition: otherDir not in scope');
+      // Add to editor scope AFTER spawn.
+      await editorScope.add(otherDir);
+      // Worker scope should NOT have picked it up.
+      ok(!workerScope.containsSync(otherDir), 'post-spawn editor mutation does not leak');
+    } finally {
+      try { fs.rmSync(isoParent, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+
+  t.test('addScope: extends a worker scope; listScope reflects the new root', async () => {
+    const path = require('path');
+    const os = require('os');
+    const fs = require('fs');
+    const { factories } = fakeFactories();
+    const mgr = new WorkerManager({ factories, onEvent: () => {} });
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'wm-add-'));
+    const extra = fs.mkdtempSync(path.join(os.tmpdir(), 'wm-add-extra-'));
+    try {
+      const a = await mgr.spawnWorker({ cwd });
+      const before = mgr.listScope({ id: a.id }).roots.length;
+      const r = await mgr.addScope({ id: a.id, path: extra });
+      eq(r.ok, true);
+      ok(r.roots.length > before, 'roots count grew');
+    } finally {
+      try { fs.rmSync(cwd, { recursive: true, force: true }); } catch { /* ignore */ }
+      try { fs.rmSync(extra, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+
+  t.test('removeScope: refuses to remove the cwd (spawn-time fence is non-removable)', async () => {
+    const path = require('path');
+    const os = require('os');
+    const fs = require('fs');
+    const { factories } = fakeFactories();
+    const mgr = new WorkerManager({ factories, onEvent: () => {} });
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'wm-fence-'));
+    try {
+      const a = await mgr.spawnWorker({ cwd });
+      const r = await mgr.removeScope({ id: a.id, path: cwd });
+      eq(r.ok, false);
+      contains(String(r.error), 'cwd');
+      const listed = mgr.listScope({ id: a.id });
+      ok(listed.roots.some((root) => root.toLowerCase() === cwd.toLowerCase()),
+        'cwd remains in scope after refusal');
+    } finally {
+      try { fs.rmSync(cwd, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+
+  t.test('removeScope: removes a non-cwd root', async () => {
+    const path = require('path');
+    const os = require('os');
+    const fs = require('fs');
+    const { factories } = fakeFactories();
+    const mgr = new WorkerManager({ factories, onEvent: () => {} });
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'wm-rm-'));
+    const extra = fs.mkdtempSync(path.join(os.tmpdir(), 'wm-rm-extra-'));
+    try {
+      const a = await mgr.spawnWorker({ cwd });
+      await mgr.addScope({ id: a.id, path: extra });
+      const before = mgr.listScope({ id: a.id }).roots.length;
+      const r = await mgr.removeScope({ id: a.id, path: extra });
+      eq(r.ok, true);
+      eq(r.removed, true);
+      const after = mgr.listScope({ id: a.id }).roots.length;
+      ok(after < before, 'root count dropped');
+    } finally {
+      try { fs.rmSync(cwd, { recursive: true, force: true }); } catch { /* ignore */ }
+      try { fs.rmSync(extra, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+
+  t.test('addScope/removeScope/listScope return clean errors for unknown worker id', async () => {
+    const { factories } = fakeFactories();
+    const mgr = new WorkerManager({ factories, onEvent: () => {} });
+    eq(mgr.listScope({ id: 'nope' }).ok, false);
+    const a = await mgr.addScope({ id: 'nope', path: '/tmp' });
+    eq(a.ok, false);
+    const b = await mgr.removeScope({ id: 'nope', path: '/tmp' });
+    eq(b.ok, false);
+  });
+
+  t.test('list() includes scopeRoots for every worker', async () => {
+    const path = require('path');
+    const os = require('os');
+    const fs = require('fs');
+    const { factories } = fakeFactories();
+    const mgr = new WorkerManager({ factories, onEvent: () => {} });
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'wm-list-'));
+    try {
+      await mgr.spawnWorker({ cwd });
+      const list = mgr.list();
+      eq(list.length, 1);
+      ok(Array.isArray(list[0].scopeRoots));
+      ok(list[0].scopeRoots.length >= 1);
+    } finally {
+      try { fs.rmSync(cwd, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+
   t.test('spawnOllamaCloud threads model + cwd into the factory', async () => {
     const { factories, created } = fakeFactories();
     const mgr = new WorkerManager({ factories, onEvent: () => {} });

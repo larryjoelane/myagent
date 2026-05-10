@@ -173,6 +173,45 @@ exports.run = (ctx) => {
     contains(r.text, 'directory');
   });
 
+  // ---- read-file with per-worker Scope (ADR-0008) -----------------------
+  ctx.test('read-file with scope: accepts a path inside a non-cwd scope root', async () => {
+    const { Scope } = require('../src/core/scope');
+    const cwd = tmpRoot();
+    const otherRoot = tmpRoot();
+    const target = path.join(otherRoot, 'shared.md');
+    fs.writeFileSync(target, '# shared\nbody\n');
+    const scope = new Scope([cwd, otherRoot]);
+    const tool = createReadFileTool({ root: cwd, scope });
+    const r = await tool.run({ input: `show me \`${target}\`` });
+    eq(r.ok, true, r.text);
+    contains(r.text, '# shared');
+  });
+
+  ctx.test('read-file with scope: refuses absolute paths outside ALL scope roots', async () => {
+    const { Scope } = require('../src/core/scope');
+    const cwd = tmpRoot();
+    const elsewhere = tmpRoot(); // exists but NOT in scope
+    const target = path.join(elsewhere, 'leak.txt');
+    fs.writeFileSync(target, 'secret');
+    const scope = new Scope([cwd]);
+    const tool = createReadFileTool({ root: cwd, scope });
+    const r = await tool.run({ input: `show me \`${target}\`` });
+    eq(r.ok, false);
+    // Either the extractPath path-rejection OR the resolveAllowed
+    // refusal — both surface a "scope" / "outside" hint.
+    ok(/scope|outside|inside/i.test(r.text), `expected scope-related message, got: ${r.text}`);
+  });
+
+  ctx.test('read-file without scope: legacy behavior — only cwd-relative paths work', async () => {
+    const cwd = tmpRoot();
+    const otherRoot = tmpRoot();
+    fs.writeFileSync(path.join(otherRoot, 'x.txt'), 'hi');
+    // Pass NO scope. Tool should refuse paths in otherRoot.
+    const tool = createReadFileTool({ root: cwd });
+    const r = await tool.run({ input: `show me \`${path.join(otherRoot, 'x.txt')}\`` });
+    eq(r.ok, false);
+  });
+
   // ---- extractBody (memory-store) ---------------------------------------
   ctx.test('extractBody strips leading "remember that"', () => {
     eq(extractBody('remember that we use snake_case'), 'we use snake_case');

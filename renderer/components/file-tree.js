@@ -195,8 +195,10 @@ export class FileTree extends LitElement {
   }
 
   /** Resolve the initial root and load its children. Called when the
-   *  tree is opened (either via setProperty or hydrate). Idempotent:
-   *  re-running after a refresh just rereads the same root. */
+   *  tree is opened (either via setProperty or hydrate). Prefers the
+   *  user's chosen editorRoot (set by the change-root button) over
+   *  the first scope root, which can be sorted unpredictably once
+   *  multiple roots exist. Idempotent. */
   async _initRoot() {
     const t = transport();
     if (!t?.fs?.scopeList) {
@@ -205,10 +207,48 @@ export class FileTree extends LitElement {
     }
     this._rootLoading = true;
     try {
-      const r = await t.fs.scopeList();
-      const roots = (r && r.ok && Array.isArray(r.roots)) ? r.roots : [];
-      this._root = roots[0] || '';
+      // Try the persisted editorRoot first.
+      let chosen = '';
+      try {
+        const r = await t.settings?.get?.('editorRoot', null);
+        if (r && typeof r.value === 'string' && r.value) chosen = r.value;
+      } catch { /* fall through to scope */ }
+      if (!chosen) {
+        const r = await t.fs.scopeList();
+        const roots = (r && r.ok && Array.isArray(r.roots)) ? r.roots : [];
+        chosen = roots[0] || '';
+      }
+      this._root = chosen;
       if (this._root) await this._loadChildren(this._root, /*expand=*/true);
+    } finally {
+      this._rootLoading = false;
+      this._bump();
+    }
+  }
+
+  /** Change-root button: native dir picker → persist editorRoot →
+   *  add to scope (so fs:* IPC accepts it) → reload tree. */
+  async _onChangeRoot() {
+    const t = transport();
+    if (!t?.dialog?.chooseDirectory || !t?.editor?.setRoot) return;
+    let chosen;
+    try {
+      const res = await t.dialog.chooseDirectory({
+        title: 'Choose editor root',
+        defaultPath: this._root || undefined,
+      });
+      if (!res || res.canceled || !res.path) return;
+      chosen = res.path;
+    } catch { return; }
+    try {
+      const r = await t.editor.setRoot(chosen);
+      if (!r || !r.ok) return;
+      this._root = r.root || chosen;
+    } catch { return; }
+    this._tree.clear();
+    this._rootLoading = true;
+    try {
+      await this._loadChildren(this._root, /*expand=*/true);
     } finally {
       this._rootLoading = false;
       this._bump();
@@ -302,6 +342,10 @@ export class FileTree extends LitElement {
     return html`
       <div class="header">
         <span class="title" title=${this._root || ''}>${shortenRoot(this._root) || 'Files'}</span>
+        <button class="icon-btn" type="button"
+                id="ft-change-root"
+                title="Change root directory"
+                @click=${this._onChangeRoot}>📁</button>
         <button class="icon-btn" type="button"
                 title="Show hidden files (node_modules, .git, dist, .myagent)"
                 aria-pressed=${this.showHidden}

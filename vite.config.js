@@ -31,6 +31,14 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        // Main agent window.
+        index: path.resolve(RENDERER_DIR, 'index.html'),
+        // Editor BrowserWindow (Phase 3 file-explorer feature).
+        editor: path.resolve(RENDERER_DIR, 'editor.html'),
+      },
+    },
   },
   server: {
     // Pin port so electron/main.js can hardcode the dev URL.

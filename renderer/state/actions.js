@@ -18,6 +18,7 @@ export async function refreshWorkers() {
     const r = await transport().workers.list();
     const workers = (r.workers || []).map((/** @type {any} */ w) => ({
       id: w.id, name: w.name, kind: w.kind, cwd: w.cwd, memoryMirror: w.memoryMirror,
+      scopeRoots: Array.isArray(w.scopeRoots) ? w.scopeRoots : [],
     }));
     store.update({ workers });
   } catch { /* transient — leave the list alone */ }

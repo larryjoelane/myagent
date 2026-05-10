@@ -27,7 +27,12 @@ const {
 // caller provided the dependency it needs — so the kit degrades
 // gracefully in tests / minimal embeds. Callers can replace this
 // entirely by passing { buildToolkit } to buildSemanticDriverFactory.
-function defaultBuildToolkit({ search, store, root }) {
+//
+// `scope` is the per-worker Scope (ADR-0008). When provided, the
+// fs-touching tools (grep / read-file / git-log) consult it before
+// any fs.* call. Without a scope they fall back to the bare `root`
+// fence (legacy behavior — keeps tests that don't pass a scope green).
+function defaultBuildToolkit({ search, store, root, scope }) {
   const kit = new ToolKit();
   kit.add(echoTool);
   if (typeof search === 'function') {
@@ -37,9 +42,9 @@ function defaultBuildToolkit({ search, store, root }) {
     kit.add(createMemoryStoreTool({ store }));
   }
   if (root) {
-    kit.add(createGrepTool({ root }));
-    kit.add(createReadFileTool({ root }));
-    kit.add(createGitLogTool({ root }));
+    kit.add(createGrepTool({ root, scope }));
+    kit.add(createReadFileTool({ root, scope }));
+    kit.add(createGitLogTool({ root, scope }));
   }
   // List-tools last so its description sees the final kit.
   kit.add(createListToolsTool({ toolkit: kit }));
@@ -51,23 +56,22 @@ function buildSemanticDriverFactory({
   search,           // optional async ({query, limit, minConfidence}) -> hits
   store,            // optional async ({text, source, tags}) -> {id}
   root,             // optional absolute path; enables grep/read-file/git-log
-  buildToolkit,     // optional ({ search, store, root }) -> ToolKit
+  buildToolkit,     // optional ({ search, store, root, scope }) -> ToolKit
   threshold = 0.4,
 } = {}) {
   if (!embedder || typeof embedder.embed !== 'function') {
     throw new Error('buildSemanticDriverFactory: embedder.embed is required');
   }
   const builder = buildToolkit || defaultBuildToolkit;
-  // Toolkit is shared across spawns — its tool descriptions don't
-  // change, so embedding them once is the right behavior.
-  const toolkit = builder({ search, store, root });
 
-  return function spawn({ agentId, onEvent, cwd, ...rest } = {}) {
+  return function spawn({ agentId, onEvent, cwd, scope, ...rest } = {}) {
     void cwd; void rest;
-    // The semantic driver doesn't pick devices anymore — the model
-    // service (renderer/workers/model-worker.js) decides where to run.
-    // The shared embedder is passed straight through; whatever the
-    // model service picks (CPU/WebGPU/auto) applies to every spawn.
+    // Per-spawn toolkit so each worker's fs tools see ITS scope.
+    // Tool descriptions are short — re-embedding 6–8 strings per
+    // spawn is ~50–200ms, well below the noise floor of the rest
+    // of spawn (model load, channel start). The router caches
+    // these vectors for the lifetime of this spawn.
+    const toolkit = builder({ search, store, root, scope });
     const router = new EmbeddingRouter({ embedder, toolkit, threshold });
     return new SemanticDriver({ agentId, router, toolkit, onEvent });
   };

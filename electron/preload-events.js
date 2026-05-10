@@ -22,6 +22,8 @@ const CHAT_EVENTS = [
   'chat:chunk',
   'chat:turn-end',
   'chat:context-used',
+  'chat:tool-call',
+  'chat:tool-result',
   'chat:error',
   'chat:driver-exit',
 ];
@@ -50,12 +52,16 @@ const BROWSER_EVENTS = [
 // Generation streams + model-host requests.
 const MODEL_EVENTS = ['models:generate-chunk', 'model:request'];
 
+// Editor BrowserWindow events. Main → editor renderer.
+const EDITOR_EVENTS = ['editor:load-file'];
+
 module.exports = {
   CHAT_EVENTS,
   AGENT_EVENT_MAP,
   PTY_EVENTS,
   BROWSER_EVENTS,
   MODEL_EVENTS,
+  EDITOR_EVENTS,
   // Flat list of every channel the preload listens to with its
   // emit-as alias. Used by the bridge tests for direct comparison.
   ALL_FORWARDED_CHANNELS: [
@@ -64,5 +70,6 @@ module.exports = {
     ...PTY_EVENTS.map((e) => ({ channel: e, emitAs: e })),
     ...BROWSER_EVENTS.map((e) => ({ channel: e, emitAs: e })),
     ...MODEL_EVENTS.map((e) => ({ channel: e, emitAs: e })),
+    ...EDITOR_EVENTS.map((e) => ({ channel: e, emitAs: e })),
   ],
 };

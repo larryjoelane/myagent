@@ -80,4 +80,13 @@ manager.start();
     if (!tree) return;
     void tree.setOpen?.(!tree.open);
   });
+  // file-open is dispatched (bubbles, composed) from inside the
+  // file-tree's shadow root when a leaf is clicked. Forward to main
+  // so it can lazy-create the editor BrowserWindow and load the file.
+  document.addEventListener('file-open', (/** @type {any} */ ev) => {
+    const path = ev?.detail?.path;
+    if (!path) return;
+    try { window.transport?.editor?.openFile?.(path); }
+    catch { /* ignore */ }
+  });
 }

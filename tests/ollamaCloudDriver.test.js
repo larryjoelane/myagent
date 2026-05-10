@@ -135,6 +135,129 @@ exports.run = (ctx) => {
     eq(runnerOpts.apiKey, 'fake-key');
   });
 
+  ctx.test('tools mode: routes through ToolUseLoop and emits tool events', async () => {
+    const { ToolRegistry } = require('../src/core/llm/tools/registry');
+    const echo = require('../src/core/llm/tools/echo');
+    const registry = new ToolRegistry();
+    registry.add(echo);
+
+    // Scripted preset: turn 1 emits a tool_call, turn 2 emits content.
+    let turn = 0;
+    const presetFactory = () => ({
+      async *stream() {
+        turn += 1;
+        if (turn === 1) {
+          yield { type: 'tool_call', call: { id: 'c1', name: 'echo', arguments: { message: 'pong' } } };
+          yield { type: 'done', totals: {} };
+        } else {
+          yield { type: 'content', text: 'I echoed pong' };
+          yield { type: 'done', totals: {} };
+        }
+      },
+    });
+
+    const rec = recorder();
+    const drv = new OllamaCloudDriver({
+      agentId: 'a1',
+      apiKey: 'fake-key',
+      runnerFactory: () => fakeRunner({ chunks: [] }),
+      presetFactory,
+      toolRegistry: registry,
+      tools: true,
+      onEvent: rec.onEvent,
+    });
+    await drv.start();
+    drv.send('echo pong');
+    await eventually(() => ok(rec.last('chat:turn-end')), { msg: 'turn-end' });
+
+    eq(rec.countOf('chat:tool-call'), 1);
+    eq(rec.last('chat:tool-call').payload.call.name, 'echo');
+    eq(rec.countOf('chat:tool-result'), 1);
+    eq(rec.last('chat:tool-result').payload.result.ok, true);
+    eq(rec.last('chat:tool-result').payload.result.content, 'pong');
+    eq(rec.last('chat:turn-end').payload.assistantText, 'I echoed pong');
+    eq(rec.last('chat:turn-end').payload.totals.iterations, 2);
+  });
+
+  ctx.test('tools mode: requires presetFactory and toolRegistry', () => {
+    let threw;
+    try {
+      new OllamaCloudDriver({
+        agentId: 'a1',
+        runnerFactory: () => fakeRunner(),
+        tools: true,
+      });
+    } catch (e) { threw = e; }
+    ok(threw && /presetFactory/.test(threw.message));
+  });
+
+  ctx.test('tools mode: forwards thinking deltas as chat:chunk kind=thinking', async () => {
+    const { ToolRegistry } = require('../src/core/llm/tools/registry');
+    const presetFactory = () => ({
+      async *stream() {
+        yield { type: 'thinking', text: 'pondering...' };
+        yield { type: 'content', text: 'answer' };
+        yield { type: 'done', totals: {} };
+      },
+    });
+    const rec = recorder();
+    const drv = new OllamaCloudDriver({
+      agentId: 'a1',
+      apiKey: 'fake-key',
+      runnerFactory: () => fakeRunner({ chunks: [] }),
+      presetFactory,
+      toolRegistry: new ToolRegistry(),
+      tools: true,
+      onEvent: rec.onEvent,
+    });
+    await drv.start();
+    drv.send('hi');
+    await eventually(() => ok(rec.last('chat:turn-end')), { msg: 'turn-end' });
+    const chunks = rec.events.filter((e) => e.name === 'chat:chunk').map((e) => e.payload);
+    ok(chunks.some((c) => c.kind === 'thinking' && c.text === 'pondering...'));
+    ok(chunks.some((c) => c.kind === 'text' && c.text === 'answer'));
+  });
+
+  ctx.test('tools mode: scope flows through to tool ctx', async () => {
+    const { ToolRegistry } = require('../src/core/llm/tools/registry');
+    const registry = new ToolRegistry();
+    let seenCtx = null;
+    registry.add({
+      name: 'spy',
+      run: async (_args, ctxArg) => { seenCtx = ctxArg; return { ok: true, content: 'ok' }; },
+    });
+    let turn = 0;
+    const presetFactory = () => ({
+      async *stream() {
+        turn += 1;
+        if (turn === 1) {
+          yield { type: 'tool_call', call: { id: 'c1', name: 'spy', arguments: {} } };
+          yield { type: 'done', totals: {} };
+        } else {
+          yield { type: 'content', text: 'done' };
+          yield { type: 'done', totals: {} };
+        }
+      },
+    });
+    const fakeScope = { tag: 'scope-marker' };
+    const drv = new OllamaCloudDriver({
+      agentId: 'a1',
+      apiKey: 'fake-key',
+      runnerFactory: () => fakeRunner({ chunks: [] }),
+      presetFactory,
+      toolRegistry: registry,
+      tools: true,
+      scope: fakeScope,
+      cwd: '/some/cwd',
+      onEvent: () => {},
+    });
+    await drv.start();
+    drv.send('spy please');
+    await eventually(() => ok(seenCtx), { msg: 'tool ctx received' });
+    eq(seenCtx.scope, fakeScope);
+    eq(seenCtx.cwd, '/some/cwd');
+  });
+
   ctx.test('close before send rejects further sends', async () => {
     const rec = recorder();
     const drv = new OllamaCloudDriver({

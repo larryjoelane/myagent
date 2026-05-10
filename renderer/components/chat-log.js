@@ -176,7 +176,8 @@ export class ChatLog extends HTMLElement {
   // expandable "+ used N memories" badge below it.
   attachContextBadge(msg) {
     const hits = (msg && msg.usedHits) || [];
-    if (hits.length === 0) return;
+    const fileSource = (msg && msg.fileSource) || null;
+    if (hits.length === 0 && !fileSource) return;
     const agentId = msg.agentId;
     const userText = msg.userText || '';
     const userBubbles = this.querySelectorAll('.bubble--user');
@@ -194,7 +195,7 @@ export class ChatLog extends HTMLElement {
       this._pendingContextBadges.set(agentId, msg);
       return;
     }
-    this._renderContextBadge(target, hits);
+    this._renderContextBadge(target, hits, fileSource);
   }
 
   // Called after a user bubble lands — flush any badge that arrived
@@ -466,15 +467,37 @@ export class ChatLog extends HTMLElement {
     this.scrollTop = this.scrollHeight;
   }
 
-  _renderContextBadge(userBubble, hits) {
+  _renderContextBadge(userBubble, hits, fileSource) {
     const badge = document.createElement('div');
     badge.className = 'context-badge';
     const summary = document.createElement('div');
     summary.className = 'context-badge__summary';
-    summary.textContent = `+ used ${hits.length} ${hits.length === 1 ? 'memory' : 'memories'} as context · click to view`;
+    const parts = [];
+    if (fileSource && fileSource.path) {
+      const name = String(fileSource.path).split(/[\\/]/).pop() || fileSource.path;
+      const tag = fileSource.dirty ? `${name} (unsaved)` : name;
+      parts.push(`📎 ${tag}`);
+    }
+    if (hits.length > 0) {
+      parts.push(`${hits.length} ${hits.length === 1 ? 'memory' : 'memories'}`);
+    }
+    summary.textContent = `+ used ${parts.join(' + ')} as context · click to view`;
     badge.appendChild(summary);
     const detail = document.createElement('div');
     detail.className = 'context-badge__detail context-badge__detail--hidden';
+    if (fileSource && fileSource.path) {
+      const item = document.createElement('div');
+      item.className = 'context-badge__hit context-badge__hit--file';
+      const meta = document.createElement('div');
+      meta.className = 'context-badge__meta';
+      meta.textContent = fileSource.dirty ? 'active editor (unsaved buffer)' : 'active editor';
+      item.appendChild(meta);
+      const body = document.createElement('div');
+      body.className = 'context-badge__snippet';
+      body.textContent = fileSource.path;
+      item.appendChild(body);
+      detail.appendChild(item);
+    }
     for (const h of hits) {
       const item = document.createElement('div');
       item.className = 'context-badge__hit';

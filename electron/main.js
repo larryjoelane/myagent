@@ -32,6 +32,7 @@ const { ClaudeDriver } = require('../src/core/drivers/claudeDriver');
 const { ShellDriver } = require('../src/core/drivers/shellDriver');
 const { OllamaCloudDriver } = require('../src/core/drivers/ollamaCloudDriver');
 const { OllamaRunner } = require('../src/core/runners/ollama');
+const { createOllamaPreset, buildDefaultRegistry } = require('../src/core/llm');
 const { AppSettings } = require('../src/core/appSettings');
 const { BrowserManager } = require('../src/core/browserManager');
 const { buildSemanticDriverFactory } = require('../src/core/semantic');
@@ -42,8 +43,10 @@ const agentHandlers = require('./ipc/agent-handlers');
 const memoryHandlers = require('./ipc/memory-handlers');
 const workerHandlers = require('./ipc/worker-handlers');
 const fsHandlers = require('./ipc/fs-handlers');
+const editorHandlers = require('./ipc/editor-handlers');
 const modelHandlers = require('./ipc/model-handlers');
 const ptyHandlers = require('./ipc/pty-handlers');
+const { EditorWindowManager } = require('./editorWindow');
 
 // ---- Paths -----------------------------------------------------------------
 
@@ -130,7 +133,7 @@ const AUTO_CONTEXT_DEFAULTS = {
   maxChars: 1500,        // hard cap on preamble size (~500 tokens)
 };
 
-async function autoContextProvider({ text }) {
+async function memoryContextProvider({ text }) {
   if (!appSettings.get('autoContext', true)) return { preamble: '', usedHits: [] };
   if (!text || !text.trim()) return { preamble: '', usedHits: [] };
   try {
@@ -170,6 +173,73 @@ async function autoContextProvider({ text }) {
   } catch {
     return { preamble: '', usedHits: [] };
   }
+}
+
+// File-context provider: prepend the editor's active tab as a "[Active
+// editor]" preamble for chat workers. Per the Phase 5 plan, this fires
+// for claude + ollama-cloud only — semantic, shell, and slash-command
+// prompts already bypass auto-context wholesale (see WorkerManager).
+//
+// Hard cap on file size so the preamble doesn't dominate the context
+// window. If the active buffer is larger than the cap we send a head
+// + tail slice with a "<truncated>" marker so the model still has
+// useful structural cues.
+const FILE_CONTEXT_MAX_CHARS = 12000;
+
+function fileContextProvider() {
+  if (!appSettings.get('autoFileContext', true)) {
+    return { preamble: '', fileSource: null };
+  }
+  const tab = editorWindow.getActiveTab();
+  if (!tab || !tab.path) return { preamble: '', fileSource: null };
+  const lang = languageHintForPath(tab.path);
+  const dirtyTag = tab.dirty ? ' (unsaved buffer)' : '';
+  const header = `[Active editor: ${tab.path}${dirtyTag}]`;
+  let body = tab.content || '';
+  if (body.length > FILE_CONTEXT_MAX_CHARS) {
+    const head = body.slice(0, FILE_CONTEXT_MAX_CHARS / 2);
+    const tail = body.slice(body.length - FILE_CONTEXT_MAX_CHARS / 2);
+    body = head + '\n\n<…file truncated for context…>\n\n' + tail;
+  }
+  const fenceLang = lang || '';
+  const preamble = `${header}\n\`\`\`${fenceLang}\n${body}\n\`\`\`\n\n`;
+  return {
+    preamble,
+    fileSource: { path: tab.path, dirty: !!tab.dirty },
+  };
+}
+
+function languageHintForPath(p) {
+  const m = String(p || '').toLowerCase().match(/\.([^.\\/]+)$/);
+  if (!m) return '';
+  const ext = m[1];
+  const map = {
+    py: 'python', js: 'javascript', mjs: 'javascript', cjs: 'javascript',
+    ts: 'typescript', tsx: 'tsx', jsx: 'jsx',
+    go: 'go', cs: 'csharp', sh: 'bash', bash: 'bash',
+    ps1: 'powershell', psm1: 'powershell', psd1: 'powershell',
+    md: 'markdown', json: 'json', yml: 'yaml', yaml: 'yaml',
+    html: 'html', css: 'css', sql: 'sql', toml: 'toml',
+  };
+  return map[ext] || '';
+}
+
+// Composed provider: the WorkerManager calls a single contextProvider.
+// We run memory + file lookups in parallel, then concatenate the
+// preambles. usedHits keeps memory-only shape (renderer expects it);
+// fileSource is a sibling field the chat-log uses to render a file
+// badge alongside (or instead of) the memories badge.
+async function autoContextProvider(opts) {
+  const [memory, file] = await Promise.all([
+    memoryContextProvider(opts).catch(() => ({ preamble: '', usedHits: [] })),
+    Promise.resolve().then(() => fileContextProvider()).catch(() => ({ preamble: '', fileSource: null })),
+  ]);
+  const preamble = (file.preamble || '') + (memory.preamble || '');
+  return {
+    preamble,
+    usedHits: memory.usedHits || [],
+    fileSource: file.fileSource || null,
+  };
 }
 
 // ---- Lazy heavy dependencies -----------------------------------------------
@@ -237,6 +307,20 @@ function getRunner({ runnerName = 'ollama', model } = {}) {
   return runnerCache.get(key);
 }
 
+// ---- Editor scope ----------------------------------------------------------
+// The editor's file-tree, viewer, and save flow are bounded by a single
+// global Scope (per ADR-0008). Initial root prefers the persisted
+// editorRoot (set via the file-tree's "change root" button) so worker
+// spawns that update lastCwd don't drag the tree along; falls back to
+// lastCwd, then PROJECT_ROOT. Users grow the scope at runtime via
+// fs:scope-add / fs:scope-remove IPC.
+//
+// Defined BEFORE workerManager because the manager's per-worker
+// scopes seed themselves from this object's roots at spawn time.
+const editorScope = new Scope([
+  appSettings.get('editorRoot') || appSettings.get('lastCwd') || PROJECT_ROOT,
+]);
+
 // WorkerManager owns spawn/list/send/close for chat-driven agents and
 // shells. It hands forwarded events to broadcastChat so any open
 // AgentManager renderer sees them. Memory mirror lives inside the
@@ -253,26 +337,46 @@ const workerManager = new WorkerManager({
     // OLLAMA_HOST from process.env (loaded via dotenv at the top of
     // this file). The driver itself surfaces a clean error if the key
     // is missing, so we don't gate the factory on it here.
+    // Ollama Cloud with tool-use enabled: the driver routes through
+    // ToolUseLoop using the OpenAI-format preset and the default tool
+    // registry (echo / read_file / write_file). Per-worker scope from
+    // _spawn flows in via opts.scope and gates fs-touching tools.
+    // runnerFactory stays wired so the plain-chat path still works as
+    // a fallback when tools are intentionally disabled.
     'ollama-cloud': (opts) => new OllamaCloudDriver({
       ...opts,
       runnerFactory: (runnerOpts) => new OllamaRunner(runnerOpts),
+      presetFactory: (presetOpts) => createOllamaPreset(presetOpts),
+      toolRegistry: buildDefaultRegistry(),
+      tools: true,
+      cwd: opts.cwd || PROJECT_ROOT,
+      // Wire the session index so memory_search / memory_store work
+      // when the model invokes them. Same backend as the semantic
+      // worker uses for its own memory tools.
+      memory: {
+        search: (opts2) => indexHost.search(opts2),
+        store: (body) => indexHost.storeMemory(body),
+      },
     }),
   },
   onEvent: (name, payload) => broadcastChat(name, payload),
   memoryStore: { store: (body) => indexHost.storeMemory(body) },
   memoryMirrorDefault: true,
   contextProvider: autoContextProvider,
+  // Per-worker scopes (ADR-0008). Each spawn snapshots the editor
+  // scope's current roots into its own per-worker Scope, so a worker
+  // sees the editor roots that existed at spawn time AND its cwd.
+  // Mutations after spawn go through worker:add-scope/remove-scope.
+  editorScope,
 });
 
-// ---- Editor scope ----------------------------------------------------------
-// The editor's file-tree, viewer, and save flow are bounded by a single
-// global Scope (per ADR-0008). Initial root is the persisted lastCwd
-// (or PROJECT_ROOT as a fallback). Users grow the scope at runtime via
-// the settings-drawer Scopes panel, which mutates this object through
-// fs:scope-add / fs:scope-remove IPC.
-const editorScope = new Scope([
-  appSettings.get('lastCwd') || PROJECT_ROOT,
-]);
+// Editor BrowserWindow — lazy. No window is created until the user
+// clicks a file in the tree (which sends editor:open-file).
+const editorWindow = new EditorWindowManager({
+  preloadPath: path.join(__dirname, 'preload.js'),
+  projectRoot: PROJECT_ROOT,
+  devServerUrl: process.env.VITE_DEV_SERVER_URL || null,
+});
 
 // ---- Window + menu ---------------------------------------------------------
 
@@ -398,6 +502,7 @@ function registerIpcHandlers() {
     projectRoot: PROJECT_ROOT,
   });
   fsHandlers.register({ ipcMain, scope: editorScope });
+  editorHandlers.register({ ipcMain, editorWindow, scope: editorScope, appSettings });
   modelHandlers.register({ ipcMain, getEmbedderBridge });
   ptyHandlers.register({
     ipcMain, sessionLog, agentRegistry,
@@ -454,6 +559,7 @@ app.on('before-quit', (ev) => {
       mirrorAll({ outRoot: MEMORIES_DIR, sessionsByProject: {} });
     } catch { /* ignore */ }
     try { sessionLog.close(); } catch { /* ignore */ }
+    try { editorWindow.destroy(); } catch { /* ignore */ }
     try { await workerManager.closeAll(); } catch { /* ignore */ }
     if (searchServerStop) {
       try { await searchServerStop(); } catch { /* ignore */ }

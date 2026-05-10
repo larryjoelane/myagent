@@ -2,6 +2,7 @@
 // plus a few small adjacent surfaces:
 //   - worker:spawn / list / list-tools / send / close / rename
 //   - dialog:choose-directory — native picker for a worker's cwd
+//   - dialog:save-file — native save-as dialog for the editor
 //   - settings:get / set — generic persisted UI settings
 //   - chat:get-settings / set-default-mirror / set-worker-mirror —
 //     memory-mirror controls
@@ -67,6 +68,21 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
     return { canceled: false, path: chosen };
   });
 
+  // Native save-file dialog. Used by the editor's "Save As" button.
+  // The renderer takes the returned path and writes via fs:write-file
+  // (which enforces scope) — main does no I/O here.
+  ipcMain.handle('dialog:save-file', async (event, body = {}) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const defaultPath = body.defaultPath || appSettings.get('editorRoot')
+      || appSettings.get('lastCwd') || projectRoot;
+    const result = await dialog.showSaveDialog(win, {
+      title: body.title || 'Save As',
+      defaultPath,
+    });
+    if (result.canceled || !result.filePath) return { canceled: true };
+    return { canceled: false, path: result.filePath };
+  });
+
   // Get/set persisted settings — currently just lastCwd, but the IPC
   // is generic so future settings (theme, permission mode default)
   // don't need new handlers.
@@ -80,14 +96,15 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
   ipcMain.handle('worker:list', () => ({ ok: true, workers: workerManager.list() }));
 
   // Ollama Cloud model picker. Reads OLLAMA_MODELS (comma-separated)
-  // from .env; falls back to a curated default list. OLLAMA_MODEL
-  // (when set) overrides which entry is selected by default; otherwise
-  // we default to glm-5.1:cloud.
+  // from .env; falls back to a curated default list of -cloud tags.
+  // OLLAMA_MODEL (when set) overrides which entry is selected by
+  // default; otherwise we default to gpt-oss:120b-cloud.
   //
-  // Note: ibm/granite-docling is local-only — it has no -cloud tag and
-  // will error if selected for an Ollama Cloud worker. Kept in the list
-  // by request; will be addressed when a separate local-Ollama worker
-  // kind is added.
+  // Cloud-only by design: this driver hits https://ollama.com/api/chat
+  // which only serves models with the -cloud suffix. Local-only tags
+  // (gemma3n:e2b, ibm/granite-docling, etc.) live in a separate worker
+  // kind that hits the local Ollama daemon — see
+  // todo_local_ollama_worker.md.
   ipcMain.handle('worker:ollama-cloud-models', () => {
     const raw = (process.env.OLLAMA_MODELS || '').trim();
     const models = raw
@@ -99,7 +116,6 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
           'kimi-k2:1t-cloud',
           'glm-4.6:cloud',
           'glm-5.1:cloud',
-          'ibm/granite-docling',
         ];
     const envDefault = (process.env.OLLAMA_MODEL || '').trim();
     // Default to gpt-oss:120b-cloud — it's available on every Ollama
@@ -124,7 +140,11 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
   });
 
   ipcMain.handle('worker:send', (_e, body = {}) => {
-    workerManager.send({ to: body.to, text: body.text });
+    workerManager.send({
+      to: body.to,
+      text: body.text,
+      originalText: body.originalText,
+    });
     return { ok: true };
   });
 
@@ -136,6 +156,34 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
   ipcMain.handle('worker:rename', (_e, body = {}) => {
     try { return { ok: true, ...workerManager.rename(body) }; }
     catch (err) { return { ok: false, error: err.message }; }
+  });
+
+  // --- Per-worker scope (ADR-0008) ---------------------------------------
+
+  ipcMain.handle('worker:list-scope', (_e, { id } = {}) => {
+    return workerManager.listScope({ id });
+  });
+
+  ipcMain.handle('worker:add-scope', async (event, { id, path: dir } = {}) => {
+    // If no path provided, open the native picker so the renderer can
+    // skip the round-trip. Returning canceled is fine — the UI just
+    // does nothing.
+    let chosen = dir;
+    if (!chosen) {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      const result = await dialog.showOpenDialog(win, {
+        title: 'Add scope directory',
+        defaultPath: appSettings.get('lastCwd') || projectRoot,
+        properties: ['openDirectory'],
+      });
+      if (result.canceled || !result.filePaths.length) return { ok: false, canceled: true };
+      chosen = result.filePaths[0];
+    }
+    return await workerManager.addScope({ id, path: chosen });
+  });
+
+  ipcMain.handle('worker:remove-scope', async (_e, { id, path: dir } = {}) => {
+    return await workerManager.removeScope({ id, path: dir });
   });
 
   // --- Memory-mirror controls ---------------------------------------------

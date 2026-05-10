@@ -50,8 +50,13 @@ function canResolveInside(root, p) {
   } catch { return false; }
 }
 
-function createGitLogTool({ root }) {
+function createGitLogTool({ root, scope }) {
   if (!root) throw new Error('createGitLogTool: root is required');
+  // git log is cwd-anchored — git itself enforces a repo boundary.
+  // The per-worker scope is accepted for API symmetry but doesn't
+  // change behavior today (a future enhancement could let users
+  // run `git log` against another repo in their scope).
+  void scope;
   return {
     id: 'git-log',
     name: 'Git Log',

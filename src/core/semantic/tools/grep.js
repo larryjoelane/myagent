@@ -106,8 +106,13 @@ function nodeFallback({ cwd, term }) {
   return hits;
 }
 
-function createGrepTool({ root }) {
+function createGrepTool({ root, scope }) {
   if (!root) throw new Error('createGrepTool: root is required');
+  // scope is accepted but currently consulted only at root level. Grep
+  // discovery is cwd-anchored; extending discovery to all scope roots
+  // is a future enhancement (see ADR-0008 follow-ups). Per-root scopes
+  // mainly buy us read-file's "show me a file in another repo" path.
+  void scope;
   return {
     id: 'grep',
     name: 'Grep',

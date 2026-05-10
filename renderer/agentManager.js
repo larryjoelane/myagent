@@ -19,6 +19,7 @@
 import { store } from './state/store.js';
 import { spawnWorker as spawnWorkerAction } from './state/actions.js';
 import { tryHandleMemoryCommand } from './commands/memory.js';
+import { tryHandleAttachCommand, listStaged, clearStaged, buildAttachPreamble } from './commands/attach.js';
 
 let pendingUserOptimistic = null;
 
@@ -210,6 +211,13 @@ function init() {
       return;
     }
 
+    // Built-in /attach command — stages files for the next message.
+    // Self-contained: the command bubble is informational; no send.
+    if (tryHandleAttachCommand(raw, { pushBubble })) {
+      compose?.clear();
+      return;
+    }
+
     const { mention, text } = parseMention(raw);
     const target = resolveTarget(mention);
     if (!target) {
@@ -224,13 +232,43 @@ function init() {
     state.thinkingWorkers.add(target.id);
     renderWorkers();
 
+    // If files were staged via /attach, read them now and prepend a
+    // preamble before sending. The worker sees the file content; the
+    // user bubble shows the original `text`. A chip-badge under the
+    // user bubble surfaces what was attached (mirrors auto-context).
+    let toSend = text;
+    let attachSources = [];
+    if (listStaged().length > 0) {
+      const built = await buildAttachPreamble(transport.fs);
+      if (built.preamble) toSend = built.preamble + text;
+      attachSources = built.sources || [];
+      clearStaged();
+    }
+
     pendingUserOptimistic = { agentId: target.id, text };
     pushBubble('user', text, target.id);
     compose?.clear();
 
+    if (attachSources.length > 0) {
+      // Render the attach badge on the just-pushed user bubble.
+      // Reuse the chat-log's context-badge plumbing by emitting a
+      // synthetic chat:context-used with our fileSource — it'll find
+      // the user bubble (matching by text + agentId) and attach.
+      // We pass usedHits=[] so only the file row renders.
+      /** @type {any} */ (chatEl()).attachContextBadge({
+        agentId: target.id,
+        userText: text,
+        usedHits: [],
+        fileSource: { path: attachSources.map((s) => s.path).join(', '), dirty: false, attached: true },
+      });
+    }
+
     /** @type {any} */ (chatEl()).openAssistantBubble(target.id);
 
-    const r = await transport.workers.send({ to: target.id, text });
+    const sendBody = (toSend === text)
+      ? { to: target.id, text }
+      : { to: target.id, text: toSend, originalText: text };
+    const r = await transport.workers.send(sendBody);
     if (r && r.ok === false) pushBubble('system', `send failed: ${r.error || 'unknown'}`);
   }
 

@@ -1,24 +1,55 @@
 // OllamaCloudDriver — chat-driven worker backed by Ollama's hosted
-// HTTP API (https://ollama.com). Reuses OllamaRunner end-to-end: same
-// /api/chat endpoint, same NDJSON streaming, same thinking-tag filter.
-// The only Cloud-specific bit is the Authorization: Bearer header.
+// HTTP API (https://ollama.com).
 //
-// Config is env-only (per project decision):
+// Two modes:
+//
+//   1. Plain chat (default when `tools` is not enabled): consumes a
+//      legacy string-yielding runner via `runnerFactory` (OllamaRunner).
+//      Each chunk -> chat:chunk. Same behavior shipped before tool-use.
+//
+//   2. Tool-use (when `tools: true` and `presetFactory` + `toolRegistry`
+//      are wired): builds an OpenAI-format preset via `presetFactory`
+//      and drives a ToolUseLoop. The loop streams structured events
+//      (content, thinking, tool_call, tool-result) which we surface as:
+//        chat:chunk { kind: 'text',     text }
+//        chat:chunk { kind: 'thinking', text }
+//        chat:tool-call   { call: { id, name, arguments } }
+//        chat:tool-result { call, result: { ok, content, data? } }
+//
+// Either way: chat:user, chat:turn-start, chat:turn-end open and close
+// each turn, identical to the other drivers.
+//
+// Config is env-only by default:
 //   OLLAMA_API_KEY  — required; without it the driver refuses to start
 //   OLLAMA_MODEL    — defaults to gpt-oss:120b-cloud
 //   OLLAMA_HOST     — override (defaults to https://ollama.com)
-//
-// Conversation state lives on the driver: each send() appends to
-// `messages` and walks the runner's stream, accumulating assistant text
-// for the memory mirror. close() aborts the in-flight request.
+
+const { ToolUseLoop } = require('../llm/toolUseLoop');
 
 const DEFAULT_HOST = 'https://ollama.com';
 const DEFAULT_MODEL = 'gpt-oss:120b-cloud';
 
 class OllamaCloudDriver {
-  constructor({ agentId, runnerFactory, apiKey, host, model, onEvent } = {}) {
-    if (typeof runnerFactory !== 'function') {
-      throw new Error('OllamaCloudDriver: runnerFactory is required');
+  constructor({
+    agentId,
+    runnerFactory,
+    presetFactory,
+    toolRegistry,
+    tools = false,
+    scope,
+    cwd,
+    memory,
+    apiKey,
+    host,
+    model,
+    onEvent,
+    maxIterations,
+  } = {}) {
+    if (typeof runnerFactory !== 'function' && typeof presetFactory !== 'function') {
+      throw new Error('OllamaCloudDriver: runnerFactory or presetFactory is required');
+    }
+    if (tools && (typeof presetFactory !== 'function' || !toolRegistry)) {
+      throw new Error('OllamaCloudDriver: tools=true requires presetFactory and toolRegistry');
     }
     this.agentId = agentId;
     this.apiKey = apiKey || process.env.OLLAMA_API_KEY || null;
@@ -26,7 +57,19 @@ class OllamaCloudDriver {
     this.model = model || process.env.OLLAMA_MODEL || DEFAULT_MODEL;
     this.onEvent = onEvent || (() => {});
     this.runnerFactory = runnerFactory;
-    this.runner = null;
+    this.presetFactory = presetFactory;
+    this.toolRegistry = toolRegistry || null;
+    this.toolsEnabled = !!tools;
+    this.scope = scope || null;
+    this.cwd = cwd || null;
+    // Memory backend for memory_search / memory_store tools. Shape:
+    // { search({query, limit, minConfidence}), store({text, source, tags}) }.
+    // Optional — tools refuse cleanly when missing.
+    this.memory = memory || null;
+    this.maxIterations = maxIterations;
+
+    this.runner = null;     // legacy string-yielding runner (plain mode)
+    this.preset = null;     // structured-event runner (tools mode)
     this.messages = [];
     this.started = false;
     this.closed = false;
@@ -37,18 +80,24 @@ class OllamaCloudDriver {
   async start() {
     if (this.started || this.closed) return;
     if (!this.apiKey) {
-      // Surface a clear error and exit cleanly so the worker doesn't
-      // linger in the registry — WorkerChannel listens for driver-exit.
       this.started = true;
       this._emit('chat:error', { error: 'OLLAMA_API_KEY not set in .env' });
       this._emit('chat:driver-exit', { reason: 'missing-api-key' });
       return;
     }
-    this.runner = this.runnerFactory({
-      host: this.host,
-      model: this.model,
-      apiKey: this.apiKey,
-    });
+    if (this.toolsEnabled) {
+      this.preset = this.presetFactory({
+        host: this.host,
+        model: this.model,
+        apiKey: this.apiKey,
+      });
+    } else {
+      this.runner = this.runnerFactory({
+        host: this.host,
+        model: this.model,
+        apiKey: this.apiKey,
+      });
+    }
     this.started = true;
   }
 
@@ -61,7 +110,7 @@ class OllamaCloudDriver {
       this._emit('chat:error', { error: 'driver not started' });
       return;
     }
-    if (!this.runner) {
+    if (!this.runner && !this.preset) {
       // start() failed (no API key); already emitted error+exit
       return;
     }
@@ -76,7 +125,8 @@ class OllamaCloudDriver {
     this._emit('chat:user', { text: userText });
     this._emit('chat:turn-start', {});
 
-    this._runTurn(userText).catch((err) => {
+    const fn = this.toolsEnabled ? this._runTurnTools(userText) : this._runTurnPlain(userText);
+    fn.catch((err) => {
       this._emit('chat:error', { error: err?.message || String(err) });
       this._emit('chat:turn-end', {
         userText,
@@ -88,7 +138,7 @@ class OllamaCloudDriver {
     });
   }
 
-  async _runTurn(userText) {
+  async _runTurnPlain(userText) {
     this.messages.push({ role: 'user', content: userText });
     this.abortCtrl = new AbortController();
     let assistantText = '';
@@ -105,6 +155,49 @@ class OllamaCloudDriver {
         assistantText,
         ok: true,
         totals: { model: this.model },
+      });
+    } finally {
+      this.turnActive = false;
+      this.abortCtrl = null;
+    }
+  }
+
+  async _runTurnTools(userText) {
+    this.messages.push({ role: 'user', content: userText });
+    this.abortCtrl = new AbortController();
+    const ctx = {
+      scope: this.scope,
+      cwd: this.cwd,
+      memory: this.memory,
+      agentId: this.agentId,
+    };
+    const loop = new ToolUseLoop({
+      runner: this.preset,
+      registry: this.toolRegistry,
+      ctx,
+      maxIterations: this.maxIterations,
+      onEvent: (ev) => {
+        if (this.closed) return;
+        if (ev.type === 'content') {
+          this._emit('chat:chunk', { kind: 'text', text: ev.text });
+        } else if (ev.type === 'thinking') {
+          this._emit('chat:chunk', { kind: 'thinking', text: ev.text });
+        } else if (ev.type === 'tool-call') {
+          this._emit('chat:tool-call', { call: ev.call });
+        } else if (ev.type === 'tool-result') {
+          this._emit('chat:tool-result', { call: ev.call, result: ev.result });
+        }
+      },
+    });
+    try {
+      const result = await loop.run(this.messages, { signal: this.abortCtrl.signal });
+      this.messages = result.messages;
+      this._emit('chat:turn-end', {
+        userText,
+        assistantText: result.assistantText,
+        ok: true,
+        totals: { model: this.model, iterations: result.iterations, ...(result.totals || {}) },
+        hitMaxIterations: !!result.hitMaxIterations,
       });
     } finally {
       this.turnActive = false;

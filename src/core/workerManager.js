@@ -16,8 +16,17 @@
 
 const crypto = require('crypto');
 const { WorkerChannel } = require('./workerChannel');
+const { Scope } = require('./scope');
 
 function makeId() { return crypto.randomBytes(6).toString('hex'); }
+
+// Platform-aware path equality. Windows is case-insensitive but
+// case-preserving — `C:\Users\Foo` and `c:\users\foo` are the same.
+// Used to refuse Scope-removal of the cwd fence.
+function samePath(a, b) {
+  if (process.platform === 'win32') return a.toLowerCase() === b.toLowerCase();
+  return a === b;
+}
 
 function shortModelHint(model) {
   if (!model || typeof model !== 'string') return '';
@@ -27,7 +36,7 @@ function shortModelHint(model) {
 }
 
 class WorkerManager {
-  constructor({ factories, onEvent, memoryStore, memoryMirrorDefault, contextProvider } = {}) {
+  constructor({ factories, onEvent, memoryStore, memoryMirrorDefault, contextProvider, editorScope } = {}) {
     if (!factories || typeof factories.claude !== 'function' || typeof factories.shell !== 'function') {
       throw new Error('WorkerManager: factories.claude and factories.shell are required');
     }
@@ -39,6 +48,15 @@ class WorkerManager {
     this.onEvent = onEvent;
     this.memoryStore = memoryStore || null;
     this.memoryMirrorDefault = memoryMirrorDefault !== false;
+    // Optional reference to the editor's global scope (a Scope
+    // instance). When set, spawn-time per-worker scopes seed
+    // themselves with [cwd, ...editorScope.list()] so semantic +
+    // future tool-use drivers can read the files the user has open.
+    // Held as a reference, not a snapshot — but per-worker scopes
+    // ARE snapshots (we don't propagate later editor mutations into
+    // already-running workers; the user manages each worker's scope
+    // independently after spawn).
+    this.editorScope = editorScope || null;
     // Optional async function ({ to, text, workerName, workerKind })
     // → { preamble, usedHits }. When set, called before each send()
     // to compute auto-context. Failure or empty preamble = no
@@ -65,6 +83,11 @@ class WorkerManager {
       name: w.name,
       cwd: w.cwd,
       memoryMirror: w.memoryMirror,
+      // Scope roots — flat array of absolute paths. Inert for
+      // claude/shell (the toolkit doesn't run for those drivers),
+      // but the UI surfaces it uniformly so users can see what each
+      // worker is allowed to read.
+      scopeRoots: w.scope ? w.scope.list() : [],
     }));
   }
 
@@ -106,13 +129,25 @@ class WorkerManager {
     });
   }
 
-  send({ to, text }) {
+  send({ to, text, originalText }) {
     const target = this._resolve(to);
     if (!target) {
       const available = this.list().map((w) => w.name).join(', ') || '(none)';
       this.onEvent('chat:error', {
         error: `no worker matches "${to}"; available: ${available}`,
       });
+      return;
+    }
+    // Caller-supplied augmentation: when `originalText` is provided
+    // and differs from `text`, the renderer has already prepended a
+    // preamble (today: explicit /attach files). We still want chat:user
+    // and chat:turn-end.userText to reflect what the user actually
+    // typed, so stash the original for _handleEvent to swap in before
+    // forwarding. This bypasses the contextProvider — caller-driven
+    // augmentation is mutually exclusive with auto-context.
+    if (typeof originalText === 'string' && originalText !== text) {
+      this._pendingOriginalUserText.set(target.id, originalText);
+      target.channel.send(text);
       return;
     }
     // Auto-context: if a provider is wired up, ask it for a preamble
@@ -141,6 +176,7 @@ class WorkerManager {
   async _sendWithContext(target, text) {
     let augmented = text;
     let usedHits = [];
+    let fileSource = null;
     try {
       const result = await this.contextProvider({
         to: target.id,
@@ -151,16 +187,23 @@ class WorkerManager {
       if (result && typeof result.preamble === 'string' && result.preamble.length > 0) {
         augmented = result.preamble + text;
         usedHits = Array.isArray(result.usedHits) ? result.usedHits : [];
+        if (result.fileSource && typeof result.fileSource === 'object' && result.fileSource.path) {
+          fileSource = {
+            path: String(result.fileSource.path),
+            dirty: !!result.fileSource.dirty,
+          };
+        }
       }
     } catch {
       // Provider failure must not block the send. Fall through to the
       // original text so the user gets a response no matter what.
     }
-    if (usedHits.length > 0) {
+    if (usedHits.length > 0 || fileSource) {
       this.onEvent('chat:context-used', {
         agentId: target.id,
         userText: text,
         usedHits,
+        fileSource,
       });
     }
     // Stash the original so _handleEvent can rewrite chat:user and
@@ -178,6 +221,53 @@ class WorkerManager {
     if (!w) return { ok: false, error: `no worker ${id}` };
     w.memoryMirror = on === null ? null : !!on;
     return { ok: true };
+  }
+
+  // --- Per-worker scope (ADR-0008) ---------------------------------------
+  // The scope is a live reference held on the worker record. Tools
+  // dispatched by this worker's driver consult it before fs.* calls.
+  // The cwd row is non-removable — that's the spawn-time fence.
+
+  listScope({ id } = {}) {
+    const w = this.workers.get(id);
+    if (!w || !w.scope) return { ok: false, error: `no worker ${id}` };
+    return {
+      ok: true,
+      cwd: w.cwd || '',
+      roots: w.scope.list(),
+    };
+  }
+
+  async addScope({ id, path } = {}) {
+    const w = this.workers.get(id);
+    if (!w || !w.scope) return { ok: false, error: `no worker ${id}` };
+    if (!path || typeof path !== 'string') {
+      return { ok: false, error: 'path is required' };
+    }
+    try {
+      const root = await w.scope.add(path);
+      return { ok: true, root, roots: w.scope.list() };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  }
+
+  async removeScope({ id, path } = {}) {
+    const w = this.workers.get(id);
+    if (!w || !w.scope) return { ok: false, error: `no worker ${id}` };
+    if (!path || typeof path !== 'string') {
+      return { ok: false, error: 'path is required' };
+    }
+    // Refuse to remove the cwd: that's the spawn-time fence.
+    // Resolve both sides so case differences on Windows don't matter.
+    const path0 = require('path');
+    const target = path0.resolve(path);
+    const cwd = w.cwd ? path0.resolve(w.cwd) : '';
+    if (cwd && samePath(target, cwd)) {
+      return { ok: false, error: 'cannot remove the cwd; it is the spawn-time scope fence' };
+    }
+    const removed = await w.scope.remove(path);
+    return { ok: true, removed, roots: w.scope.list() };
   }
 
   rename({ id, name }) {
@@ -266,14 +356,27 @@ class WorkerManager {
       }
     }
     const id = makeId();
+    // Per-worker scope (ADR-0008). Seeded with [cwd, ...editorRoots].
+    // Live reference: callers can mutate via addScope/removeScope and
+    // the toolkit's filesystem checks see the new state without a
+    // respawn. Inert for claude/shell — they don't consult the scope.
+    const seed = [];
+    if (driverOpts.cwd) seed.push(driverOpts.cwd);
+    if (this.editorScope && typeof this.editorScope.list === 'function') {
+      for (const r of this.editorScope.list()) seed.push(r);
+    }
+    const scope = new Scope(seed);
     const factory = this.factories[kind];
     const channel = new WorkerChannel({
       agentId: id,
       onEvent: (eventName, payload) => this._handleEvent(id, eventName, payload),
-      driverFactory: (opts) => factory({ ...opts, ...driverOpts }),
+      // Thread `scope` into the factory so tool-using drivers can
+      // hand it to their toolkit. Drivers that don't consume it
+      // (claude/shell) ignore the prop harmlessly.
+      driverFactory: (opts) => factory({ ...opts, ...driverOpts, scope }),
     });
     await channel.start();
-    const record = { id, kind, name, cwd: driverOpts.cwd, channel, memoryMirror: null, ...(extra || {}) };
+    const record = { id, kind, name, cwd: driverOpts.cwd, channel, scope, memoryMirror: null, ...(extra || {}) };
     this.workers.set(id, record);
     return { id, name, kind, cwd: driverOpts.cwd, ...(extra || {}) };
   }
