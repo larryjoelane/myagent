@@ -36,6 +36,24 @@ function fakeRunner({ chunks = [], throwAfter = -1 } = {}) {
   };
 }
 
+// A runner whose stream() yields one chunk then waits on the abort
+// signal forever. Lets us verify cancel() unwedges the driver.
+function hangingRunner() {
+  return {
+    capabilities: { thinking: 'never' },
+    think: false,
+    async health() { return { ok: true }; },
+    async setThink() { return { ok: true, think: false }; },
+    async *stream(_messages, { signal } = {}) {
+      yield 'first chunk';
+      await new Promise((resolve, reject) => {
+        if (signal?.aborted) { reject(new Error('aborted')); return; }
+        signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      });
+    },
+  };
+}
+
 exports.run = (ctx) => {
   ctx.test('start without API key emits error + driver-exit', async () => {
     // Constructor falls back to process.env.OLLAMA_API_KEY when apiKey
@@ -92,6 +110,52 @@ exports.run = (ctx) => {
     await eventually(() => ok(rec.last('chat:turn-end')), { msg: 'turn-end' });
     eq(rec.last('chat:turn-end').payload.ok, false);
     contains(rec.last('chat:error').payload.error, 'stream blew up');
+  });
+
+  ctx.test('cancel() unwedges a hung turn and accepts the next send', async () => {
+    const rec = recorder();
+    const drv = new OllamaCloudDriver({
+      agentId: 'a1',
+      apiKey: 'fake-key',
+      runnerFactory: () => hangingRunner(),
+      onEvent: rec.onEvent,
+    });
+    await drv.start();
+    drv.send('hang please');
+    await eventually(() => eq(rec.countOf('chat:chunk'), 1), { msg: 'first chunk arrived' });
+
+    // While the turn is hung, a second send must be rejected with the
+    // "previous turn still in progress" error — this is the actual
+    // production wedge the user hit.
+    drv.send('queue jumper');
+    contains(rec.last('chat:error').payload.error, 'previous turn still in progress');
+
+    // Now cancel — driver should abort the stream and the turn should
+    // end with ok:false.
+    const cancelled = drv.cancel();
+    eq(cancelled, true);
+    await eventually(() => eq(rec.countOf('chat:turn-end'), 1), { msg: 'turn ended after cancel' });
+    eq(rec.last('chat:turn-end').payload.ok, false);
+
+    // The next send must be accepted (no "previous turn still in
+    // progress" error). Swap the runner for a normal one and verify.
+    drv.runner = fakeRunner({ chunks: ['ok'] });
+    rec.events.length = 0;
+    drv.send('after cancel');
+    await eventually(() => eq(rec.countOf('chat:turn-end'), 1), { msg: 'fresh turn completed' });
+    eq(rec.last('chat:turn-end').payload.ok, true);
+    eq(rec.last('chat:turn-end').payload.assistantText, 'ok');
+  });
+
+  ctx.test('cancel() with no active turn returns false', async () => {
+    const drv = new OllamaCloudDriver({
+      agentId: 'a1',
+      apiKey: 'fake-key',
+      runnerFactory: () => fakeRunner({ chunks: ['x'] }),
+      onEvent: () => {},
+    });
+    await drv.start();
+    eq(drv.cancel(), false);
   });
 
   ctx.test('multi-turn appends to the message history', async () => {

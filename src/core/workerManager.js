@@ -302,6 +302,13 @@ class WorkerManager {
     }));
   }
 
+  cancel(id) {
+    const w = this.workers.get(id);
+    if (!w) return { ok: false, error: `no worker ${id}` };
+    const cancelled = w.channel.cancel();
+    return { ok: true, cancelled };
+  }
+
   async close(id) {
     const w = this.workers.get(id);
     if (!w) return;

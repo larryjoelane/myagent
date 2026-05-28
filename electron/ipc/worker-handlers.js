@@ -148,6 +148,10 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
     return { ok: true };
   });
 
+  ipcMain.handle('worker:cancel', (_e, { id } = {}) => {
+    return workerManager.cancel(id);
+  });
+
   ipcMain.handle('worker:close', async (_e, { id } = {}) => {
     await workerManager.close(id);
     return { ok: true };

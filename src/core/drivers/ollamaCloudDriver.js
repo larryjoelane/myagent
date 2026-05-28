@@ -205,6 +205,22 @@ class OllamaCloudDriver {
     }
   }
 
+  // Cancel the in-flight turn (if any) and clear turnActive so the next
+  // send() is accepted. Aborts the underlying fetch/stream via abortCtrl;
+  // the tool-use loop will throw, the catch in send() emits chat:turn-end
+  // with ok:false, and turnActive flips back to false in the finally
+  // block of whichever _runTurn* is running.
+  //
+  // Returns true if there was a turn to cancel, false otherwise.
+  cancel() {
+    if (this.closed) return false;
+    if (!this.turnActive) return false;
+    if (this.abortCtrl) {
+      try { this.abortCtrl.abort(); } catch { /* ignore */ }
+    }
+    return true;
+  }
+
   async close() {
     if (this.closed) return;
     this.closed = true;

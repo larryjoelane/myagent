@@ -93,6 +93,15 @@ function init() {
   // dead and goes away.
   function renderWorkers() {
     store.bump();
+    syncComposerBusy();
+  }
+
+  function syncComposerBusy() {
+    const el = /** @type {any} */ (composeEl());
+    if (!el) return;
+    const id = state.currentTarget;
+    const busy = !!(id && state.thinkingWorkers.has(id));
+    if (el.busy !== busy) el.busy = busy;
   }
 
   // <worker-chips> updates state.currentTarget through the store on
@@ -321,10 +330,17 @@ function init() {
     // <compose-input> handles the textarea + popup + Enter/Send + autogrow
     // internally. It dispatches a 'submit' event with detail.text when the
     // user hits Enter (without Shift) or clicks the Send button. We route
-    // that text through the existing send() path.
+    // that text through the existing send() path. It also dispatches a
+    // 'cancel' event when the user clicks the Stop button (shown while
+    // the current target worker is mid-turn).
     composeEl()?.addEventListener('submit', (/** @type {any} */ ev) => {
       const text = ev?.detail?.text;
       if (typeof text === 'string') send(text).catch(() => {});
+    });
+    composeEl()?.addEventListener('cancel', () => {
+      const id = state.currentTarget;
+      if (!id) return;
+      transport.workers.cancel?.({ id });
     });
 
     // <memory-bubble> dispatches 'insert-snippet' (bubbles, composed) when

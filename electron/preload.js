@@ -115,6 +115,7 @@ function buildTransport({ ipcRenderer, clipboard, listeners }) {
       spawn: (body) => ipcRenderer.invoke('worker:spawn', body || {}),
       list: () => ipcRenderer.invoke('worker:list'),
       send: (body) => ipcRenderer.invoke('worker:send', body || {}),
+      cancel: (body) => ipcRenderer.invoke('worker:cancel', body || {}),
       close: (body) => ipcRenderer.invoke('worker:close', body || {}),
       rename: (body) => ipcRenderer.invoke('worker:rename', body || {}),
       listTools: (id) => ipcRenderer.invoke('worker:list-tools', { id }),

@@ -62,6 +62,16 @@ class WorkerChannel {
     this.driver.send(text);
   }
 
+  // Ask the driver to abort whatever turn is in progress. Drivers that
+  // don't support cancellation are no-ops. Returns whatever the driver
+  // returns (true/false for "had a turn to cancel"), or false.
+  cancel() {
+    if (this.state !== STATE_STARTED) return false;
+    if (typeof this.driver.cancel !== 'function') return false;
+    try { return !!this.driver.cancel(); }
+    catch { return false; }
+  }
+
   async close() {
     if (this.state === STATE_CLOSED) return;
     this.state = STATE_CLOSED;

@@ -118,6 +118,8 @@ export class ComposeInput extends LitElement {
     _matches: { state: true },
     /** Highlighted index for slash popup keyboard nav. */
     _slashSelected: { state: true },
+    /** When true the primary button renders as Stop and dispatches 'cancel'. */
+    busy: { type: Boolean, reflect: true },
   };
 
   constructor() {
@@ -130,6 +132,12 @@ export class ComposeInput extends LitElement {
     this._slashSelected = 0;
     /** @type {(() => void) | null} */
     this._unsubscribe = null;
+    /** @type {boolean} */
+    this.busy = false;
+  }
+
+  _cancel() {
+    this.dispatchEvent(new CustomEvent('cancel', { bubbles: true, composed: true }));
   }
 
   connectedCallback() {
@@ -401,9 +409,13 @@ export class ComposeInput extends LitElement {
                 @input=${this._onInput}
                 @keydown=${this._onKeyDown}
                 @blur=${this._onBlur}></textarea>
-      <button id="am-send" class="cmd-btn cmd-btn--primary" type="button"
-              title="Send (Enter)" aria-label="Send"
-              @click=${this._submit}>Send</button>
+      ${this.busy
+        ? html`<button id="am-stop" class="cmd-btn cmd-btn--primary" type="button"
+                       title="Stop (cancel turn)" aria-label="Stop"
+                       @click=${this._cancel}>Stop</button>`
+        : html`<button id="am-send" class="cmd-btn cmd-btn--primary" type="button"
+                       title="Send (Enter)" aria-label="Send"
+                       @click=${this._submit}>Send</button>`}
     `;
   }
 }

@@ -1,7 +1,7 @@
 // Barrel for LLM tool modules. Each tool is its own folder with an
-// index.js — see ./echo/, ./readFile/, ./writeFile/, ./listDir/,
-// ./grep/, ./gitLog/, ./memorySearch/, ./memoryStore/. New tools follow
-// the same pattern: one folder, one OpenAI-shape module, optional
+// index.js — see ./echo/, ./readFile/, ./writeFile/, ./edit/, ./listDir/,
+// ./grep/, ./gitLog/, ./bash/, ./memorySearch/, ./memoryStore/. New tools
+// follow the same pattern: one folder, one OpenAI-shape module, optional
 // supporting files alongside.
 //
 // buildDefaultRegistry() returns a registry pre-loaded with every
@@ -12,14 +12,23 @@
 const echo = require('./echo');
 const readFile = require('./readFile');
 const writeFile = require('./writeFile');
+const edit = require('./edit');
 const listDir = require('./listDir');
 const grep = require('./grep');
 const gitLog = require('./gitLog');
+const bash = require('./bash');
+const bashOutput = require('./bashOutput');
+const bashKill = require('./bashKill');
+const bashList = require('./bashList');
 const memorySearch = require('./memorySearch');
 const memoryStore = require('./memoryStore');
 const { ToolRegistry } = require('./registry');
 
-const ALL_TOOLS = [echo, readFile, writeFile, listDir, grep, gitLog, memorySearch, memoryStore];
+const ALL_TOOLS = [
+  echo, readFile, writeFile, edit, listDir, grep, gitLog,
+  bash, bashOutput, bashKill, bashList,
+  memorySearch, memoryStore,
+];
 
 function buildDefaultRegistry() {
   return new ToolRegistry(ALL_TOOLS);
@@ -30,9 +39,14 @@ module.exports = {
   echo,
   readFile,
   writeFile,
+  edit,
   listDir,
   grep,
   gitLog,
+  bash,
+  bashOutput,
+  bashKill,
+  bashList,
   memorySearch,
   memoryStore,
   ALL_TOOLS,

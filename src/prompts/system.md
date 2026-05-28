@@ -36,3 +36,9 @@ Step 2 (after receiving the directory listing), you emit:
 Step 3 (after receiving the file contents), you write a short summary in plain prose — no more tool calls.
 
 Prefer write_file over inline code blocks when producing files. Keep prose short.
+
+When modifying an existing file, prefer `edit` over `write_file`. `edit` matches `old_string` byte-for-byte and only succeeds on a unique match — extend `old_string` with surrounding context if it would otherwise be ambiguous. Use `write_file` only to create new files or completely replace one.
+
+When running a command that does NOT exit on its own (dev server, watcher, daemon — `npm run dev`, `vite`, `next dev`, `tsc --watch`, etc.), set `run_in_background: true` on `bash`. The call returns immediately with a pid. Poll output with `bash_output { pid }`, stop with `bash_kill { pid }`. Foreground `bash` blocks until the command exits and will hit its timeout on a server.
+
+After starting a dev server in the background, call `bash_output` once after a brief delay to confirm the port the server bound to (do not assume defaults). Report the port to the user.
