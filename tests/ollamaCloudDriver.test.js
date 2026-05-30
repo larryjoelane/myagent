@@ -147,6 +147,109 @@ exports.run = (ctx) => {
     eq(rec.last('chat:turn-end').payload.assistantText, 'ok');
   });
 
+  ctx.test('maxIterations: explicit arg wins over OLLAMA_MAX_ITERATIONS env', async () => {
+    const saved = process.env.OLLAMA_MAX_ITERATIONS;
+    process.env.OLLAMA_MAX_ITERATIONS = '7';
+    try {
+      const drv = new OllamaCloudDriver({
+        agentId: 'a1',
+        apiKey: 'k',
+        runnerFactory: () => fakeRunner(),
+        onEvent: () => {},
+        maxIterations: 42,
+      });
+      eq(drv.maxIterations, 42);
+    } finally {
+      if (saved === undefined) delete process.env.OLLAMA_MAX_ITERATIONS;
+      else process.env.OLLAMA_MAX_ITERATIONS = saved;
+    }
+  });
+
+  ctx.test('maxIterations: falls back to OLLAMA_MAX_ITERATIONS env', async () => {
+    const saved = process.env.OLLAMA_MAX_ITERATIONS;
+    process.env.OLLAMA_MAX_ITERATIONS = '17';
+    try {
+      const drv = new OllamaCloudDriver({
+        agentId: 'a1',
+        apiKey: 'k',
+        runnerFactory: () => fakeRunner(),
+        onEvent: () => {},
+      });
+      eq(drv.maxIterations, 17);
+    } finally {
+      if (saved === undefined) delete process.env.OLLAMA_MAX_ITERATIONS;
+      else process.env.OLLAMA_MAX_ITERATIONS = saved;
+    }
+  });
+
+  ctx.test('maxIterations: undefined when no arg + no env (loop applies default)', async () => {
+    const saved = process.env.OLLAMA_MAX_ITERATIONS;
+    delete process.env.OLLAMA_MAX_ITERATIONS;
+    try {
+      const drv = new OllamaCloudDriver({
+        agentId: 'a1',
+        apiKey: 'k',
+        runnerFactory: () => fakeRunner(),
+        onEvent: () => {},
+      });
+      eq(drv.maxIterations, undefined);
+    } finally {
+      if (saved !== undefined) process.env.OLLAMA_MAX_ITERATIONS = saved;
+    }
+  });
+
+  ctx.test('envContext: string is prepended once as system message', async () => {
+    const rec = recorder();
+    const drv = new OllamaCloudDriver({
+      agentId: 'a1',
+      apiKey: 'k',
+      runnerFactory: () => fakeRunner({ chunks: ['ok'] }),
+      onEvent: rec.onEvent,
+      envContext: '# Env\n- cwd: /x',
+    });
+    await drv.start();
+    drv.send('one');
+    await eventually(() => eq(rec.countOf('chat:turn-end'), 1));
+    drv.send('two');
+    await eventually(() => eq(rec.countOf('chat:turn-end'), 2));
+    // exactly one system message, at index 0
+    eq(drv.messages[0].role, 'system');
+    contains(drv.messages[0].content, '# Env');
+    eq(drv.messages.filter((m) => m.role === 'system').length, 1);
+  });
+
+  ctx.test('envContext: null/undefined => no system message injected', async () => {
+    const rec = recorder();
+    const drv = new OllamaCloudDriver({
+      agentId: 'a1',
+      apiKey: 'k',
+      runnerFactory: () => fakeRunner({ chunks: ['ok'] }),
+      onEvent: rec.onEvent,
+    });
+    await drv.start();
+    drv.send('one');
+    await eventually(() => eq(rec.countOf('chat:turn-end'), 1));
+    eq(drv.messages.filter((m) => m.role === 'system').length, 0);
+  });
+
+  ctx.test('envContext: function receives cwd/scope and is awaited', async () => {
+    const rec = recorder();
+    let received = null;
+    const drv = new OllamaCloudDriver({
+      agentId: 'a1',
+      apiKey: 'k',
+      runnerFactory: () => fakeRunner({ chunks: ['ok'] }),
+      onEvent: rec.onEvent,
+      cwd: '/some/cwd',
+      envContext: async (opts) => { received = opts; return '# computed'; },
+    });
+    await drv.start();
+    drv.send('hi');
+    await eventually(() => eq(rec.countOf('chat:turn-end'), 1));
+    eq(received.cwd, '/some/cwd');
+    contains(drv.messages[0].content, '# computed');
+  });
+
   ctx.test('cancel() with no active turn returns false', async () => {
     const drv = new OllamaCloudDriver({
       agentId: 'a1',

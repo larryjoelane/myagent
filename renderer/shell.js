@@ -14,7 +14,7 @@
 //                   tab closes.
 //
 // The transport contract is in electron/preload.js:
-//   transport.run / on / health / thinkStatus / setThink / clipboard
+//   transport.on / clipboard / pty / workers / memory / fs / models / browser
 //   transport.pty.{ start, write(paneId, data), resize(paneId, cols, rows),
 //                   kill(paneId), onData(fn), onExit(fn) }
 // Both pty.onData and pty.onExit fire for ALL panes; subscribers filter

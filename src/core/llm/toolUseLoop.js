@@ -23,13 +23,23 @@
 //     no tool_calls — that's a normal answer; the turn is done.
 //   - Tool dispatch errors become tool messages with the error string,
 //     so the model can recover instead of aborting.
-//   - maxIterations defaults to 8. A model stuck in a tool loop will hit
-//     this and the turn ends with a synthetic content note.
+//   - maxIterations defaults to 30. Real refactors do 20+ tool calls;
+//     anything lower silently truncates. A model stuck in a runaway loop
+//     will still hit this and the turn ends with a synthetic content
+//     note. Callers override via the constructor option, and drivers
+//     accept a configurable maxIterations that propagates here.
 
-const DEFAULT_MAX_ITERATIONS = 8;
+const DEFAULT_MAX_ITERATIONS = 30;
 
 class ToolUseLoop {
-  constructor({ runner, registry, ctx = {}, onEvent, maxIterations = DEFAULT_MAX_ITERATIONS } = {}) {
+  constructor({
+    runner,
+    registry,
+    ctx = {},
+    onEvent,
+    maxIterations = DEFAULT_MAX_ITERATIONS,
+    parallelDispatch = true,
+  } = {}) {
     if (!runner || typeof runner.stream !== 'function') {
       throw new Error('ToolUseLoop: runner with .stream() is required');
     }
@@ -41,6 +51,12 @@ class ToolUseLoop {
     this.ctx = ctx;
     this.onEvent = typeof onEvent === 'function' ? onEvent : () => {};
     this.maxIterations = Math.max(1, maxIterations | 0);
+    // When true, all tool_calls from a single assistant turn dispatch
+    // concurrently via Promise.all. Event ordering still matches the
+    // model's emit order — tool-call and tool-result events are emitted
+    // in original-call order after all results settle. Disable when a
+    // backend has tools that mutate shared state in surprising ways.
+    this.parallelDispatch = parallelDispatch !== false;
   }
 
   // Run the loop with a starting message list. Returns the final
@@ -107,26 +123,30 @@ class ToolUseLoop {
         tool_calls: turnCalls.map(toAssistantToolCall),
       });
 
-      // Dispatch each call sequentially. Parallel dispatch is a future
-      // optimization — for now one-at-a-time keeps event ordering
-      // predictable and doesn't blow up concurrency for fs-touching tools.
-      for (const call of turnCalls) {
-        this.onEvent({ type: 'tool-call', call });
-        const result = await this.registry.dispatch(call, { ...this.ctx, signal });
-        this.onEvent({ type: 'tool-result', call, result });
-        // Ollama's tool message: { role: 'tool', content }. OpenAI's:
-        // { role: 'tool', tool_call_id, content }. Ollama rejects extra
-        // `name` fields on tool messages with a 400. We include
-        // tool_call_id only when the model gave us one (OpenAI path),
-        // and never include `name`.
-        const toolMsg = {
-          role: 'tool',
-          content: typeof result.content === 'string'
-            ? result.content
-            : JSON.stringify(result.content ?? null),
-        };
-        if (call.id) toolMsg.tool_call_id = call.id;
-        out.push(toolMsg);
+      // Dispatch calls. In parallel mode all calls fire concurrently
+      // via Promise.all; we still emit tool-call/tool-result events
+      // and append tool messages in the model's original emit order so
+      // the conversation history and the event stream are deterministic.
+      // Sequential mode preserves the older one-at-a-time behavior for
+      // callers that need it.
+      if (this.parallelDispatch && turnCalls.length > 1) {
+        for (const call of turnCalls) this.onEvent({ type: 'tool-call', call });
+        const results = await Promise.all(
+          turnCalls.map((call) => this.registry.dispatch(call, { ...this.ctx, signal }))
+        );
+        for (let i = 0; i < turnCalls.length; i += 1) {
+          const call = turnCalls[i];
+          const result = results[i];
+          this.onEvent({ type: 'tool-result', call, result });
+          out.push(toolMessage(call, result));
+        }
+      } else {
+        for (const call of turnCalls) {
+          this.onEvent({ type: 'tool-call', call });
+          const result = await this.registry.dispatch(call, { ...this.ctx, signal });
+          this.onEvent({ type: 'tool-result', call, result });
+          out.push(toolMessage(call, result));
+        }
       }
       // Loop continues — model gets to react to tool results.
     }
@@ -153,22 +173,45 @@ class ToolUseLoop {
   }
 }
 
+// Build a tool message conforming to both Ollama and OpenAI shapes.
+// Ollama's tool message: { role: 'tool', content }. OpenAI's adds
+// tool_call_id. Ollama rejects extra `name` fields with a 400; we
+// never include `name`.
+function toolMessage(call, result) {
+  const msg = {
+    role: 'tool',
+    content: typeof result.content === 'string'
+      ? result.content
+      : JSON.stringify(result.content ?? null),
+  };
+  if (call.id) msg.tool_call_id = call.id;
+  return msg;
+}
+
 function toAssistantToolCall(call) {
   // Round-trip the call back into a shape both Ollama and OpenAI accept.
+  //   - `function: { name, arguments }` envelope (both accept).
   //   - `arguments` as a structured object (Ollama requires this; OpenAI
   //     tolerates both object and string).
-  //   - `function: { name, arguments }` envelope (both accept).
-  //   - omit top-level `id` and `type` — Ollama rejects unknown fields
-  //     on tool_calls with a 400; OpenAI doesn't require them on the
-  //     assistant-history echo.
+  //   - Preserve `id` and `type: 'function'` WHEN the model emitted an
+  //     id. Both fields are required by Ollama Cloud for any model that
+  //     issues correlation ids (e.g. ministral-3:3b-cloud, which sends
+  //     `tool_calls: [{ id: "abc", function: {...} }]`). Without the
+  //     matching id on the assistant turn, the next request fails with
+  //     `Unexpected tool call id <X> in tool results`. Models that
+  //     never emit an id (e.g. gpt-oss family) get an envelope without
+  //     these fields, so the historical "id-free" path stays intact.
   let args = call.arguments;
   if (typeof args === 'string') {
     try { args = JSON.parse(args); } catch { args = {}; }
   }
   if (!args || typeof args !== 'object') args = {};
-  return {
-    function: { name: call.name, arguments: args },
-  };
+  const envelope = { function: { name: call.name, arguments: args } };
+  if (call.id) {
+    envelope.id = call.id;
+    envelope.type = 'function';
+  }
+  return envelope;
 }
 
 module.exports = { ToolUseLoop, DEFAULT_MAX_ITERATIONS };

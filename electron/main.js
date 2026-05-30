@@ -19,7 +19,6 @@ const { app, BrowserWindow, ipcMain, Menu, dialog, session } = require('electron
 
 const csp = require('./csp');
 
-const { createRunner } = require('../src/core/runners');
 const { SessionLog } = require('../src/core/sessionLog');
 const { snapshotBefore, summarizeWindow } = require('../src/core/claudeSessionScan');
 const { mirrorAll, groupSessionsByProject } = require('../src/core/memoryMirror');
@@ -91,6 +90,31 @@ function broadcastChat(event, payload) {
     if (win.isDestroyed()) continue;
     win.webContents.send(event, payload);
   }
+  persistChatEvent(event, payload);
+}
+
+// Persist a subset of chat:* events to the session log so post-mortems
+// don't depend on user memory. We skip chat:chunk (would balloon the
+// log with token-by-token deltas) and the very low-signal events. The
+// surviving set is what you'd want to read when a turn went wrong:
+//   - chat:user       what the user typed
+//   - chat:tool-call  what tool the model invoked, with arguments
+//   - chat:tool-result outcome (ok/error + content)
+//   - chat:turn-end   final assistantText, iterations, totals, ok
+//   - chat:error      anything the driver bailed on
+const PERSISTED_CHAT_EVENTS = new Set([
+  'chat:user',
+  'chat:tool-call',
+  'chat:tool-result',
+  'chat:turn-end',
+  'chat:error',
+]);
+function persistChatEvent(event, payload) {
+  if (!PERSISTED_CHAT_EVENTS.has(event)) return;
+  if (!sessionLog) return;
+  try {
+    sessionLog.append(event, payload || {}, 'main');
+  } catch { /* logging must never crash the app */ }
 }
 
 // Browser tabs — each tab is a BrowserView attached to a window. Events
@@ -293,20 +317,6 @@ function getSemanticFactory() {
   return semanticFactory;
 }
 
-// Runner cache keyed by `${runnerName}::${model}`. Lazy — no runner is
-// constructed (and no Ollama / model service is touched) until an
-// `agent:*` IPC actually arrives. The renderer no longer calls these on
-// startup; the agent UI was removed and will be rebuilt later.
-const runnerCache = new Map();
-function getRunner({ runnerName = 'ollama', model } = {}) {
-  const key = `${runnerName}::${model || ''}`;
-  if (!runnerCache.has(key)) {
-    const opts = model ? { model } : {};
-    runnerCache.set(key, createRunner(runnerName, opts));
-  }
-  return runnerCache.get(key);
-}
-
 // ---- Editor scope ----------------------------------------------------------
 // The editor's file-tree, viewer, and save flow are bounded by a single
 // global Scope (per ADR-0008). Initial root prefers the persisted
@@ -350,6 +360,11 @@ const workerManager = new WorkerManager({
       toolRegistry: buildDefaultRegistry(),
       tools: true,
       cwd: opts.cwd || PROJECT_ROOT,
+      // Default env context: the built-in builder (cwd/platform/git/
+      // scope/date). Per-spawn opts.envContext (string/function/object/
+      // false) flows in from the IPC layer and overrides; `false`
+      // disables injection for a specific worker.
+      envContext: opts.envContext === undefined ? true : opts.envContext,
       // Wire the session index so memory_search / memory_store work
       // when the model invokes them. Same backend as the semantic
       // worker uses for its own memory tools.
@@ -492,10 +507,7 @@ async function startSearchServer() {
 
 function registerIpcHandlers() {
   browserHandlers.register({ ipcMain, BrowserWindow, browserManager });
-  agentHandlers.register({
-    ipcMain, getRunner, agentRegistry, sessionLog,
-    outputDir: OUTPUT_DIR, runIngest,
-  });
+  agentHandlers.register({ ipcMain, agentRegistry });
   memoryHandlers.register({ ipcMain, indexHost, runIngest });
   workerHandlers.register({
     ipcMain, BrowserWindow, dialog, workerManager, appSettings,

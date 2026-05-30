@@ -24,7 +24,7 @@
 //   - When think is on, runners MAY pass them through as plain text for
 //     now. A future revision can route reasoning through a separate
 //     channel (e.g. yield { type: 'thinking', text } objects), at which
-//     point the toolLoop and renderer will need to learn the new shape.
+//     point the renderer will need to learn the new shape.
 
 const { OllamaRunner } = require('./ollama');
 

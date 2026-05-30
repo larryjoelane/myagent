@@ -45,6 +45,18 @@ function run(ctx) {
     eq(profileFor('totally-unknown:1').thinking, 'unknown');
   });
 
+  ctx.test('profileFor resolves ministral before mistral (order-sensitive substring)', () => {
+    // "ministral-3:3b-cloud" includes the substring "mistral"; without
+    // a dedicated ministral entry placed earlier than mistral, the
+    // matcher would silently fall through to the mistral profile. Same
+    // behavior today (both `never`) but the explicit entry guards
+    // against future divergence between the two families.
+    const profile = profileFor('ministral-3:3b-cloud');
+    eq(profile.thinking, 'never');
+    // The mistral entry must still exist for plain mistral models.
+    eq(profileFor('mistral:7b').thinking, 'never');
+  });
+
   ctx.test('preset.setThink rejects on never/always-on', async () => {
     const llama = createOllamaPreset({ model: 'llama3:1b' });
     const r1 = await llama.setThink(true);

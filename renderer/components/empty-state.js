@@ -1,17 +1,14 @@
 // @ts-check
 // <empty-state> — the "Drive Agentic workers" panel shown when no
-// workers exist. Spawn buttons + cwd picker. Renders nothing when
-// any worker is attached (or any chat bubble has appeared, which
-// includes things like @memory results).
+// workers exist. Spawn buttons + cwd picker.
+//
+// Visibility rule: visible iff workers.length === 0. The chat surface
+// stays visible alongside it so a "no worker — pick one" system bubble
+// from a premature submit doesn't trap the user in a dead-end where the
+// spawn buttons have vanished but no worker is attached.
 //
 // Owns its own visibility:
 //   - Subscribes to the store so the worker count drives re-evaluation.
-//   - Listens for the 'content-changed' CustomEvent that <chat-log>
-//     dispatches whenever its children mutate.
-//   - When empty-state is visible, the chat surface is hidden via the
-//     legacy .agent-manager__chat--hidden class on <chat-log>. This
-//     used to be agentManager.js#renderEmptyState; the component owns
-//     it now since visibility is fundamentally an empty-state concern.
 //
 // Spawn click dispatches a `spawn` CustomEvent so the parent routes
 // through actions.spawnWorker — keeps the component free of IPC.
@@ -144,16 +141,9 @@ export class EmptyState extends LitElement {
     super();
     /** @type {(() => void) | null} */
     this._unsubscribe = null;
-    this._hasChatContent = false;
     /** @type {string[]} */
     this._ollamaModels = [];
     this._ollamaModel = '';
-    this._onContentChanged = (/** @type {any} */ ev) => {
-      const next = !!(ev?.detail?.hasContent);
-      if (next === this._hasChatContent) return;
-      this._hasChatContent = next;
-      this._refreshVisibility();
-    };
   }
 
   connectedCallback() {
@@ -162,14 +152,6 @@ export class EmptyState extends LitElement {
       this.requestUpdate();
       this._refreshVisibility();
     });
-    // <chat-log> bubbles a content-changed event on every mutation.
-    // Listening at document level so the wiring works regardless of
-    // who the parent ends up being (today: agent-manager <aside>;
-    // tomorrow: <agent-manager> shell component).
-    document.addEventListener('content-changed', this._onContentChanged);
-    // Initial sync: chat-log may already exist with content.
-    const chat = document.getElementById('am-chat');
-    this._hasChatContent = !!(chat && /** @type {any} */ (chat).hasBubbles?.());
     this._refreshVisibility();
     // Fetch the Ollama Cloud model list lazily — fire-and-forget.
     // Failure leaves _ollamaModels empty; the dropdown is hidden in
@@ -191,20 +173,20 @@ export class EmptyState extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     this._unsubscribe?.();
-    document.removeEventListener('content-changed', this._onContentChanged);
   }
 
-  // Visibility = no workers AND chat is empty. Drives the host's
-  // [hidden] property + the legacy --hidden class on both empty-state
-  // and chat-log (the chat surface is hidden whenever empty-state is
-  // shown — used to be agentManager.js#renderEmptyState).
+  // Visibility = no workers. The chat surface stays visible alongside
+  // empty-state when both apply, so a "pick a worker first" error
+  // bubble doesn't hide the spawn buttons (the dead-end this used to
+  // create when the rule was `!hasWorkers && chatEmpty`). We still
+  // clear the legacy chat--hidden class in case prior code set it.
   _refreshVisibility() {
     const hasWorkers = store.get().workers.length > 0;
-    const showEmpty = !hasWorkers && !this._hasChatContent;
+    const showEmpty = !hasWorkers;
     this.hidden = !showEmpty;
     this.classList.toggle('agent-manager__empty--hidden', !showEmpty);
     const chat = document.getElementById('am-chat');
-    if (chat) chat.classList.toggle('agent-manager__chat--hidden', showEmpty);
+    if (chat) chat.classList.remove('agent-manager__chat--hidden');
   }
 
   /**

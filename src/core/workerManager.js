@@ -118,14 +118,14 @@ class WorkerManager {
     });
   }
 
-  async spawnOllamaCloud({ name, cwd, model } = {}) {
+  async spawnOllamaCloud({ name, cwd, model, maxIterations, envContext, parallelDispatch } = {}) {
     if (typeof this.factories['ollama-cloud'] !== 'function') {
       throw new Error('ollama-cloud agent type is not available (no factories[\'ollama-cloud\'])');
     }
     return this._spawn({
       kind: 'ollama-cloud',
       name: name || this._nextOllamaCloudName(model),
-      driverOpts: { cwd, model },
+      driverOpts: { cwd, model, maxIterations, envContext, parallelDispatch },
     });
   }
 

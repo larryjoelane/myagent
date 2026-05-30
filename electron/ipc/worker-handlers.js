@@ -38,6 +38,9 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
       } else if (kind === 'ollama-cloud') {
         result = await workerManager.spawnOllamaCloud({
           name: body.name, cwd, model: body.model,
+          maxIterations: body.maxIterations,
+          envContext: body.envContext,
+          parallelDispatch: body.parallelDispatch,
         });
       } else {
         result = await workerManager.spawnWorker({
@@ -98,7 +101,7 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
   // Ollama Cloud model picker. Reads OLLAMA_MODELS (comma-separated)
   // from .env; falls back to a curated default list of -cloud tags.
   // OLLAMA_MODEL (when set) overrides which entry is selected by
-  // default; otherwise we default to gpt-oss:120b-cloud.
+  // default; otherwise we default to ministral-3:3b-cloud.
   //
   // Cloud-only by design: this driver hits https://ollama.com/api/chat
   // which only serves models with the -cloud suffix. Local-only tags
@@ -110,6 +113,7 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
     const models = raw
       ? raw.split(',').map((s) => s.trim()).filter(Boolean)
       : [
+          'ministral-3:3b-cloud',
           'gpt-oss:20b-cloud',
           'gpt-oss:120b-cloud',
           'qwen3-coder:480b-cloud',
@@ -118,14 +122,14 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
           'glm-5.1:cloud',
         ];
     const envDefault = (process.env.OLLAMA_MODEL || '').trim();
-    // Default to gpt-oss:120b-cloud — it's available on every Ollama
-    // Cloud tier (free included). glm-5.1:cloud and kimi-k2:1t-cloud
-    // require a paid subscription; selecting them on the free tier
-    // returns HTTP 403. They're kept in the dropdown so users with
-    // access can still pick them, but the default has to be something
-    // that actually works without configuration.
+    // Default to ministral-3:3b-cloud — smallest verified cloud tag,
+    // cheapest to run, available on every Ollama Cloud tier. Bigger
+    // models (gpt-oss:120b-cloud, qwen3-coder:480b-cloud) stay in the
+    // picker. glm-5.1:cloud and kimi-k2:1t-cloud require a paid
+    // subscription; they're kept in the dropdown so users with access
+    // can pick them, but the default must be free-tier safe.
     const def = envDefault
-      || (models.includes('gpt-oss:120b-cloud') ? 'gpt-oss:120b-cloud' : models[0] || '');
+      || (models.includes('ministral-3:3b-cloud') ? 'ministral-3:3b-cloud' : models[0] || '');
     return { ok: true, models, default: def };
   });
 

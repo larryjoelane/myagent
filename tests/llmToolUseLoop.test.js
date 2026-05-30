@@ -63,19 +63,52 @@ function run(ctx) {
     deepEq(roles, ['user', 'assistant', 'tool', 'assistant']);
     eq(result.messages[1].tool_calls[0].function.name, 'echo');
     // Ollama-shape: arguments is a STRUCTURED OBJECT, not a JSON string.
-    // Sending it as a string was the cause of the live-API 400.
+    // Sending it as a string was the cause of an earlier live-API 400.
     deepEq(result.messages[1].tool_calls[0].function.arguments, { message: 'pong' });
-    // Ollama-shape: no top-level `id` / `type` on the tool_call.
-    eq(result.messages[1].tool_calls[0].id, undefined);
-    eq(result.messages[1].tool_calls[0].type, undefined);
-    // Ollama-shape: tool message has no `name` field. tool_call_id is
-    // included only when the model provided one.
+    // When the model emitted an id, we MUST round-trip it onto the
+    // assistant turn so the matching tool_call_id on the tool message
+    // resolves. Ollama Cloud (ministral-3 et al) returns HTTP 400
+    // "Unexpected tool call id" otherwise. `type: 'function'` is sent
+    // together so the OpenAI shape is complete.
+    eq(result.messages[1].tool_calls[0].id, 'c1');
+    eq(result.messages[1].tool_calls[0].type, 'function');
+    // Tool message: no `name` field; tool_call_id round-trips.
     eq(result.messages[2].name, undefined);
     eq(result.messages[2].tool_call_id, 'c1');
     eq(result.messages[2].content, 'pong');
 
     ok(events.some((e) => e.type === 'tool-call' && e.call.name === 'echo'));
     ok(events.some((e) => e.type === 'tool-result' && e.result.ok === true));
+  });
+
+  ctx.test('id-less tool_call: no id/type on assistant turn, no tool_call_id on tool msg', async () => {
+    // Models like gpt-oss don't send an id with their tool_calls. We
+    // must not synthesize one — and we must not put tool_call_id on
+    // the tool message either, since there'd be nothing to correlate
+    // with. Symmetry guards against the "Unexpected tool call id" 400
+    // AND its inverse where a stranded tool_call_id would surprise the
+    // server.
+    const runner = fakeRunner([
+      [
+        // No id on the tool_call.
+        { type: 'tool_call', call: { name: 'echo', arguments: { message: 'noid' } } },
+        { type: 'done', totals: {} },
+      ],
+      [
+        { type: 'content', text: 'done' },
+        { type: 'done', totals: {} },
+      ],
+    ]);
+    const registry = new ToolRegistry();
+    registry.add(require('../src/core/llm/tools/echo'));
+    const loop = new ToolUseLoop({ runner, registry });
+    const result = await loop.run([{ role: 'user', content: 'go' }]);
+
+    eq(result.messages[1].tool_calls[0].function.name, 'echo');
+    eq(result.messages[1].tool_calls[0].id, undefined);
+    eq(result.messages[1].tool_calls[0].type, undefined);
+    eq(result.messages[2].role, 'tool');
+    eq(result.messages[2].tool_call_id, undefined);
   });
 
   ctx.test('tool that throws is captured by registry, fed back to model', async () => {
@@ -97,6 +130,95 @@ function run(ctx) {
     eq(result.iterations, 2);
     const toolMsg = result.messages.find((m) => m.role === 'tool');
     ok(toolMsg && /kaboom/.test(toolMsg.content));
+  });
+
+  ctx.test('default maxIterations is 30', async () => {
+    const { DEFAULT_MAX_ITERATIONS } = require('../src/core/llm/toolUseLoop');
+    eq(DEFAULT_MAX_ITERATIONS, 30);
+  });
+
+  ctx.test('parallel dispatch: tools run concurrently, events stay in call order', async () => {
+    const sleepTool = {
+      name: 'sleep',
+      description: 'sleep ms',
+      parameters: { type: 'object', properties: { ms: { type: 'integer' }, label: { type: 'string' } } },
+      async run(args) {
+        await new Promise((r) => setTimeout(r, args.ms || 0));
+        return { ok: true, content: `slept ${args.label}` };
+      },
+    };
+    const registry = new ToolRegistry();
+    registry.add(sleepTool);
+
+    const runner = fakeRunner([
+      [
+        { type: 'tool_call', call: { id: 'a', name: 'sleep', arguments: { ms: 100, label: 'first' } } },
+        { type: 'tool_call', call: { id: 'b', name: 'sleep', arguments: { ms: 100, label: 'second' } } },
+        { type: 'tool_call', call: { id: 'c', name: 'sleep', arguments: { ms: 100, label: 'third' } } },
+        { type: 'done', totals: {} },
+      ],
+      [{ type: 'content', text: 'all done' }, { type: 'done', totals: {} }],
+    ]);
+    const events = [];
+    const loop = new ToolUseLoop({ runner, registry, onEvent: (e) => events.push(e) });
+    const t0 = Date.now();
+    const result = await loop.run([{ role: 'user', content: 'race' }]);
+    const elapsed = Date.now() - t0;
+
+    // Three 100ms tools in parallel must take well under the 300ms a
+    // serial run would need. Generous margin for CI jitter.
+    ok(elapsed < 250, `expected parallel run to be <250ms, took ${elapsed}ms`);
+    eq(result.assistantText, 'all done');
+
+    // Event order: all three tool-call events first (in original order),
+    // then all three tool-result events (also in original order).
+    const callEvents = events.filter((e) => e.type === 'tool-call');
+    const resultEvents = events.filter((e) => e.type === 'tool-result');
+    eq(callEvents.length, 3);
+    eq(resultEvents.length, 3);
+    eq(callEvents[0].call.id, 'a');
+    eq(callEvents[1].call.id, 'b');
+    eq(callEvents[2].call.id, 'c');
+    eq(resultEvents[0].call.id, 'a');
+    eq(resultEvents[1].call.id, 'b');
+    eq(resultEvents[2].call.id, 'c');
+
+    // Tool messages appended in original-call order too.
+    const toolMsgs = result.messages.filter((m) => m.role === 'tool');
+    eq(toolMsgs.length, 3);
+    eq(toolMsgs[0].tool_call_id, 'a');
+    eq(toolMsgs[1].tool_call_id, 'b');
+    eq(toolMsgs[2].tool_call_id, 'c');
+  });
+
+  ctx.test('parallelDispatch=false runs tools sequentially', async () => {
+    const order = [];
+    const seqTool = {
+      name: 'seq',
+      description: 'sequence marker',
+      parameters: { type: 'object', properties: { id: { type: 'string' } } },
+      async run(args) {
+        order.push(`start-${args.id}`);
+        await new Promise((r) => setTimeout(r, 30));
+        order.push(`end-${args.id}`);
+        return { ok: true, content: args.id };
+      },
+    };
+    const registry = new ToolRegistry();
+    registry.add(seqTool);
+
+    const runner = fakeRunner([
+      [
+        { type: 'tool_call', call: { id: '1', name: 'seq', arguments: { id: 'A' } } },
+        { type: 'tool_call', call: { id: '2', name: 'seq', arguments: { id: 'B' } } },
+        { type: 'done', totals: {} },
+      ],
+      [{ type: 'content', text: 'ok' }, { type: 'done', totals: {} }],
+    ]);
+    const loop = new ToolUseLoop({ runner, registry, parallelDispatch: false });
+    await loop.run([{ role: 'user', content: 'x' }]);
+    // Strict sequential: A finishes before B starts.
+    deepEq(order, ['start-A', 'end-A', 'start-B', 'end-B']);
   });
 
   ctx.test('hits maxIterations when model never stops calling tools', async () => {

@@ -82,9 +82,9 @@ function init() {
   //
   // Empty-state visibility is owned by <empty-state> itself — see
   // renderer/components/empty-state.js. It subscribes to the store
-  // (worker count) and listens for chat-log's content-changed event,
-  // and toggles both its own host class and chat-log's
-  // --hidden class as needed.
+  // and shows itself whenever workers.length === 0. The chat surface
+  // stays visible alongside so a "pick a worker first" error bubble
+  // doesn't hide the spawn buttons.
 
   // <worker-chips> renders the strip from the store. Calling
   // renderWorkers() is now just "tell subscribers state changed" —

@@ -157,6 +157,7 @@ export class ChatLog extends HTMLElement {
         entry.bodyEl.style.color = 'var(--text-faint)';
       }
     }
+    appendTurnFooter(entry.el, payload);
     this._openBubbles.delete(agentId);
   }
 
@@ -585,6 +586,34 @@ async function copyTextToClipboard(text, button) {
       button.classList.remove('semantic-card__copy--ok', 'semantic-card__copy--err');
     }, 1200);
   }
+}
+
+// Render a small footer under the bubble showing what the turn looked
+// like in the loop: how many iterations, whether maxIterations was hit,
+// whether the model used any tools. Helps diagnose "the model went
+// silent" — if iterations === 1 and the bubble's empty, the model
+// answered without using tools; if iterations > 1 tools fired.
+//
+// Only renders when payload carries `totals` (Ollama-cloud and friends
+// emit this; the Claude driver doesn't, so its bubbles look unchanged).
+function appendTurnFooter(bubbleEl, payload) {
+  if (!payload || typeof payload !== 'object') return;
+  const totals = payload.totals;
+  if (!totals || typeof totals !== 'object') return;
+  const iter = Number.isFinite(totals.iterations) ? totals.iterations : null;
+  if (iter == null) return;
+  // iterations === 1 means the model produced its final answer in a
+  // single pass with no tool calls. iterations > 1 means at least one
+  // tool round-trip happened.
+  const usedTools = iter > 1;
+  const footer = document.createElement('div');
+  footer.className = 'bubble__footer';
+  const parts = [];
+  parts.push(usedTools ? `${iter - 1} tool round${iter - 1 === 1 ? '' : 's'}` : '0 tools used');
+  if (payload.hitMaxIterations) parts.push('hit max iterations');
+  if (totals.model) parts.push(totals.model);
+  footer.textContent = parts.join(' · ');
+  bubbleEl.appendChild(footer);
 }
 
 customElements.define('chat-log', ChatLog);

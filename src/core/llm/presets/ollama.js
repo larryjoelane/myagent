@@ -44,8 +44,14 @@ const MODEL_PROFILES = {
   'qwen3-coder': { thinking: 'api-field', apiThink: true, defaultThink: true },
   'kimi-k2':     { thinking: 'api-field', apiThink: true, defaultThink: true },
   llama:   { thinking: 'never', defaultThink: false },
-  mistral: { thinking: 'never', defaultThink: false },
-  gemma:   { thinking: 'never', defaultThink: false },
+  // `ministral` MUST come before `mistral` — profileFor uses
+  // includes() against a lowercased model id, so without this entry
+  // "ministral-3:3b-cloud" would match the mistral profile via the
+  // substring "mistral". Behavior is the same today (both are
+  // thinking: 'never'), but we keep the match explicit.
+  ministral: { thinking: 'never', defaultThink: false },
+  mistral:   { thinking: 'never', defaultThink: false },
+  gemma:     { thinking: 'never', defaultThink: false },
 };
 
 const DEFAULT_PROFILE = { thinking: 'unknown', defaultThink: false };

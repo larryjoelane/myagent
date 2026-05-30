@@ -21,13 +21,14 @@
 //
 // Config is env-only by default:
 //   OLLAMA_API_KEY  — required; without it the driver refuses to start
-//   OLLAMA_MODEL    — defaults to gpt-oss:120b-cloud
+//   OLLAMA_MODEL    — defaults to ministral-3:3b-cloud
 //   OLLAMA_HOST     — override (defaults to https://ollama.com)
 
 const { ToolUseLoop } = require('../llm/toolUseLoop');
+const { resolveEnvContext } = require('../envContext');
 
 const DEFAULT_HOST = 'https://ollama.com';
-const DEFAULT_MODEL = 'gpt-oss:120b-cloud';
+const DEFAULT_MODEL = 'ministral-3:3b-cloud';
 
 class OllamaCloudDriver {
   constructor({
@@ -44,6 +45,8 @@ class OllamaCloudDriver {
     model,
     onEvent,
     maxIterations,
+    envContext,
+    parallelDispatch,
   } = {}) {
     if (typeof runnerFactory !== 'function' && typeof presetFactory !== 'function') {
       throw new Error('OllamaCloudDriver: runnerFactory or presetFactory is required');
@@ -66,7 +69,23 @@ class OllamaCloudDriver {
     // { search({query, limit, minConfidence}), store({text, source, tags}) }.
     // Optional — tools refuse cleanly when missing.
     this.memory = memory || null;
-    this.maxIterations = maxIterations;
+    // Resolution order for maxIterations: explicit arg > env override >
+    // ToolUseLoop's default (currently 30). Leaving it undefined lets
+    // the loop apply its own default rather than picking 0.
+    const envMax = Number.parseInt(process.env.OLLAMA_MAX_ITERATIONS || '', 10);
+    this.maxIterations = Number.isFinite(maxIterations) && maxIterations > 0
+      ? maxIterations
+      : (Number.isFinite(envMax) && envMax > 0 ? envMax : undefined);
+    // Optional env-context provider. Either a string (used verbatim)
+    // or a function ({ cwd, scope }) -> string | Promise<string>. Set
+    // to null/undefined to disable. Built per-turn by the driver and
+    // prepended to the system prompt on the first turn only.
+    this.envContext = envContext != null ? envContext : null;
+    this._envContextApplied = false;
+    // Parallel tool dispatch toggle. Default true. Setting to false
+    // forces ToolUseLoop to run tools one at a time — pick this when a
+    // tool kit has order-sensitive side effects.
+    this.parallelDispatch = parallelDispatch !== false;
 
     this.runner = null;     // legacy string-yielding runner (plain mode)
     this.preset = null;     // structured-event runner (tools mode)
@@ -138,7 +157,35 @@ class OllamaCloudDriver {
     });
   }
 
+  async _ensureEnvContext() {
+    if (this._envContextApplied) return;
+    this._envContextApplied = true;
+    if (this.envContext == null) return;
+    // toolNames flows into envContext so the default builder can append
+    // a tool-use hint block. Built lazily here (not in the constructor)
+    // because the registry may have tools added/removed before the
+    // first turn — though in practice it's static today.
+    let toolNames = null;
+    if (this.toolsEnabled && this.toolRegistry && typeof this.toolRegistry.list === 'function') {
+      try { toolNames = this.toolRegistry.list().map((t) => t.name); }
+      catch { toolNames = null; }
+    }
+    let block;
+    try {
+      block = await resolveEnvContext(this.envContext, {
+        cwd: this.cwd, scope: this.scope, toolNames,
+      });
+    } catch { block = null; }
+    if (typeof block === 'string' && block.length > 0) {
+      // Prepend so the env block is the first thing the model sees in
+      // the turn history, regardless of where send() pushes the user
+      // message.
+      this.messages.unshift({ role: 'system', content: block });
+    }
+  }
+
   async _runTurnPlain(userText) {
+    await this._ensureEnvContext();
     this.messages.push({ role: 'user', content: userText });
     this.abortCtrl = new AbortController();
     let assistantText = '';
@@ -163,6 +210,7 @@ class OllamaCloudDriver {
   }
 
   async _runTurnTools(userText) {
+    await this._ensureEnvContext();
     this.messages.push({ role: 'user', content: userText });
     this.abortCtrl = new AbortController();
     const ctx = {
@@ -176,6 +224,7 @@ class OllamaCloudDriver {
       registry: this.toolRegistry,
       ctx,
       maxIterations: this.maxIterations,
+      parallelDispatch: this.parallelDispatch,
       onEvent: (ev) => {
         if (this.closed) return;
         if (ev.type === 'content') {

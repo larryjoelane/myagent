@@ -15,6 +15,7 @@ const writeFile = require('./writeFile');
 const edit = require('./edit');
 const listDir = require('./listDir');
 const grep = require('./grep');
+const glob = require('./glob');
 const gitLog = require('./gitLog');
 const bash = require('./bash');
 const bashOutput = require('./bashOutput');
@@ -25,7 +26,7 @@ const memoryStore = require('./memoryStore');
 const { ToolRegistry } = require('./registry');
 
 const ALL_TOOLS = [
-  echo, readFile, writeFile, edit, listDir, grep, gitLog,
+  echo, readFile, writeFile, edit, listDir, grep, glob, gitLog,
   bash, bashOutput, bashKill, bashList,
   memorySearch, memoryStore,
 ];
@@ -42,6 +43,7 @@ module.exports = {
   edit,
   listDir,
   grep,
+  glob,
   gitLog,
   bash,
   bashOutput,
