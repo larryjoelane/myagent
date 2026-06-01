@@ -26,6 +26,7 @@ const CHAT_EVENTS = [
   'chat:tool-result',
   'chat:error',
   'chat:driver-exit',
+  'chat:env-context',
 ];
 
 // Legacy agent-handler events (bin/agent.js CLI + diagnostic test
@@ -55,6 +56,9 @@ const MODEL_EVENTS = ['models:generate-chunk', 'model:request'];
 // Editor BrowserWindow events. Main → editor renderer.
 const EDITOR_EVENTS = ['editor:load-file'];
 
+// Token-ledger push: full snapshot on every change.
+const TOKEN_EVENTS = ['tokens:update'];
+
 module.exports = {
   CHAT_EVENTS,
   AGENT_EVENT_MAP,
@@ -62,6 +66,7 @@ module.exports = {
   BROWSER_EVENTS,
   MODEL_EVENTS,
   EDITOR_EVENTS,
+  TOKEN_EVENTS,
   // Flat list of every channel the preload listens to with its
   // emit-as alias. Used by the bridge tests for direct comparison.
   ALL_FORWARDED_CHANNELS: [
@@ -71,5 +76,6 @@ module.exports = {
     ...BROWSER_EVENTS.map((e) => ({ channel: e, emitAs: e })),
     ...MODEL_EVENTS.map((e) => ({ channel: e, emitAs: e })),
     ...EDITOR_EVENTS.map((e) => ({ channel: e, emitAs: e })),
+    ...TOKEN_EVENTS.map((e) => ({ channel: e, emitAs: e })),
   ],
 };

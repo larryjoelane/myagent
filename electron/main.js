@@ -29,11 +29,21 @@ const { WorkerManager } = require('../src/core/workerManager');
 const { Scope } = require('../src/core/scope');
 const { ClaudeDriver } = require('../src/core/drivers/claudeDriver');
 const { ShellDriver } = require('../src/core/drivers/shellDriver');
-const { OllamaCloudDriver } = require('../src/core/drivers/ollamaCloudDriver');
+const {
+  OpenAICompatibleDriver,
+  OPENROUTER_PROVIDER,
+} = require('../src/core/drivers/openAICompatibleDriver');
 const { OllamaRunner } = require('../src/core/runners/ollama');
-const { createOllamaPreset, buildDefaultRegistry } = require('../src/core/llm');
+const { OpenRouterRunner } = require('../src/core/runners/openrouter');
+const {
+  createOllamaPreset,
+  createOpenRouterPreset,
+  buildRegistryWithSkills,
+} = require('../src/core/llm');
+const { loadSkills } = require('../src/core/skills');
 const { AppSettings } = require('../src/core/appSettings');
 const { BrowserManager } = require('../src/core/browserManager');
+const { TokenLedger, normalizeUsage } = require('../src/core/tokenLedger');
 const { buildSemanticDriverFactory } = require('../src/core/semantic');
 const { createEmbedderBridge } = require('../src/core/embedderBridge');
 
@@ -45,6 +55,7 @@ const fsHandlers = require('./ipc/fs-handlers');
 const editorHandlers = require('./ipc/editor-handlers');
 const modelHandlers = require('./ipc/model-handlers');
 const ptyHandlers = require('./ipc/pty-handlers');
+const tokenHandlers = require('./ipc/token-handlers');
 const { EditorWindowManager } = require('./editorWindow');
 
 // ---- Paths -----------------------------------------------------------------
@@ -91,6 +102,25 @@ function broadcastChat(event, payload) {
     win.webContents.send(event, payload);
   }
   persistChatEvent(event, payload);
+  recordTokens(event, payload);
+}
+
+// Pull token usage off chat:turn-end events and feed it to the ledger.
+// Drivers stamp `provider` on the payload; `totals` is whatever shape
+// they already produce (Ollama: promptEvalCount/evalCount; OpenAI:
+// usage.{prompt,completion}_tokens; Claude: usage.{input,output}_tokens).
+// normalizeUsage handles all three.
+function recordTokens(event, payload) {
+  if (event !== 'chat:turn-end' || !payload) return;
+  const provider = payload.provider;
+  const totals = payload.totals;
+  const agentId = payload.agentId;
+  if (!provider || !totals || !agentId) return;
+  const model = totals.model || '';
+  if (!model) return;
+  const { inputTokens, outputTokens } = normalizeUsage(totals);
+  if (inputTokens === 0 && outputTokens === 0) return;
+  tokenLedger.record({ provider, model, agentId, inputTokens, outputTokens });
 }
 
 // Persist a subset of chat:* events to the session log so post-mortems
@@ -108,6 +138,7 @@ const PERSISTED_CHAT_EVENTS = new Set([
   'chat:tool-result',
   'chat:turn-end',
   'chat:error',
+  'chat:env-context',
 ]);
 function persistChatEvent(event, payload) {
   if (!PERSISTED_CHAT_EVENTS.has(event)) return;
@@ -139,6 +170,15 @@ const appSettings = new AppSettings({
 // terminals (agent + every PTY pane). Lives in .myagent/ which is
 // gitignored. See src/core/sessionLog.js.
 const sessionLog = new SessionLog({ dir: SESSIONS_DIR });
+
+// Cross-restart token tally per worker / model / provider. Lives in
+// the sessions dir so it shares the lifetime of the project. Drivers
+// emit chat:turn-end with provider + totals; broadcastChat() below
+// records into the ledger. The ledger fans subscribe() callbacks for
+// the IPC layer to push tokens:update events to renderers.
+const tokenLedger = new TokenLedger({
+  persistPath: path.join(SESSIONS_DIR, 'token-ledger.json'),
+});
 
 // ---- Auto-context provider -------------------------------------------------
 // Before each user prompt is sent to a worker, search memory for relevant
@@ -336,6 +376,49 @@ const editorScope = new Scope([
 // AgentManager renderer sees them. Memory mirror lives inside the
 // manager — pass indexHost as the storage backend. The
 // contextProvider wires auto-context retrieval into the send path.
+// Shared construction for OpenAI-compatible workers (ollama-cloud,
+// openrouter). Discovers skills at spawn-time so changes under
+// .myagent/skills/ or .claude/skills/ pick up on every fresh worker
+// without an app restart (each skill becomes a `skill_<name>` tool;
+// see defaultSkillRoots() for the order), then wires the registry,
+// memory backend, env context, and skill scope guard the same way for
+// both providers. `cfg` carries the only differences: provider label,
+// providerConfig (env-var names + defaults), and the runner/preset
+// factories.
+function buildOpenAICompatibleWorker(opts, cfg) {
+  const workerCwd = opts.cwd || PROJECT_ROOT;
+  const skills = loadSkills({ cwd: workerCwd });
+  if (skills.length > 0 && !process.env.MYAGENT_QUIET) {
+    // eslint-disable-next-line no-console
+    console.error(`[${cfg.label}] loaded ${skills.length} skill(s): ${skills.map((s) => s.name).join(', ')}`);
+  }
+  return new OpenAICompatibleDriver({
+    ...opts,
+    providerConfig: cfg.providerConfig, // undefined => ollama-cloud default
+    runnerFactory: cfg.runnerFactory,
+    presetFactory: cfg.presetFactory,
+    toolRegistry: buildRegistryWithSkills({ skills }),
+    tools: true,
+    cwd: workerCwd,
+    // Skill metadata for slash invocation (/skill <name>, /<name>): the
+    // driver needs each skill's dir for the scope guard + bash cwd pin,
+    // which the registry doesn't carry. skillScopeGuard defaults on in
+    // the driver; opts.skillScopeGuard (undefined today) lets a future
+    // per-worker UI toggle flow through _spawn without re-touching this.
+    skills,
+    skillScopeGuard: opts.skillScopeGuard,
+    // Default env context: the built-in builder (cwd/platform/git/scope/
+    // date). Per-spawn opts.envContext overrides; `false` disables it.
+    envContext: opts.envContext === undefined ? true : opts.envContext,
+    // Wire the session index so memory_search / memory_store work when
+    // the model invokes them (same backend the semantic worker uses).
+    memory: {
+      search: (opts2) => indexHost.search(opts2),
+      store: (body) => indexHost.storeMemory(body),
+    },
+  });
+}
+
 const workerManager = new WorkerManager({
   factories: {
     claude: (opts) => new ClaudeDriver({ ...opts, cwd: opts.cwd || PROJECT_ROOT }),
@@ -353,25 +436,20 @@ const workerManager = new WorkerManager({
     // _spawn flows in via opts.scope and gates fs-touching tools.
     // runnerFactory stays wired so the plain-chat path still works as
     // a fallback when tools are intentionally disabled.
-    'ollama-cloud': (opts) => new OllamaCloudDriver({
-      ...opts,
+    // ollama-cloud and openrouter are the same OpenAICompatibleDriver with
+    // different provider config + preset/runner. buildOpenAICompatibleWorker
+    // captures the shared wiring (skill discovery, registry, memory, env
+    // context) so the two factory entries stay one-liners.
+    'ollama-cloud': (opts) => buildOpenAICompatibleWorker(opts, {
+      label: 'ollama-cloud',
       runnerFactory: (runnerOpts) => new OllamaRunner(runnerOpts),
       presetFactory: (presetOpts) => createOllamaPreset(presetOpts),
-      toolRegistry: buildDefaultRegistry(),
-      tools: true,
-      cwd: opts.cwd || PROJECT_ROOT,
-      // Default env context: the built-in builder (cwd/platform/git/
-      // scope/date). Per-spawn opts.envContext (string/function/object/
-      // false) flows in from the IPC layer and overrides; `false`
-      // disables injection for a specific worker.
-      envContext: opts.envContext === undefined ? true : opts.envContext,
-      // Wire the session index so memory_search / memory_store work
-      // when the model invokes them. Same backend as the semantic
-      // worker uses for its own memory tools.
-      memory: {
-        search: (opts2) => indexHost.search(opts2),
-        store: (body) => indexHost.storeMemory(body),
-      },
+    }),
+    openrouter: (opts) => buildOpenAICompatibleWorker(opts, {
+      label: 'openrouter',
+      providerConfig: OPENROUTER_PROVIDER,
+      runnerFactory: (runnerOpts) => new OpenRouterRunner(runnerOpts),
+      presetFactory: (presetOpts) => createOpenRouterPreset(presetOpts),
     }),
   },
   onEvent: (name, payload) => broadcastChat(name, payload),
@@ -521,6 +599,15 @@ function registerIpcHandlers() {
     binDir: BIN_DIR, sessionsDir: SESSIONS_DIR, memoriesDir: MEMORIES_DIR,
     snapshotBefore, summarizeWindow, mirrorAll, groupSessionsByProject,
   });
+  tokenHandlers.register({
+    ipcMain, tokenLedger,
+    broadcast: (event, payload) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (win.isDestroyed()) continue;
+        win.webContents.send(event, payload);
+      }
+    },
+  });
 }
 
 // ---- App lifecycle ---------------------------------------------------------
@@ -571,6 +658,7 @@ app.on('before-quit', (ev) => {
       mirrorAll({ outRoot: MEMORIES_DIR, sessionsByProject: {} });
     } catch { /* ignore */ }
     try { sessionLog.close(); } catch { /* ignore */ }
+    try { tokenLedger.close(); } catch { /* ignore */ }
     try { editorWindow.destroy(); } catch { /* ignore */ }
     try { await workerManager.closeAll(); } catch { /* ignore */ }
     if (searchServerStop) {

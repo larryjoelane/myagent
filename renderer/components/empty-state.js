@@ -34,6 +34,10 @@ export class EmptyState extends LitElement {
     _ollamaModels: { state: true },
     /** Currently-selected Ollama Cloud model in the dropdown. */
     _ollamaModel: { state: true },
+    /** Available OpenRouter models (from main via .env). */
+    _openrouterModels: { state: true },
+    /** Currently-selected OpenRouter model in the dropdown. */
+    _openrouterModel: { state: true },
   };
 
   static styles = [
@@ -74,15 +78,15 @@ export class EmptyState extends LitElement {
       }
       .actions .cmd-btn { padding: 8px 12px; }
 
-      /* Row that pairs the Ollama Cloud spawn button with its model
-         dropdown. Stacks vertically inside the same .actions column. */
-      .ollama-row {
+      /* Row that pairs a provider spawn button (Ollama Cloud, OpenRouter)
+         with its model dropdown. Stacks vertically in the .actions column. */
+      .model-row {
         display: flex;
         flex-direction: column;
         gap: 4px;
       }
-      .ollama-row .cmd-btn { width: 100%; }
-      .ollama-model {
+      .model-row .cmd-btn { width: 100%; }
+      .model-select {
         width: 100%;
         background: #2a2a2a;
         color: var(--text);
@@ -93,7 +97,7 @@ export class EmptyState extends LitElement {
         font-size: 11px;
         cursor: pointer;
       }
-      .ollama-model:focus {
+      .model-select:focus {
         outline: none;
         border-color: var(--accent);
       }
@@ -144,6 +148,9 @@ export class EmptyState extends LitElement {
     /** @type {string[]} */
     this._ollamaModels = [];
     this._ollamaModel = '';
+    /** @type {string[]} */
+    this._openrouterModels = [];
+    this._openrouterModel = '';
   }
 
   connectedCallback() {
@@ -153,10 +160,11 @@ export class EmptyState extends LitElement {
       this._refreshVisibility();
     });
     this._refreshVisibility();
-    // Fetch the Ollama Cloud model list lazily — fire-and-forget.
-    // Failure leaves _ollamaModels empty; the dropdown is hidden in
-    // that case and the user gets the env default.
+    // Fetch the provider model lists lazily — fire-and-forget. Failure
+    // leaves the list empty; that dropdown is hidden and the user gets
+    // the env default at spawn.
     this._loadOllamaModels();
+    this._loadOpenRouterModels();
   }
 
   async _loadOllamaModels() {
@@ -167,6 +175,17 @@ export class EmptyState extends LitElement {
       if (!r?.ok || !Array.isArray(r.models) || r.models.length === 0) return;
       this._ollamaModels = r.models;
       this._ollamaModel = r.default || r.models[0];
+    } catch { /* ignore — leave dropdown hidden */ }
+  }
+
+  async _loadOpenRouterModels() {
+    try {
+      const t = /** @type {any} */ (window).transport;
+      if (!t?.workers?.openrouterModels) return;
+      const r = await t.workers.openrouterModels();
+      if (!r?.ok || !Array.isArray(r.models) || r.models.length === 0) return;
+      this._openrouterModels = r.models;
+      this._openrouterModel = r.default || r.models[0];
     } catch { /* ignore — leave dropdown hidden */ }
   }
 
@@ -190,7 +209,7 @@ export class EmptyState extends LitElement {
   }
 
   /**
-   * @param {'claude'|'shell'|'semantic'|'ollama-cloud'} kind
+   * @param {'claude'|'shell'|'semantic'|'ollama-cloud'|'openrouter'} kind
    * @param {{ model?: string }} [opts]
    */
   _emitSpawn(kind, opts = {}) {
@@ -203,6 +222,11 @@ export class EmptyState extends LitElement {
   _onOllamaModelChange(/** @type {Event} */ ev) {
     const target = /** @type {HTMLSelectElement} */ (ev.target);
     this._ollamaModel = target.value;
+  }
+
+  _onOpenRouterModelChange(/** @type {Event} */ ev) {
+    const target = /** @type {HTMLSelectElement} */ (ev.target);
+    this._openrouterModel = target.value;
   }
 
   render() {
@@ -231,7 +255,7 @@ export class EmptyState extends LitElement {
                 @click=${() => this._emitSpawn('semantic')}>
           + Spawn Semantic worker
         </button>
-        <div class="ollama-row">
+        <div class="model-row">
           <button id="am-empty-spawn-ollama-cloud" class="cmd-btn" type="button"
                   title="Spawn a hosted Ollama Cloud worker (uses OLLAMA_API_KEY from .env)"
                   @click=${() => this._emitSpawn('ollama-cloud',
@@ -239,12 +263,30 @@ export class EmptyState extends LitElement {
             + Spawn Ollama Cloud worker
           </button>
           ${this._ollamaModels.length > 0 ? html`
-            <select id="am-empty-ollama-model" class="ollama-model"
+            <select id="am-empty-ollama-model" class="model-select"
                     title="Choose the model for this Ollama Cloud worker"
                     .value=${this._ollamaModel}
                     @change=${this._onOllamaModelChange}>
               ${this._ollamaModels.map((m) => html`
                 <option value=${m} ?selected=${m === this._ollamaModel}>${m}</option>
+              `)}
+            </select>
+          ` : ''}
+        </div>
+        <div class="model-row">
+          <button id="am-empty-spawn-openrouter" class="cmd-btn" type="button"
+                  title="Spawn an OpenRouter worker (uses OPENROUTER_API_KEY from .env)"
+                  @click=${() => this._emitSpawn('openrouter',
+                    this._openrouterModel ? { model: this._openrouterModel } : {})}>
+            + Spawn OpenRouter worker
+          </button>
+          ${this._openrouterModels.length > 0 ? html`
+            <select id="am-empty-openrouter-model" class="model-select"
+                    title="Choose the model for this OpenRouter worker"
+                    .value=${this._openrouterModel}
+                    @change=${this._onOpenRouterModelChange}>
+              ${this._openrouterModels.map((m) => html`
+                <option value=${m} ?selected=${m === this._openrouterModel}>${m}</option>
               `)}
             </select>
           ` : ''}

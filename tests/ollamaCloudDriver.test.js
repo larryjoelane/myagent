@@ -2,7 +2,11 @@
 // generator and asserts the chat:* event sequence + memory-mirror
 // payloads. Same shape as semanticDriver.test.js.
 
-const { OllamaCloudDriver } = require('../src/core/drivers/ollamaCloudDriver');
+const {
+  OllamaCloudDriver,
+  OpenAICompatibleDriver,
+  OPENROUTER_PROVIDER,
+} = require('../src/core/drivers/openAICompatibleDriver');
 const { eq, ok, contains, eventually } = require('./assert');
 
 function recorder() {
@@ -95,6 +99,54 @@ exports.run = (ctx) => {
     eq(rec.last('chat:turn-end').payload.assistantText, 'hello world');
     eq(rec.last('chat:turn-end').payload.userText, 'say hi');
     eq(rec.last('chat:turn-end').payload.ok, true);
+    // Token-ledger contract: turn-end must carry provider so the
+    // ledger knows which silo to record the usage under.
+    eq(rec.last('chat:turn-end').payload.provider, 'ollama-cloud');
+  });
+
+  ctx.test('providerConfig parameterizes provider stamping + env vars (openrouter)', async () => {
+    const rec = recorder();
+    const savedKey = process.env.OPENROUTER_API_KEY;
+    const savedModel = process.env.OPENROUTER_MODEL;
+    process.env.OPENROUTER_API_KEY = 'or-key';
+    process.env.OPENROUTER_MODEL = 'vendor/some-model';
+    try {
+      const drv = new OpenAICompatibleDriver({
+        agentId: 'or1',
+        providerConfig: OPENROUTER_PROVIDER,
+        // no apiKey/model args → must fall back to OPENROUTER_* env
+        runnerFactory: () => fakeRunner({ chunks: ['hi'] }),
+        onEvent: rec.onEvent,
+      });
+      eq(drv.provider, 'openrouter');
+      eq(drv.apiKey, 'or-key');
+      eq(drv.model, 'vendor/some-model');
+      await drv.start();
+      drv.send('hello');
+      await eventually(() => ok(rec.last('chat:turn-end')), { msg: 'turn-end' });
+      eq(rec.last('chat:turn-end').payload.provider, 'openrouter');
+    } finally {
+      if (savedKey === undefined) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = savedKey;
+      if (savedModel === undefined) delete process.env.OPENROUTER_MODEL; else process.env.OPENROUTER_MODEL = savedModel;
+    }
+  });
+
+  ctx.test('missing provider API key uses the provider-specific env name in the error', async () => {
+    const rec = recorder();
+    const saved = process.env.OPENROUTER_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
+    try {
+      const drv = new OpenAICompatibleDriver({
+        agentId: 'or2', apiKey: null,
+        providerConfig: OPENROUTER_PROVIDER,
+        runnerFactory: () => fakeRunner(),
+        onEvent: rec.onEvent,
+      });
+      await drv.start();
+      contains(rec.last('chat:error').payload.error, 'OPENROUTER_API_KEY');
+    } finally {
+      if (saved !== undefined) process.env.OPENROUTER_API_KEY = saved;
+    }
   });
 
   ctx.test('runner failure becomes chat:error + ok:false turn-end', async () => {
@@ -250,6 +302,79 @@ exports.run = (ctx) => {
     contains(drv.messages[0].content, '# computed');
   });
 
+  ctx.test('describeEnvContextSpec produces a readable label per spec kind', () => {
+    const { _describeEnvContextSpec: d } = require('../src/core/drivers/openAICompatibleDriver');
+    contains(d(null), 'disabled');
+    contains(d(undefined), 'disabled');
+    contains(d(false), 'disabled');
+    contains(d(true), 'default');
+    contains(d('hello there'), 'string');
+    contains(d('hello there'), '11 chars');
+    contains(d(function myFn() {}), 'function');
+    contains(d(function myFn() {}), 'myFn');
+    contains(d({ skipGit: true, header: 'x' }), 'object');
+    contains(d({ skipGit: true, header: 'x' }), 'skipGit');
+  });
+
+  ctx.test('envContext: emits chat:env-context applied:true with content + bytes', async () => {
+    const rec = recorder();
+    const drv = new OllamaCloudDriver({
+      agentId: 'a1',
+      apiKey: 'k',
+      runnerFactory: () => fakeRunner({ chunks: ['ok'] }),
+      onEvent: rec.onEvent,
+      envContext: '# Env\n- cwd: /x',
+    });
+    await drv.start();
+    drv.send('one');
+    await eventually(() => eq(rec.countOf('chat:turn-end'), 1));
+    drv.send('two');
+    await eventually(() => eq(rec.countOf('chat:turn-end'), 2));
+    // Emitted exactly once across multiple turns (latched on _envContextApplied).
+    eq(rec.countOf('chat:env-context'), 1);
+    const ev = rec.last('chat:env-context').payload;
+    eq(ev.applied, true);
+    eq(ev.bytes, Buffer.byteLength('# Env\n- cwd: /x', 'utf8'));
+    contains(ev.content, '# Env');
+  });
+
+  ctx.test('envContext: emits applied:false when disabled', async () => {
+    const rec = recorder();
+    const drv = new OllamaCloudDriver({
+      agentId: 'a1',
+      apiKey: 'k',
+      runnerFactory: () => fakeRunner({ chunks: ['ok'] }),
+      onEvent: rec.onEvent,
+    });
+    await drv.start();
+    drv.send('one');
+    await eventually(() => eq(rec.countOf('chat:turn-end'), 1));
+    eq(rec.countOf('chat:env-context'), 1);
+    const ev = rec.last('chat:env-context').payload;
+    eq(ev.applied, false);
+    eq(ev.reason, 'disabled');
+  });
+
+  ctx.test('envContext: emits applied:false when resolver throws', async () => {
+    const rec = recorder();
+    const drv = new OllamaCloudDriver({
+      agentId: 'a1',
+      apiKey: 'k',
+      runnerFactory: () => fakeRunner({ chunks: ['ok'] }),
+      onEvent: rec.onEvent,
+      envContext: () => { throw new Error('resolver broke'); },
+    });
+    await drv.start();
+    drv.send('hi');
+    await eventually(() => eq(rec.countOf('chat:turn-end'), 1));
+    const ev = rec.last('chat:env-context').payload;
+    eq(ev.applied, false);
+    eq(ev.reason, 'resolver-threw');
+    contains(ev.error, 'resolver broke');
+    // The system message was NOT inserted on the resolver failure.
+    eq(drv.messages.filter((m) => m.role === 'system').length, 0);
+  });
+
   ctx.test('cancel() with no active turn returns false', async () => {
     const drv = new OllamaCloudDriver({
       agentId: 'a1',
@@ -344,6 +469,8 @@ exports.run = (ctx) => {
     eq(rec.last('chat:tool-result').payload.result.content, 'pong');
     eq(rec.last('chat:turn-end').payload.assistantText, 'I echoed pong');
     eq(rec.last('chat:turn-end').payload.totals.iterations, 2);
+    // Token-ledger contract: tools-mode turn-end must also stamp provider.
+    eq(rec.last('chat:turn-end').payload.provider, 'ollama-cloud');
   });
 
   ctx.test('tools mode: requires presetFactory and toolRegistry', () => {
@@ -437,5 +564,372 @@ exports.run = (ctx) => {
     await drv.close();
     drv.send('hello');
     contains(rec.last('chat:error').payload.error, 'closed');
+  });
+
+  // ---- /skill slash command --------------------------------------------
+
+  // Minimal tool registry stub that mimics ToolRegistry's shape. We don't
+  // need ToolUseLoop here — slash handling runs the tool directly.
+  function makeRegistry(tools) {
+    const map = new Map(tools.map((t) => [t.name, t]));
+    return { get: (n) => map.get(n) || null, has: (n) => map.has(n), list: () => [...map.values()] };
+  }
+  function fakeSkillTool({ name, description = 'A test skill.', body = 'invoked!', shouldThrow = false }) {
+    return {
+      name, description,
+      parameters: { type: 'object', properties: { task: { type: 'string' } }, required: ['task'] },
+      async run(args) {
+        if (shouldThrow) throw new Error('skill exploded');
+        return { ok: true, content: `[skill] task=${args.task || ''} :: ${body}` };
+      },
+    };
+  }
+
+  ctx.test('/skill with no args lists registered skills', async () => {
+    const rec = recorder();
+    const registry = makeRegistry([
+      fakeSkillTool({ name: 'skill_alpha', description: 'Does alpha things. Use for X.' }),
+      fakeSkillTool({ name: 'skill_beta',  description: 'Does beta things.' }),
+    ]);
+    const drv = new OllamaCloudDriver({
+      agentId: 'a1', apiKey: 'fake-key',
+      presetFactory: () => ({}), toolRegistry: registry, tools: true,
+      runnerFactory: () => fakeRunner(),
+      onEvent: rec.onEvent,
+    });
+    await drv.start();
+    drv.send('/skill');
+    await eventually(() => ok(rec.last('chat:turn-end')), { msg: 'turn-end' });
+    const text = rec.last('chat:turn-end').payload.assistantText;
+    contains(text, 'Available skills');
+    contains(text, '/skill alpha');
+    contains(text, '/skill beta');
+    eq(rec.last('chat:turn-end').payload.ok, true);
+    eq(rec.last('chat:turn-end').payload.provider, 'ollama-cloud');
+  });
+
+  ctx.test('/skill help is equivalent to /skill with no args', async () => {
+    const rec = recorder();
+    const registry = makeRegistry([
+      fakeSkillTool({ name: 'skill_alpha', description: 'A.' }),
+    ]);
+    const drv = new OllamaCloudDriver({
+      agentId: 'a1', apiKey: 'fake-key',
+      presetFactory: () => ({}), toolRegistry: registry, tools: true,
+      runnerFactory: () => fakeRunner(),
+      onEvent: rec.onEvent,
+    });
+    await drv.start();
+    drv.send('/skill help');
+    await eventually(() => ok(rec.last('chat:turn-end')), { msg: 'turn-end' });
+    contains(rec.last('chat:turn-end').payload.assistantText, 'Available skills');
+  });
+
+  ctx.test('/skill listing is graceful when none are registered', async () => {
+    const rec = recorder();
+    const registry = makeRegistry([]);
+    const drv = new OllamaCloudDriver({
+      agentId: 'a1', apiKey: 'fake-key',
+      presetFactory: () => ({}), toolRegistry: registry, tools: true,
+      runnerFactory: () => fakeRunner(),
+      onEvent: rec.onEvent,
+    });
+    await drv.start();
+    drv.send('/skill');
+    await eventually(() => ok(rec.last('chat:turn-end')), { msg: 'turn-end' });
+    contains(rec.last('chat:turn-end').payload.assistantText, 'No skills registered');
+  });
+
+  // A registry that ALSO drives ToolUseLoop: dispatch() runs the tool and
+  // toOpenAISchema() feeds the (ignored-by-stub) runner. The invoke path
+  // now seeds the loop instead of running the tool directly, so these tests
+  // need a real dispatch + a scripted preset that emits a tool_call.
+  function makeLoopRegistry(tools) {
+    const map = new Map(tools.map((t) => [t.name, t]));
+    return {
+      get: (n) => map.get(n) || null,
+      has: (n) => map.has(n),
+      list: () => [...map.values()],
+      toOpenAISchema: () => [...map.values()].map((t) => ({
+        type: 'function', function: { name: t.name, parameters: t.parameters || {} },
+      })),
+      async dispatch(call, dctx) {
+        const tool = map.get(call.name);
+        if (!tool) return { ok: false, content: `no such tool ${call.name}` };
+        try { return await tool.run(call.arguments || {}, dctx); }
+        catch (err) { return { ok: false, content: `tool threw: ${err.message}` }; }
+      },
+    };
+  }
+
+  // Scripted preset for the loop. Stateless-by-inspection so it survives
+  // multiple turns sharing one preset instance: if the last message is a
+  // fresh user turn (the seed), emit one tool_call for `toolName`; otherwise
+  // (the post-dispatch history) emit a content turn so the loop terminates.
+  // Captures the seed (first user message of each turn) for assertions.
+  function scriptedSkillPreset(toolName, capture) {
+    return {
+      async *stream(messages /* , { signal, tools } */) {
+        const last = messages[messages.length - 1];
+        if (last && last.role === 'user') {
+          if (capture) capture.seed = last.content; // the seeded directive
+          yield { type: 'tool_call', call: { id: 'c1', name: toolName, arguments: { task: capture?.task || '' } } };
+          yield { type: 'done', totals: {} };
+        } else {
+          yield { type: 'content', text: 'skill done' };
+          yield { type: 'done', totals: {} };
+        }
+      },
+    };
+  }
+
+  ctx.test('/skill <name> seeds the loop and the model calls the skill tool', async () => {
+    const rec = recorder();
+    const cap = { task: '' };
+    const registry = makeLoopRegistry([fakeSkillTool({ name: 'skill_alpha', body: 'A body' })]);
+    const drv = new OllamaCloudDriver({
+      agentId: 'a1', apiKey: 'fake-key',
+      presetFactory: () => scriptedSkillPreset('skill_alpha', cap),
+      toolRegistry: registry, tools: true, skillScopeGuard: false,
+      skills: [{ name: 'alpha', dir: '/skills/alpha', mdPath: '/skills/alpha/SKILL.md' }],
+      runnerFactory: () => fakeRunner(),
+      onEvent: rec.onEvent,
+    });
+    await drv.start();
+    drv.send('/skill alpha');
+    await eventually(() => ok(rec.last('chat:turn-end')), { msg: 'turn-end' });
+    // The model (not the driver) issued the tool call inside the loop.
+    eq(rec.countOf('chat:tool-call'), 1);
+    eq(rec.last('chat:tool-call').payload.call.name, 'skill_alpha');
+    // The seed (a directive naming skill_alpha) reached the runner, not the raw "/skill alpha".
+    contains(cap.seed, 'skill_alpha');
+    eq(rec.last('chat:turn-end').payload.ok, true);
+  });
+
+  ctx.test('/skill <name> <task...> threads the task into the seed', async () => {
+    const rec = recorder();
+    const cap = { task: 'run the suite quickly' };
+    const registry = makeLoopRegistry([fakeSkillTool({ name: 'skill_alpha' })]);
+    const drv = new OllamaCloudDriver({
+      agentId: 'a1', apiKey: 'fake-key',
+      presetFactory: () => scriptedSkillPreset('skill_alpha', cap),
+      toolRegistry: registry, tools: true, skillScopeGuard: false,
+      skills: [{ name: 'alpha', dir: '/skills/alpha', mdPath: '/skills/alpha/SKILL.md' }],
+      runnerFactory: () => fakeRunner(),
+      onEvent: rec.onEvent,
+    });
+    await drv.start();
+    drv.send('/skill alpha run the suite quickly');
+    await eventually(() => ok(rec.last('chat:turn-end')), { msg: 'turn-end' });
+    contains(cap.seed, 'run the suite quickly');
+  });
+
+  ctx.test('/<name> shorthand invokes the skill via the loop', async () => {
+    const rec = recorder();
+    const cap = { task: 'foo.md' };
+    const registry = makeLoopRegistry([fakeSkillTool({ name: 'skill_alpha' })]);
+    const drv = new OllamaCloudDriver({
+      agentId: 'a1', apiKey: 'fake-key',
+      presetFactory: () => scriptedSkillPreset('skill_alpha', cap),
+      toolRegistry: registry, tools: true, skillScopeGuard: false,
+      skills: [{ name: 'alpha', dir: '/skills/alpha', mdPath: '/skills/alpha/SKILL.md' }],
+      runnerFactory: () => fakeRunner(),
+      onEvent: rec.onEvent,
+    });
+    await drv.start();
+    drv.send('/alpha foo.md');
+    await eventually(() => ok(rec.last('chat:turn-end')), { msg: 'turn-end' });
+    eq(rec.countOf('chat:tool-call'), 1);
+    eq(rec.last('chat:tool-call').payload.call.name, 'skill_alpha');
+    contains(cap.seed, 'foo.md');
+  });
+
+  ctx.test('/<name> for a reserved word (/help) falls through to the model', async () => {
+    const rec = recorder();
+    // skill_help is registered, but /help must NOT shorthand-invoke it.
+    const registry = makeLoopRegistry([fakeSkillTool({ name: 'skill_help' })]);
+    const drv = new OllamaCloudDriver({
+      agentId: 'a1', apiKey: 'fake-key',
+      presetFactory: () => ({}), toolRegistry: registry, tools: false,
+      skills: [{ name: 'help', dir: '/skills/help', mdPath: '/skills/help/SKILL.md' }],
+      runnerFactory: () => fakeRunner({ chunks: ['plain'] }),
+      onEvent: rec.onEvent,
+    });
+    await drv.start();
+    drv.send('/help');
+    await eventually(() => ok(rec.last('chat:turn-end')), { msg: 'turn-end' });
+    eq(rec.countOf('chat:tool-call'), 0);
+    eq(rec.last('chat:turn-end').payload.assistantText, 'plain');
+  });
+
+  ctx.test('/skill <unknown> returns a helpful error with the available list', async () => {
+    const rec = recorder();
+    const registry = makeRegistry([
+      fakeSkillTool({ name: 'skill_alpha' }),
+      fakeSkillTool({ name: 'skill_beta' }),
+    ]);
+    const drv = new OllamaCloudDriver({
+      agentId: 'a1', apiKey: 'fake-key',
+      presetFactory: () => ({}), toolRegistry: registry, tools: true,
+      runnerFactory: () => fakeRunner(),
+      onEvent: rec.onEvent,
+    });
+    await drv.start();
+    drv.send('/skill nope');
+    await eventually(() => ok(rec.last('chat:turn-end')), { msg: 'turn-end' });
+    eq(rec.last('chat:turn-end').payload.ok, false);
+    const text = rec.last('chat:turn-end').payload.assistantText;
+    contains(text, 'No such skill');
+    contains(text, 'alpha');
+    contains(text, 'beta');
+    // Unknown skill should NOT have emitted a tool-call/result.
+    eq(rec.countOf('chat:tool-call'), 0);
+    eq(rec.countOf('chat:tool-result'), 0);
+  });
+
+  ctx.test('/skill <name> when the skill tool throws -> loop surfaces ok:false tool-result, turn still ends cleanly', async () => {
+    const rec = recorder();
+    const cap = { task: '' };
+    // dispatch() converts the throw into an ok:false result, the model sees
+    // it and finishes; the turn ends ok (the loop completed) per ToolUseLoop.
+    const registry = makeLoopRegistry([fakeSkillTool({ name: 'skill_alpha', shouldThrow: true })]);
+    const drv = new OllamaCloudDriver({
+      agentId: 'a1', apiKey: 'fake-key',
+      presetFactory: () => scriptedSkillPreset('skill_alpha', cap),
+      toolRegistry: registry, tools: true, skillScopeGuard: false,
+      skills: [{ name: 'alpha', dir: '/skills/alpha', mdPath: '/skills/alpha/SKILL.md' }],
+      runnerFactory: () => fakeRunner(),
+      onEvent: rec.onEvent,
+    });
+    await drv.start();
+    drv.send('/skill alpha');
+    await eventually(() => ok(rec.last('chat:turn-end')), { msg: 'turn-end' });
+    eq(rec.countOf('chat:tool-result'), 1);
+    eq(rec.last('chat:tool-result').payload.result.ok, false);
+    contains(rec.last('chat:tool-result').payload.result.content, 'skill exploded');
+    eq(rec.last('chat:turn-end').payload.ok, true); // loop completed without throwing
+  });
+
+  ctx.test('non-/skill slash commands still flow to the model (not intercepted)', async () => {
+    const rec = recorder();
+    const drv = new OllamaCloudDriver({
+      agentId: 'a1', apiKey: 'fake-key',
+      runnerFactory: () => fakeRunner({ chunks: ['ok'] }),
+      onEvent: rec.onEvent,
+    });
+    await drv.start();
+    drv.send('/help');
+    await eventually(() => ok(rec.last('chat:turn-end')), { msg: 'turn-end' });
+    // Plain-mode path ran (no tool-call events, the runner stub yielded 'ok').
+    eq(rec.countOf('chat:tool-call'), 0);
+    eq(rec.last('chat:turn-end').payload.assistantText, 'ok');
+  });
+
+  ctx.test('back-to-back /skill calls do not wedge turnActive', async () => {
+    const rec = recorder();
+    const cap = { task: '' };
+    const registry = makeLoopRegistry([fakeSkillTool({ name: 'skill_alpha' })]);
+    const drv = new OllamaCloudDriver({
+      agentId: 'a1', apiKey: 'fake-key',
+      // Fresh scripted preset per turn so each turn's iteration counter resets.
+      presetFactory: () => scriptedSkillPreset('skill_alpha', cap),
+      toolRegistry: registry, tools: true, skillScopeGuard: false,
+      skills: [{ name: 'alpha', dir: '/skills/alpha', mdPath: '/skills/alpha/SKILL.md' }],
+      runnerFactory: () => fakeRunner(),
+      onEvent: rec.onEvent,
+    });
+    await drv.start();
+    drv.send('/skill alpha first');
+    await eventually(() => eq(rec.countOf('chat:turn-end'), 1));
+    drv.send('/skill alpha second');
+    await eventually(() => eq(rec.countOf('chat:turn-end'), 2));
+    eq(rec.countOf('chat:tool-call'), 2);
+    // Second turn's seed carried the "second" task.
+    contains(cap.seed, 'second');
+  });
+
+  // ---- scope guard ------------------------------------------------------
+
+  // A tool that records the ctx it was dispatched with, so we can assert the
+  // guard pinned ctx.cwd and that the skill dir was in scope mid-turn.
+  function ctxProbeTool(name, sink) {
+    return {
+      name,
+      parameters: { type: 'object', properties: { task: { type: 'string' } }, required: ['task'] },
+      async run(args, dctx) {
+        sink.cwd = dctx.cwd;
+        sink.inScopeMidTurn = dctx.scope && typeof dctx.scope.containsSync === 'function'
+          ? dctx.scope.containsSync(sink.skillDir)
+          : null;
+        return { ok: true, content: 'probed' };
+      },
+    };
+  }
+
+  ctx.test('scope guard ON: skill dir added + bash cwd pinned mid-turn, reverted after', async () => {
+    const { Scope } = require('../src/core/scope');
+    const fs = require('fs');
+    const path = require('path');
+    const os = require('os');
+    const skillDir = path.join(os.tmpdir(), `guard-test-${process.pid}-${Math.floor(Math.random() * 1e6)}`);
+    fs.mkdirSync(skillDir, { recursive: true });
+    try {
+      const rec = recorder();
+      const cap = { task: '' };
+      const sink = { skillDir };
+      const scope = new Scope([os.tmpdir() + path.sep + 'unrelated']); // skillDir NOT covered
+      const registry = makeLoopRegistry([ctxProbeTool('skill_alpha', sink)]);
+      const drv = new OllamaCloudDriver({
+        agentId: 'a1', apiKey: 'fake-key',
+        presetFactory: () => scriptedSkillPreset('skill_alpha', cap),
+        toolRegistry: registry, tools: true,
+        skillScopeGuard: true, scope,
+        skills: [{ name: 'alpha', dir: skillDir, mdPath: path.join(skillDir, 'SKILL.md') }],
+        runnerFactory: () => fakeRunner(),
+        onEvent: rec.onEvent,
+      });
+      await drv.start();
+      drv.send('/skill alpha');
+      await eventually(() => ok(rec.last('chat:turn-end')), { msg: 'turn-end' });
+      // Mid-turn: dir reachable + bash cwd pinned to it.
+      eq(sink.inScopeMidTurn, true);
+      eq(require('fs').realpathSync(sink.cwd), require('fs').realpathSync(skillDir));
+      // After the turn: reverted (we added it, so it is removed).
+      eq(scope.containsSync(skillDir), false);
+    } finally { fs.rmSync(skillDir, { recursive: true, force: true }); }
+  });
+
+  ctx.test('scope guard OFF: no scope mutation, bash cwd stays the worker cwd', async () => {
+    const { Scope } = require('../src/core/scope');
+    const rec = recorder();
+    const cap = { task: '' };
+    const sink = { skillDir: '/skills/alpha' };
+    const scope = new Scope(['/worker/cwd']);
+    const before = scope.list();
+    const registry = makeLoopRegistry([ctxProbeTool('skill_alpha', sink)]);
+    const drv = new OllamaCloudDriver({
+      agentId: 'a1', apiKey: 'fake-key',
+      presetFactory: () => scriptedSkillPreset('skill_alpha', cap),
+      toolRegistry: registry, tools: true,
+      skillScopeGuard: false, scope, cwd: '/worker/cwd',
+      skills: [{ name: 'alpha', dir: '/skills/alpha', mdPath: '/skills/alpha/SKILL.md' }],
+      runnerFactory: () => fakeRunner(),
+      onEvent: rec.onEvent,
+    });
+    await drv.start();
+    drv.send('/skill alpha');
+    await eventually(() => ok(rec.last('chat:turn-end')), { msg: 'turn-end' });
+    eq(sink.cwd, '/worker/cwd'); // not pinned to the skill dir
+    require('./assert').deepEq(scope.list(), before, 'scope unchanged');
+  });
+
+  ctx.test('skillScopeGuard defaults ON when not specified', async () => {
+    const drv = new OllamaCloudDriver({
+      agentId: 'a1', apiKey: 'fake-key',
+      presetFactory: () => ({}), toolRegistry: makeRegistry([]), tools: true,
+      runnerFactory: () => fakeRunner(),
+      onEvent: () => {},
+    });
+    eq(drv.skillScopeGuard, true);
   });
 };

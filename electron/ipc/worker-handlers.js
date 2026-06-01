@@ -28,6 +28,7 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
       const kind = body.kind === 'shell'         ? 'shell'
                  : body.kind === 'semantic'      ? 'semantic'
                  : body.kind === 'ollama-cloud'  ? 'ollama-cloud'
+                 : body.kind === 'openrouter'    ? 'openrouter'
                                                  : 'claude';
       const cwd = body.cwd || appSettings.get('lastCwd') || projectRoot;
       let result;
@@ -37,6 +38,13 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
         result = await workerManager.spawnSemantic({ name: body.name, cwd });
       } else if (kind === 'ollama-cloud') {
         result = await workerManager.spawnOllamaCloud({
+          name: body.name, cwd, model: body.model,
+          maxIterations: body.maxIterations,
+          envContext: body.envContext,
+          parallelDispatch: body.parallelDispatch,
+        });
+      } else if (kind === 'openrouter') {
+        result = await workerManager.spawnOpenRouter({
           name: body.name, cwd, model: body.model,
           maxIterations: body.maxIterations,
           envContext: body.envContext,
@@ -101,7 +109,7 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
   // Ollama Cloud model picker. Reads OLLAMA_MODELS (comma-separated)
   // from .env; falls back to a curated default list of -cloud tags.
   // OLLAMA_MODEL (when set) overrides which entry is selected by
-  // default; otherwise we default to ministral-3:3b-cloud.
+  // default; otherwise we default to devstral-small-2:24b-cloud.
   //
   // Cloud-only by design: this driver hits https://ollama.com/api/chat
   // which only serves models with the -cloud suffix. Local-only tags
@@ -116,20 +124,52 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
           'ministral-3:3b-cloud',
           'gpt-oss:20b-cloud',
           'gpt-oss:120b-cloud',
+          'devstral-small-2:24b-cloud',
+          'qwen3-coder-next:cloud',
           'qwen3-coder:480b-cloud',
           'kimi-k2:1t-cloud',
           'glm-4.6:cloud',
           'glm-5.1:cloud',
         ];
     const envDefault = (process.env.OLLAMA_MODEL || '').trim();
-    // Default to ministral-3:3b-cloud — smallest verified cloud tag,
-    // cheapest to run, available on every Ollama Cloud tier. Bigger
-    // models (gpt-oss:120b-cloud, qwen3-coder:480b-cloud) stay in the
-    // picker. glm-5.1:cloud and kimi-k2:1t-cloud require a paid
-    // subscription; they're kept in the dropdown so users with access
-    // can pick them, but the default must be free-tier safe.
+    // Default to devstral-small-2:24b-cloud — Mistral's agentic coding
+    // model, ~24B, free-tier ("Low Usage") on Ollama Cloud. Coder-tuned
+    // and reliable with OpenAI-format tool calls, which is what
+    // ToolUseLoop emits. Fall back through ministral-3 (smaller, also
+    // free-tier) then whatever the user's list provides.
     const def = envDefault
-      || (models.includes('ministral-3:3b-cloud') ? 'ministral-3:3b-cloud' : models[0] || '');
+      || (models.includes('devstral-small-2:24b-cloud') ? 'devstral-small-2:24b-cloud'
+        : models.includes('ministral-3:3b-cloud') ? 'ministral-3:3b-cloud'
+        : models[0] || '');
+    return { ok: true, models, default: def };
+  });
+
+  // Model list for the OpenRouter spawn dropdown. Mirrors the ollama-cloud
+  // handler: OPENROUTER_MODELS (comma-separated) overrides a small built-in
+  // default set; OPENROUTER_MODEL (or `openrouter/auto`) is the default
+  // selection. OpenRouter model ids are `vendor/model` slugs. Env-driven by
+  // design — no network call here; the live catalog has hundreds of entries.
+  ipcMain.handle('worker:openrouter-models', () => {
+    const raw = (process.env.OPENROUTER_MODELS || '').trim();
+    const models = raw
+      ? raw.split(',').map((s) => s.trim()).filter(Boolean)
+      : [
+          'mistralai/devstral-small',
+          'mistralai/devstral-2512',
+          'mistralai/codestral-2508',
+          'openrouter/auto',
+          'anthropic/claude-3.7-sonnet',
+          'openai/gpt-4o',
+          'openai/gpt-4o-mini',
+          'google/gemini-2.0-flash-001',
+          'meta-llama/llama-3.3-70b-instruct',
+          'deepseek/deepseek-chat',
+          'qwen/qwen-2.5-coder-32b-instruct',
+        ];
+    // Devstral Small (Mistral's agentic coding model). env OPENROUTER_MODEL
+    // overrides. Note: this slug may have no active OpenRouter provider
+    // endpoints at times — switch to mistralai/devstral-2512 if it 404s.
+    const def = (process.env.OPENROUTER_MODEL || '').trim() || 'mistralai/devstral-small';
     return { ok: true, models, default: def };
   });
 

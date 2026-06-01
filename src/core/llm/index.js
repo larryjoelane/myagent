@@ -8,10 +8,13 @@
 
 const { OpenAIChat, parseStream } = require('./openaiChat');
 const { createOllamaPreset, MODEL_PROFILES, profileFor } = require('./presets/ollama');
+const { createOpenRouterPreset } = require('./presets/openrouter');
 const { ToolUseLoop, DEFAULT_MAX_ITERATIONS } = require('./toolUseLoop');
 const {
   ToolRegistry,
   buildDefaultRegistry,
+  buildRegistryWithSkills,
+  buildSkillTools,
   ALL_TOOLS,
   echo,
   readFile,
@@ -27,12 +30,15 @@ module.exports = {
   OpenAIChat,
   parseStream,
   createOllamaPreset,
+  createOpenRouterPreset,
   MODEL_PROFILES,
   profileFor,
   ToolUseLoop,
   DEFAULT_MAX_ITERATIONS,
   ToolRegistry,
   buildDefaultRegistry,
+  buildRegistryWithSkills,
+  buildSkillTools,
   ALL_TOOLS,
   echo,
   readFile,

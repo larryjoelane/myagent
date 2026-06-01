@@ -29,6 +29,7 @@ const ALL_FORWARDED_CHANNELS = [
   { channel: 'chat:tool-result',   emitAs: 'chat:tool-result' },
   { channel: 'chat:error',         emitAs: 'chat:error' },
   { channel: 'chat:driver-exit',   emitAs: 'chat:driver-exit' },
+  { channel: 'chat:env-context',   emitAs: 'chat:env-context' },
   // Legacy agent-handler events. Renderer maps to short names for
   // backward compat.
   { channel: 'agent:chunk',        emitAs: 'chunk' },
@@ -50,6 +51,10 @@ const ALL_FORWARDED_CHANNELS = [
   // Editor BrowserWindow: main pushes a file to load via this channel.
   // Subscribed by transport.editor.onLoadFile in the editor renderer.
   { channel: 'editor:load-file',      emitAs: 'editor:load-file' },
+  // Token ledger push: full snapshot on every record/forget/reset.
+  // Subscribed by transport.tokens.onUpdate (worker-chips + future
+  // analytics panel).
+  { channel: 'tokens:update',         emitAs: 'tokens:update' },
 ];
 
 /**
@@ -112,6 +117,7 @@ function buildTransport({ ipcRenderer, clipboard, listeners }) {
       rename: (body) => ipcRenderer.invoke('worker:rename', body || {}),
       listTools: (id) => ipcRenderer.invoke('worker:list-tools', { id }),
       ollamaCloudModels: () => ipcRenderer.invoke('worker:ollama-cloud-models'),
+      openrouterModels: () => ipcRenderer.invoke('worker:openrouter-models'),
       listScope: (id) => ipcRenderer.invoke('worker:list-scope', { id }),
       addScope: (id, path) => ipcRenderer.invoke('worker:add-scope', { id, path }),
       removeScope: (id, path) => ipcRenderer.invoke('worker:remove-scope', { id, path }),
@@ -158,6 +164,12 @@ function buildTransport({ ipcRenderer, clipboard, listeners }) {
       setDefaultMirror: (on) => ipcRenderer.invoke('chat:set-default-mirror', { on }),
       setWorkerMirror: (id, on) => ipcRenderer.invoke('chat:set-worker-mirror', { id, on }),
       on: subscribe,
+    },
+    tokens: {
+      snapshot: () => ipcRenderer.invoke('tokens:snapshot'),
+      byWorker: (id) => ipcRenderer.invoke('tokens:by-worker', { id }),
+      reset: () => ipcRenderer.invoke('tokens:reset'),
+      onUpdate: (fn) => subscribe('tokens:update', fn),
     },
     browser: {
       create: (body) => ipcRenderer.invoke('browser:create', body || {}),

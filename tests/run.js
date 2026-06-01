@@ -23,7 +23,7 @@ if (!RUNNING_UNDER_ELECTRON) {
   }
   const child = require('child_process').spawnSync(electronBin, [__filename, ...process.argv.slice(2)], {
     stdio: 'inherit',
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', MYAGENT_QUIET: '1' },
   });
   if (child.error) {
     process.stderr.write(`tests/run.js: failed to launch Electron — ${child.error.message}\n`);

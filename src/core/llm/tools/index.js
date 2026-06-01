@@ -23,6 +23,7 @@ const bashKill = require('./bashKill');
 const bashList = require('./bashList');
 const memorySearch = require('./memorySearch');
 const memoryStore = require('./memoryStore');
+const { buildSkillTools } = require('./skill');
 const { ToolRegistry } = require('./registry');
 
 const ALL_TOOLS = [
@@ -33,6 +34,27 @@ const ALL_TOOLS = [
 
 function buildDefaultRegistry() {
   return new ToolRegistry(ALL_TOOLS);
+}
+
+/**
+ * Like buildDefaultRegistry() but additionally registers one tool per
+ * discovered skill. Skip a skill if its tool name collides with a
+ * built-in (won't happen in practice — built-ins don't use the
+ * `skill_` prefix — but registry.add throws on collisions so we
+ * guard anyway).
+ *
+ * @param {object} opts
+ * @param {import('../../skills').Skill[]} [opts.skills]
+ */
+function buildRegistryWithSkills({ skills } = {}) {
+  const reg = new ToolRegistry(ALL_TOOLS);
+  if (Array.isArray(skills) && skills.length > 0) {
+    for (const tool of buildSkillTools(skills)) {
+      if (reg.has(tool.name)) continue;
+      reg.add(tool);
+    }
+  }
+  return reg;
 }
 
 module.exports = {
@@ -51,6 +73,8 @@ module.exports = {
   bashList,
   memorySearch,
   memoryStore,
+  buildSkillTools,
   ALL_TOOLS,
   buildDefaultRegistry,
+  buildRegistryWithSkills,
 };

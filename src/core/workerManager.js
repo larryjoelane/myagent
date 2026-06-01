@@ -124,7 +124,18 @@ class WorkerManager {
     }
     return this._spawn({
       kind: 'ollama-cloud',
-      name: name || this._nextOllamaCloudName(model),
+      name: name || this._nextProviderName('Ollama', model),
+      driverOpts: { cwd, model, maxIterations, envContext, parallelDispatch },
+    });
+  }
+
+  async spawnOpenRouter({ name, cwd, model, maxIterations, envContext, parallelDispatch } = {}) {
+    if (typeof this.factories.openrouter !== 'function') {
+      throw new Error('openrouter agent type is not available (no factories.openrouter)');
+    }
+    return this._spawn({
+      kind: 'openrouter',
+      name: name || this._nextProviderName('OpenRouter', model),
       driverOpts: { cwd, model, maxIterations, envContext, parallelDispatch },
     });
   }
@@ -341,13 +352,17 @@ class WorkerManager {
     return `Semantic ${Date.now()}`;
   }
 
-  _nextOllamaCloudName(model) {
-    // Use the short model tag (text after last `/` or `:`) as a name
-    // hint when the caller picked a model — makes it easy to tell
-    // "Ollama gpt-oss" apart from "Ollama granite-docling" in the list.
+  // Unique worker name from a provider prefix + optional model hint. Use
+  // the short model tag (text after last `/` or `:`) as a hint when the
+  // caller picked a model — makes it easy to tell "Ollama gpt-oss" apart
+  // from "Ollama granite-docling", or "OpenRouter sonnet" from another,
+  // in the worker list. Shared by spawnOllamaCloud and spawnOpenRouter.
+  // (Distinct from _nextWorkerName(), the no-arg "Worker N" generator for
+  // the default claude worker.)
+  _nextProviderName(prefix, model) {
     const used = new Set([...this.workers.values()].map((w) => w.name));
     const hint = shortModelHint(model);
-    const base = hint ? `Ollama ${hint}` : 'Ollama';
+    const base = hint ? `${prefix} ${hint}` : prefix;
     for (let i = 1; i < 1000; i++) {
       const candidate = i === 1 && hint ? base : `${base} ${i}`;
       if (!used.has(candidate)) return candidate;

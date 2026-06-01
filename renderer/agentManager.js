@@ -438,6 +438,12 @@ function init() {
         ev.preventDefault();
         const shell = shellEl();
         show(!shell?.open);
+        return;
+      }
+      if (ev.ctrlKey && ev.shiftKey && ev.key.toLowerCase() === 'd') {
+        ev.preventDefault();
+        const shell = /** @type {any} */ (shellEl());
+        if (shell) shell.debugOpen = !shell.debugOpen;
       }
     });
 

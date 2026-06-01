@@ -36,12 +36,14 @@ export class AgentManagerShell extends LitElement {
   static properties = {
     open: { type: Boolean, reflect: false },
     settingsOpen: { type: Boolean, reflect: false },
+    debugOpen: { type: Boolean, reflect: false },
   };
 
   constructor() {
     super();
     this.open = true;
     this.settingsOpen = false;
+    this.debugOpen = false;
   }
 
   connectedCallback() {
@@ -67,6 +69,7 @@ export class AgentManagerShell extends LitElement {
   updated(changed) {
     if (changed.has('open')) this._applyOpen();
     if (changed.has('settingsOpen')) this._applySettingsOpen();
+    if (changed.has('debugOpen')) this._applyDebugOpen();
   }
 
   _ensureHeader() {
@@ -88,6 +91,18 @@ export class AgentManagerShell extends LitElement {
     settingsBtn.textContent = '⚙';
     settingsBtn.addEventListener('click', () => this._toggleSettings());
     header.appendChild(settingsBtn);
+
+    const debugBtn = document.createElement('button');
+    debugBtn.id = 'am-debug-toggle';
+    debugBtn.className = 'agent-manager__icon-btn';
+    debugBtn.type = 'button';
+    debugBtn.title = 'Debug (live event stream — Ctrl+Shift+D)';
+    debugBtn.setAttribute('aria-label', 'Debug');
+    // Bug glyph. Plain ASCII fallback if the font lacks the codepoint
+    // is the empty string, which is acceptable — the title still works.
+    debugBtn.textContent = '🐞';
+    debugBtn.addEventListener('click', () => this._toggleDebug());
+    header.appendChild(debugBtn);
 
     const closeBtn = document.createElement('button');
     closeBtn.id = 'agent-manager-close';
@@ -113,6 +128,14 @@ export class AgentManagerShell extends LitElement {
     }));
   }
 
+  _toggleDebug(force) {
+    this.debugOpen = (force == null) ? !this.debugOpen : !!force;
+    this.dispatchEvent(new CustomEvent('debug-toggled', {
+      bubbles: true, composed: true,
+      detail: { open: this.debugOpen },
+    }));
+  }
+
   _applyOpen() {
     this.classList.toggle('agent-manager--hidden', !this.open);
   }
@@ -122,6 +145,12 @@ export class AgentManagerShell extends LitElement {
     if (!drawer) return;
     /** @type {any} */ (drawer).open = this.settingsOpen;
     drawer.classList.toggle('agent-manager__settings--hidden', !this.settingsOpen);
+  }
+
+  _applyDebugOpen() {
+    const drawer = this.querySelector('debug-drawer');
+    if (!drawer) return;
+    /** @type {any} */ (drawer).open = this.debugOpen;
   }
 
   // render() is a no-op — children come from light-DOM authoring in
