@@ -111,6 +111,33 @@ function run(ctx) {
     eq(result.messages[2].tool_call_id, undefined);
   });
 
+  ctx.test("toolArgsFormat: 'string' serializes arguments as a JSON string (OpenAI/OpenRouter)", async () => {
+    // OpenRouter forwards to the strict OpenAI schema, which 400s on an
+    // object: "Invalid type for 'messages[N].tool_calls[0].function.
+    // arguments': expected a string, but got an object instead." The
+    // 'string' format must JSON-encode the args while preserving id/type.
+    const runner = fakeRunner([
+      [
+        { type: 'tool_call', call: { id: 'c1', name: 'echo', arguments: { message: 'pong' } } },
+        { type: 'done', totals: {} },
+      ],
+      [
+        { type: 'content', text: 'done' },
+        { type: 'done', totals: {} },
+      ],
+    ]);
+    const registry = new ToolRegistry();
+    registry.add(require('../src/core/llm/tools/echo'));
+    const loop = new ToolUseLoop({ runner, registry, toolArgsFormat: 'string' });
+    const result = await loop.run([{ role: 'user', content: 'echo pong' }]);
+    const args = result.messages[1].tool_calls[0].function.arguments;
+    eq(typeof args, 'string');
+    deepEq(JSON.parse(args), { message: 'pong' });
+    // id/type still round-trip in string mode.
+    eq(result.messages[1].tool_calls[0].id, 'c1');
+    eq(result.messages[1].tool_calls[0].type, 'function');
+  });
+
   ctx.test('tool that throws is captured by registry, fed back to model', async () => {
     const runner = fakeRunner([
       [

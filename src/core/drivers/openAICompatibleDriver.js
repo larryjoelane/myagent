@@ -48,6 +48,8 @@ const OLLAMA_PROVIDER = {
   modelEnv: 'OLLAMA_MODEL',
   defaultHost: 'https://ollama.com',
   defaultModel: 'devstral-small-2:24b-cloud',
+  // Ollama's /api/chat wants tool-call `arguments` as a structured object.
+  toolArgsFormat: 'object',
 };
 
 const OPENROUTER_PROVIDER = {
@@ -57,6 +59,11 @@ const OPENROUTER_PROVIDER = {
   modelEnv: 'OPENROUTER_MODEL',
   defaultHost: 'https://openrouter.ai/api/v1',
   defaultModel: 'mistralai/devstral-small',
+  // OpenRouter forwards to the strict OpenAI schema, which requires
+  // tool-call `arguments` to be a JSON-encoded STRING. Sending an object
+  // gets a 400: "Invalid type for 'messages[N].tool_calls[0].function.
+  // arguments': expected a string, but got an object instead."
+  toolArgsFormat: 'string',
 };
 
 // OpenAI-compatible chat driver. Provider-neutral: the HTTP/streaming
@@ -89,6 +96,10 @@ class OpenAICompatibleDriver {
     const pc = providerConfig || OLLAMA_PROVIDER;
     this.provider = pc.provider;
     this.apiKeyEnv = pc.apiKeyEnv;
+    // How tool-call `arguments` are serialized back into assistant history:
+    // 'object' (Ollama) or 'string' (OpenAI/OpenRouter). Defaults to the
+    // Ollama shape so the back-compat OllamaCloudDriver alias is unchanged.
+    this.toolArgsFormat = pc.toolArgsFormat || 'object';
     if (typeof runnerFactory !== 'function' && typeof presetFactory !== 'function') {
       throw new Error('OpenAICompatibleDriver: runnerFactory or presetFactory is required');
     }
@@ -404,6 +415,7 @@ class OpenAICompatibleDriver {
       ctx,
       maxIterations: this.maxIterations,
       parallelDispatch: this.parallelDispatch,
+      toolArgsFormat: this.toolArgsFormat,
       onEvent: (ev) => {
         if (this.closed) return;
         if (ev.type === 'content') {

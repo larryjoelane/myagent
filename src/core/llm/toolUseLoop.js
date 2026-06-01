@@ -39,6 +39,7 @@ class ToolUseLoop {
     onEvent,
     maxIterations = DEFAULT_MAX_ITERATIONS,
     parallelDispatch = true,
+    toolArgsFormat = 'object',
   } = {}) {
     if (!runner || typeof runner.stream !== 'function') {
       throw new Error('ToolUseLoop: runner with .stream() is required');
@@ -57,6 +58,11 @@ class ToolUseLoop {
     // in original-call order after all results settle. Disable when a
     // backend has tools that mutate shared state in surprising ways.
     this.parallelDispatch = parallelDispatch !== false;
+    // Serialization shape for tool-call `arguments` in assistant history:
+    //   'object' — Ollama's /api/chat requires a structured object.
+    //   'string' — OpenAI/OpenRouter require a JSON-encoded string and 400
+    //              on an object.
+    this.toolArgsFormat = toolArgsFormat === 'string' ? 'string' : 'object';
   }
 
   // Run the loop with a starting message list. Returns the final
@@ -120,7 +126,7 @@ class ToolUseLoop {
       out.push({
         role: 'assistant',
         content: turnContent || '',
-        tool_calls: turnCalls.map(toAssistantToolCall),
+        tool_calls: turnCalls.map((c) => toAssistantToolCall(c, this.toolArgsFormat)),
       });
 
       // Dispatch calls. In parallel mode all calls fire concurrently
@@ -188,11 +194,14 @@ function toolMessage(call, result) {
   return msg;
 }
 
-function toAssistantToolCall(call) {
-  // Round-trip the call back into a shape both Ollama and OpenAI accept.
+function toAssistantToolCall(call, argsFormat = 'object') {
+  // Round-trip the call back into a shape the provider accepts.
   //   - `function: { name, arguments }` envelope (both accept).
-  //   - `arguments` as a structured object (Ollama requires this; OpenAI
-  //     tolerates both object and string).
+  //   - `arguments` serialization depends on the provider:
+  //       'object' — Ollama's /api/chat requires a structured object.
+  //       'string' — OpenAI/OpenRouter require a JSON-encoded string and
+  //                  reject an object with a 400 ("expected a string, but
+  //                  got an object instead").
   //   - Preserve `id` and `type: 'function'` WHEN the model emitted an
   //     id. Both fields are required by Ollama Cloud for any model that
   //     issues correlation ids (e.g. ministral-3:3b-cloud, which sends
@@ -206,7 +215,8 @@ function toAssistantToolCall(call) {
     try { args = JSON.parse(args); } catch { args = {}; }
   }
   if (!args || typeof args !== 'object') args = {};
-  const envelope = { function: { name: call.name, arguments: args } };
+  const serialized = argsFormat === 'string' ? JSON.stringify(args) : args;
+  const envelope = { function: { name: call.name, arguments: serialized } };
   if (call.id) {
     envelope.id = call.id;
     envelope.type = 'function';
