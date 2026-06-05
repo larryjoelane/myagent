@@ -102,6 +102,12 @@ async function* parseStream(body) {
   // OpenAI streams tool_calls as deltas keyed by index; we assemble
   // them and emit `tool_call` events at done-of-call boundaries.
   const toolBuf = new Map();
+  // SSE token usage arrives in a SEPARATE final chunk (empty choices,
+  // `usage` populated) AFTER the finish_reason chunk — and only when the
+  // request asked for stream_options.include_usage. So we can't `return`
+  // on finish_reason; we stash the running totals and keep reading until
+  // [DONE]/stream-end, emitting `done` once with the best totals seen.
+  let sseTotals = {};
 
   while (true) {
     const { value, done } = await reader.read();
@@ -118,7 +124,7 @@ async function* parseStream(body) {
         line = line.slice(5).trim();
         if (line === '[DONE]') {
           for (const ev of flushToolBuf(toolBuf)) yield ev;
-          yield { type: 'done', totals: {} };
+          yield { type: 'done', totals: sseTotals };
           return;
         }
       }
@@ -144,6 +150,12 @@ async function* parseStream(body) {
         continue;
       }
 
+      // OpenAI SSE: any chunk may carry `usage`, including the trailing
+      // usage-only chunk whose `choices` is empty. Capture it whenever
+      // present so it survives to the [DONE]/stream-end emit.
+      const chunkTotals = extractTotals(json);
+      if (Object.keys(chunkTotals).length) sseTotals = chunkTotals;
+
       // OpenAI SSE shape: choices[0].delta
       const choice = json.choices && json.choices[0];
       if (choice) {
@@ -153,16 +165,19 @@ async function* parseStream(body) {
         if (Array.isArray(delta.tool_calls)) {
           for (const part of delta.tool_calls) accumulateToolCall(toolBuf, part);
         }
+        // Flush assembled tool calls at finish_reason, but DON'T return —
+        // the usage-only chunk (when include_usage was requested) arrives
+        // after this. The terminal `done` is emitted at [DONE]/stream-end.
         if (choice.finish_reason) {
           for (const ev of flushToolBuf(toolBuf)) yield ev;
-          yield { type: 'done', totals: extractTotals(json) };
-          return;
         }
       }
     }
   }
+  // Stream ended without an explicit [DONE] (some backends just close the
+  // body). Emit whatever totals we accumulated rather than dropping them.
   for (const ev of flushToolBuf(toolBuf)) yield ev;
-  yield { type: 'done', totals: {} };
+  yield { type: 'done', totals: sseTotals };
 }
 
 function normalizeToolCall(call) {

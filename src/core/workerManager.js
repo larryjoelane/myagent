@@ -40,9 +40,9 @@ class WorkerManager {
     if (!factories || typeof factories.claude !== 'function' || typeof factories.shell !== 'function') {
       throw new Error('WorkerManager: factories.claude and factories.shell are required');
     }
-    // Other factories (semantic, future agent types) are optional —
-    // spawnX() methods check before calling and return a clean error
-    // if the kind isn't registered.
+    // Other factories (ollama-cloud, openrouter, future agent types) are
+    // optional — spawnX() methods check before calling and return a clean
+    // error if the kind isn't registered.
     if (typeof onEvent !== 'function') throw new Error('WorkerManager: onEvent is required');
     this.factories = factories;
     this.onEvent = onEvent;
@@ -50,8 +50,8 @@ class WorkerManager {
     this.memoryMirrorDefault = memoryMirrorDefault !== false;
     // Optional reference to the editor's global scope (a Scope
     // instance). When set, spawn-time per-worker scopes seed
-    // themselves with [cwd, ...editorScope.list()] so semantic +
-    // future tool-use drivers can read the files the user has open.
+    // themselves with [cwd, ...editorScope.list()] so tool-use
+    // drivers can read the files the user has open.
     // Held as a reference, not a snapshot — but per-worker scopes
     // ARE snapshots (we don't propagate later editor mutations into
     // already-running workers; the user manages each worker's scope
@@ -107,17 +107,6 @@ class WorkerManager {
     });
   }
 
-  async spawnSemantic({ name, cwd } = {}) {
-    if (typeof this.factories.semantic !== 'function') {
-      throw new Error('semantic agent type is not available (no factories.semantic)');
-    }
-    return this._spawn({
-      kind: 'semantic',
-      name: name || this._nextSemanticName(),
-      driverOpts: { cwd },
-    });
-  }
-
   async spawnOllamaCloud({ name, cwd, model, maxIterations, envContext, parallelDispatch } = {}) {
     if (typeof this.factories['ollama-cloud'] !== 'function') {
       throw new Error('ollama-cloud agent type is not available (no factories[\'ollama-cloud\'])');
@@ -166,17 +155,12 @@ class WorkerManager {
     // response path on it. If it fails or returns empty, the send
     // proceeds with the original text unchanged.
     //
-    // Two cases skip auto-context entirely:
-    //   - Slash commands (`/cmd ...`): explicit user intent. Prepending
-    //     a "relevant past context" preamble would disqualify the
-    //     slash parser (which requires `^/`) AND pollute the input the
-    //     tool sees. The user typed a command; honor it verbatim.
-    //   - Semantic workers: they route by literal cosine similarity
-    //     between the user's prompt and tool descriptions. A preamble
-    //     full of prior chat noise wrecks the routing. Auto-context is
-    //     designed for Claude-style generative workers.
+    // Slash commands (`/cmd ...`) skip auto-context: explicit user intent.
+    // Prepending a "relevant past context" preamble would disqualify the
+    // slash parser (which requires `^/`) AND pollute the input the tool
+    // sees. The user typed a command; honor it verbatim.
     const isSlash = /^\s*\/[a-z]/i.test(text);
-    const skipAutoContext = isSlash || target.kind === 'semantic';
+    const skipAutoContext = isSlash;
     if (this.contextProvider && !skipAutoContext) {
       this._sendWithContext(target, text);
     } else {
@@ -295,9 +279,9 @@ class WorkerManager {
     return { ok: true, id, name: trimmed };
   }
 
-  // Surface a worker's tool list when the driver has one (currently
-  // only SemanticDriver). Returns null for kinds that don't expose
-  // tools, so the renderer can decide whether to show autocomplete.
+  // Surface a worker's tool list when the driver exposes a `toolkit`
+  // with a list(). Returns null for drivers that don't, so the renderer
+  // can decide whether to show slash autocomplete.
   // Each entry: { id, name, description, usage? }
   listTools(id) {
     const w = this.workers.get(id);
@@ -341,15 +325,6 @@ class WorkerManager {
       if (!used.has(candidate)) return candidate;
     }
     return `Worker ${Date.now()}`;
-  }
-
-  _nextSemanticName() {
-    const used = new Set([...this.workers.values()].map((w) => w.name));
-    for (let i = 1; i < 1000; i++) {
-      const candidate = `Semantic ${i}`;
-      if (!used.has(candidate)) return candidate;
-    }
-    return `Semantic ${Date.now()}`;
   }
 
   // Unique worker name from a provider prefix + optional model hint. Use

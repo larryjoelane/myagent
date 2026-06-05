@@ -18,7 +18,7 @@
  * @typedef {object} Worker
  * @property {string} id
  * @property {string} name
- * @property {string} kind         // 'claude' | 'shell' | 'semantic'
+ * @property {string} kind         // 'claude' | 'shell' | 'ollama-cloud' | 'openrouter'
  * @property {string=} cwd
  * @property {boolean | null=} memoryMirror
  */

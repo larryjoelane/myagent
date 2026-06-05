@@ -14,7 +14,6 @@ import './agentManager.js';
 // @huggingface/transformers (WebGPU-capable). Spawns lazily on
 // first request from main. See renderer/model-bridge.js.
 import './model-bridge.js';
-import './components/app-root.js';
 import './components/empty-state.js';
 import './components/worker-chips.js';
 import './components/settings-drawer.js';

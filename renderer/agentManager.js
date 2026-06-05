@@ -420,6 +420,30 @@ function init() {
       // the prompt. Find the most-recent matching user bubble for
       // this agent and attach a small clickable badge below it.
       'chat:context-used': (msg) => attachContextBadge(msg),
+      // A pre-LLM hook refused the send. Show a distinct guardrail notice
+      // (not a generic error — nothing crashed) explaining why no answer
+      // came back. The accompanying chat:turn-end (ok:false) also fires;
+      // clear the thinking indicator here too so it doesn't hang if the
+      // turn-end is missed across IPC ordering.
+      'chat:hook-blocked': (msg) => {
+        const who = msg.blockedBy ? ` (${msg.blockedBy})` : '';
+        const reason = msg.reason || 'request blocked before reaching the model';
+        /** @type {any} */ (chatEl()).pushHookBlocked(`Blocked by a guardrail${who}: ${reason}`);
+        if (msg.agentId) {
+          state.thinkingWorkers.delete(msg.agentId);
+          renderWorkers();
+        }
+      },
+      // A pre-tool hook refused ONE tool call. Unlike hook-blocked this does
+      // NOT end the turn — the model gets a refusal back and keeps going — so
+      // it renders as the same amber guardrail notice but the thinking
+      // indicator is left intact (the turn is still live).
+      'chat:tool-blocked': (msg) => {
+        const who = msg.blockedBy ? ` (${msg.blockedBy})` : '';
+        const tool = msg.call && msg.call.name ? `\`${msg.call.name}\` ` : '';
+        const reason = msg.reason || 'tool call blocked by a guardrail';
+        /** @type {any} */ (chatEl()).pushHookBlocked(`Tool ${tool}blocked${who}: ${reason}`);
+      },
     };
     for (const [name, fn] of Object.entries(handlers)) {
       transport.chat.on(name, fn);

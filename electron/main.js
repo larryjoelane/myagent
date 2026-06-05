@@ -1,8 +1,8 @@
 // Electron main process. This file owns:
 //   - shared state (workerManager, indexHost, agentRegistry, browserManager,
 //     appSettings, sessionLog, embedder bridge, runner cache)
-//   - lazy getters for heavy dependencies (embedder bridge, semantic factory,
-//     ollama runner) so app startup stays fast
+//   - lazy getters for heavy dependencies (embedder bridge, ollama runner)
+//     so app startup stays fast
 //   - the auto-context provider that prepends "Relevant past context" to
 //     prompts before they reach a worker
 //   - lifecycle (createWindow, application menu, app.whenReady / before-quit)
@@ -41,10 +41,10 @@ const {
   buildRegistryWithSkills,
 } = require('../src/core/llm');
 const { loadSkills } = require('../src/core/skills');
+const { createHookProvider } = require('../src/core/hooks');
 const { AppSettings } = require('../src/core/appSettings');
 const { BrowserManager } = require('../src/core/browserManager');
 const { TokenLedger, normalizeUsage } = require('../src/core/tokenLedger');
-const { buildSemanticDriverFactory } = require('../src/core/semantic');
 const { createEmbedderBridge } = require('../src/core/embedderBridge');
 
 const browserHandlers = require('./ipc/browser-handlers');
@@ -241,8 +241,8 @@ async function memoryContextProvider({ text }) {
 
 // File-context provider: prepend the editor's active tab as a "[Active
 // editor]" preamble for chat workers. Per the Phase 5 plan, this fires
-// for claude + ollama-cloud only — semantic, shell, and slash-command
-// prompts already bypass auto-context wholesale (see WorkerManager).
+// for claude + ollama-cloud only — shell and slash-command prompts
+// already bypass auto-context wholesale (see WorkerManager).
 //
 // Hard cap on file size so the preamble doesn't dominate the context
 // window. If the active buffer is larger than the cap we send a head
@@ -309,9 +309,9 @@ async function autoContextProvider(opts) {
 // ---- Lazy heavy dependencies -----------------------------------------------
 
 // Embedder bridge — talks to the model Worker hosted by the chat
-// renderer (so it can target WebGPU; main is Node and can't). The
-// semantic factory closes over this bridge so all semantic workers
-// share one model load (and one Worker).
+// renderer (so it can target WebGPU; main is Node and can't). Used by the
+// model-settings IPC handlers (device status / cache / warmup) and any
+// embedding-backed feature; built lazily on first use.
 let embedderBridge = null;
 function getEmbedderBridge() {
   if (embedderBridge) return embedderBridge;
@@ -319,42 +319,14 @@ function getEmbedderBridge() {
     getWebContents: () => (mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null),
   });
   // Begin waiting for the renderer's `model:ready` IPC. start() is
-  // resolved by that signal; the WebGPU probe completes before the
-  // user clicks "+ Spawn Semantic worker" so the device dropdown
-  // reflects truth.
+  // resolved by that signal; the WebGPU probe completes so the model
+  // settings device dropdown reflects truth.
   embedderBridge.start().catch((err) => {
-    // Non-fatal: a failed bridge means semantic spawn will surface
-    // the error when it tries to embed. Log so we at least see it.
+    // Non-fatal: log so we at least see a bridge start failure.
     // eslint-disable-next-line no-console
     console.error('[embedder bridge] start failed:', err);
   });
   return embedderBridge;
-}
-
-// Semantic driver factory — built lazily so the WebGPU window isn't
-// spawned until the user actually wants a semantic worker. The
-// factory closes over the bridge so all semantic spawns share one
-// model load.
-let semanticFactory = null;
-function getSemanticFactory() {
-  if (semanticFactory) return semanticFactory;
-  const bridge = getEmbedderBridge();
-  semanticFactory = buildSemanticDriverFactory({
-    // The semantic worker only does routing now — pure embed-based
-    // tool selection. No generator, no per-spawn device. The model
-    // service (renderer/workers/model-worker.js) picks its own device.
-    embedder: { embed: (text) => bridge.embed(text) },
-    // Hand the indexHost's search through so the memory-search tool
-    // talks to the same SQLite index every other piece of the app uses.
-    search: (opts) => indexHost.search(opts),
-    // memory-store tool writes to the same index (mirrors the existing
-    // /memory/store HTTP route + memory:store IPC handler).
-    store: (body) => indexHost.storeMemory(body),
-    // Sandbox root for grep / read-file / git-log. Restricting to
-    // PROJECT_ROOT means the agent can't pivot to /etc or another repo.
-    root: PROJECT_ROOT,
-  });
-  return semanticFactory;
 }
 
 // ---- Editor scope ----------------------------------------------------------
@@ -392,6 +364,26 @@ function buildOpenAICompatibleWorker(opts, cfg) {
     // eslint-disable-next-line no-console
     console.error(`[${cfg.label}] loaded ${skills.length} skill(s): ${skills.map((s) => s.name).join(', ')}`);
   }
+  // Hooks: guardrails for two phases — pre-LLM-send and pre-tool-dispatch.
+  // The provider ALWAYS includes the built-in guardrails (e.g. no-secrets)
+  // regardless of cwd, then adds any DISCOVERED hooks (.myagent/hooks,
+  // .claude/hooks, ~/.claude/hooks). So every worker is gated even when the
+  // open directory has no hook folder — the bug this fixes was a worker in
+  // such a directory writing a secret with nothing to stop it. Resolution is
+  // also cwd-AWARE: discovered hooks re-resolve against the worker's CURRENT
+  // cwd before each gate (memoized), so a mid-run directory switch picks up
+  // the new tree's hooks. A discovered hook overrides a built-in of the same
+  // name (project beats built-in).
+  const hooksProvider = createHookProvider({ fallbackCwd: workerCwd });
+  // Log the spawn-cwd hook set once for visibility (the provider memoizes
+  // this scan, so it's not redundant work).
+  if (!process.env.MYAGENT_QUIET) {
+    const spawnHooks = hooksProvider(workerCwd);
+    if (spawnHooks.length > 0) {
+      // eslint-disable-next-line no-console
+      console.error(`[${cfg.label}] loaded ${spawnHooks.length} hook(s): ${spawnHooks.map((h) => h.name).join(', ')}`);
+    }
+  }
   return new OpenAICompatibleDriver({
     ...opts,
     providerConfig: cfg.providerConfig, // undefined => ollama-cloud default
@@ -400,6 +392,7 @@ function buildOpenAICompatibleWorker(opts, cfg) {
     toolRegistry: buildRegistryWithSkills({ skills }),
     tools: true,
     cwd: workerCwd,
+    hooksProvider,
     // Skill metadata for slash invocation (/skill <name>, /<name>): the
     // driver needs each skill's dir for the scope guard + bash cwd pin,
     // which the registry doesn't carry. skillScopeGuard defaults on in
@@ -411,7 +404,7 @@ function buildOpenAICompatibleWorker(opts, cfg) {
     // date). Per-spawn opts.envContext overrides; `false` disables it.
     envContext: opts.envContext === undefined ? true : opts.envContext,
     // Wire the session index so memory_search / memory_store work when
-    // the model invokes them (same backend the semantic worker uses).
+    // the model invokes them (same backend the memory features use).
     memory: {
       search: (opts2) => indexHost.search(opts2),
       store: (body) => indexHost.storeMemory(body),
@@ -423,9 +416,6 @@ const workerManager = new WorkerManager({
   factories: {
     claude: (opts) => new ClaudeDriver({ ...opts, cwd: opts.cwd || PROJECT_ROOT }),
     shell:  (opts) => new ShellDriver({ ...opts, cwd: opts.cwd || PROJECT_ROOT }),
-    // Trampoline through getSemanticFactory so model load is deferred
-    // until first spawn (saves ~3s + ~25MB on app startup).
-    semantic: (opts) => getSemanticFactory()({ ...opts, cwd: opts.cwd || PROJECT_ROOT }),
     // Hosted Ollama Cloud. Reads OLLAMA_API_KEY / OLLAMA_MODEL /
     // OLLAMA_HOST from process.env (loaded via dotenv at the top of
     // this file). The driver itself surfaces a clean error if the key

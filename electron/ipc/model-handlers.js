@@ -16,9 +16,9 @@
 function register({ ipcMain, getEmbedderBridge }) {
   // Embedder status from the bridge (real WebGPU detection — the
   // hidden renderer probes navigator.gpu and reports back). Used by
-  // the renderer to populate the Device dropdown on the semantic-
-  // worker spawn UI honestly — if WebGPU isn't available we say so
-  // rather than silently falling back.
+  // the renderer to populate the Device dropdown in the model settings
+  // UI honestly — if WebGPU isn't available we say so rather than
+  // silently falling back.
   ipcMain.handle('models:embedder-status', async () => {
     try {
       const bridge = getEmbedderBridge();

@@ -14,7 +14,7 @@
 // visible at runtime. The forwarder-coverage test catches it.
 
 // Worker channel events. Carried by every chat-driven driver
-// (claude, shell, semantic, ollama-cloud) and the manager itself.
+// (claude, shell, ollama-cloud, openrouter) and the manager itself.
 // The renderer subscribes via transport.chat.on(...).
 const CHAT_EVENTS = [
   'chat:user',
@@ -27,6 +27,8 @@ const CHAT_EVENTS = [
   'chat:error',
   'chat:driver-exit',
   'chat:env-context',
+  'chat:hook-blocked',
+  'chat:tool-blocked',
 ];
 
 // Legacy agent-handler events (bin/agent.js CLI + diagnostic test

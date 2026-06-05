@@ -16,8 +16,11 @@ project-output/
 # on-demand UI screenshots — regenerate with `npm run shots`
 docs/screenshots/
 
-# per-launch session logs
-.myagent/
+# per-launch session logs + generated artifacts. Track committed,
+# user-authored config (hooks, skills); ignore the rest of .myagent/.
+.myagent/*
+!.myagent/hooks/
+!.myagent/skills/
 
 # logs
 logs/

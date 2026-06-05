@@ -5,10 +5,8 @@
 //   1. fs IPC handlers (electron/ipc/fs-handlers.js) — the editor's
 //      file-tree, viewer, and save flow. The IPC handlers consult a
 //      single global "editor scope" object.
-//   2. ToolKit (src/core/semantic/toolkit.js) — semantic worker tools
-//      consult their per-worker scope before any fs.* call. Future
-//      OpenAI-format tool-use drivers (Ollama Cloud, Azure OpenAI, etc.)
-//      compose the same toolkit and inherit the same enforcement.
+//   2. OpenAI-format tool-use drivers (Ollama Cloud, OpenRouter) — their
+//      fs-touching tools consult the per-worker scope before any fs.* call.
 //
 // Per ADR-0008:
 //   - The allow-list is a *union* of roots: spawn-time cwd, editor

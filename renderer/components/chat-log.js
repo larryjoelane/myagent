@@ -2,28 +2,28 @@
 // <chat-log> — the scrollable chat surface.
 //
 // Hosts every bubble that appears in the chat: user, system, assistant
-// (with streaming text + tool cards + semantic cards), plus the @memory
-// bubble (which is appended by agentManager.js as a sibling) and
-// auto-context badges.
+// (with streaming text + tool cards), plus the @memory bubble (which is
+// appended by agentManager.js as a sibling) and auto-context badges.
 //
 // Why imperative API rather than declarative props: chunks stream in
 // over IPC events, not as state changes. Each chunk mutates the OPEN
 // assistant bubble for an agent (text appended, tool card appended,
-// tool result filled in, semantic-explain region grown by a token).
-// A reactive declarative model would force us to model the entire
-// stream as state and re-render — for thousands of tokens, that's
-// quadratic in DOM work. Imperative DOM mutation is the right shape.
+// tool result filled in). A reactive declarative model would force us
+// to model the entire stream as state and re-render — for thousands of
+// tokens, that's quadratic in DOM work. Imperative DOM mutation is the
+// right shape.
 //
 // The element extends HTMLElement (not LitElement) and renders into
 // the LIGHT DOM. Existing CSS in renderer/style.css and Playwright
-// e2e selectors target classes like .bubble--user, .tool-card,
-// .semantic-card directly — moving any of that into shadow DOM would
-// break both. The host carries id="am-chat" so legacy queries via
+// e2e selectors target classes like .bubble--user and .tool-card
+// directly — moving any of that into shadow DOM would break both. The
+// host carries id="am-chat" so legacy queries via
 // document.getElementById('am-chat') keep working too.
 //
 // Public API used by agentManager.js IPC handlers:
 //   pushUser(text, agentId?)
 //   pushSystem(text)
+//   pushHookBlocked(text)   // chat:hook-blocked (pre-LLM guardrail)
 //   chunk(msg)              // routes by msg.kind
 //   closeBubble(agentId)    // chat:turn-end
 //   attachContextBadge(msg) // chat:context-used
@@ -33,9 +33,6 @@
 // works because the component IS the chat container.
 
 import { store } from '../state/store.js';
-
-const SEMANTIC_COLLAPSE_LINES = 6;
-const SEMANTIC_COLLAPSE_THRESHOLD = 12;
 
 export class ChatLog extends HTMLElement {
   constructor() {
@@ -94,6 +91,17 @@ export class ChatLog extends HTMLElement {
     return wrap;
   }
 
+  // A pre-LLM hook blocked the send. Distinct from a generic system
+  // notice (and from an error): nothing went wrong, a guardrail
+  // intentionally stopped the request. Rendered as a centered shield
+  // notice so the user understands WHY no answer came back.
+  pushHookBlocked(text) {
+    const wrap = this._makeBubble('hook-blocked');
+    wrap.textContent = `\u{1F6E1} ${text || 'Blocked by a pre-LLM hook'}`;
+    this._append(wrap);
+    return wrap;
+  }
+
   // Used only when init wants to seed an empty assistant placeholder
   // optimistically (the existing send() flow does this).
   pushAssistant(agentId, text) {
@@ -122,11 +130,9 @@ export class ChatLog extends HTMLElement {
 
   // chat:chunk router. Handles all msg.kind values: text-stream
   // (no kind / 'text' / 'shell-output' / 'thinking'), 'tool-use',
-  // 'tool-result', and the 'semantic-*' family.
+  // and 'tool-result'.
   chunk(msg) {
     const kind = msg && msg.kind;
-    const isSemantic = typeof kind === 'string' && kind.startsWith('semantic-');
-    if (isSemantic) return this._renderSemantic(msg);
     if (kind === 'tool-use') return this._renderToolUseCard(msg);
     if (kind === 'tool-result') return this._renderToolResult(msg);
     // Plain text streams: no kind, 'text', 'shell-output', or 'thinking'.
@@ -362,112 +368,6 @@ export class ChatLog extends HTMLElement {
     }
   }
 
-  _renderSemantic(msg) {
-    if (msg.kind === 'semantic-explain') return this._appendToExplain(msg);
-    if (msg.kind === 'semantic-explain-error') return this._appendToExplain({ ...msg, isError: true });
-
-    const entry = this._ensureOpenAssistantBubble(msg.agentId);
-    const raw = String(msg.text || '');
-    // Strip the `[Tool Name]\n` annotation the driver prepends — we
-    // render the tool name in the card header instead. Keeps the body
-    // pristine for copying.
-    const headerMatch = raw.match(/^\[([^\]\n]+)\]\n/);
-    const headerName = headerMatch ? headerMatch[1] : labelForKind(msg.kind);
-    const body = headerMatch ? raw.slice(headerMatch[0].length) : raw;
-
-    const card = document.createElement('div');
-    card.className = 'semantic-card';
-    card.dataset.kind = msg.kind || '';
-    if (msg.toolId) card.dataset.toolId = msg.toolId;
-
-    const header = document.createElement('div');
-    header.className = 'semantic-card__header';
-    const name = document.createElement('span');
-    name.className = 'semantic-card__name';
-    name.textContent = headerName;
-    header.appendChild(name);
-
-    const copyBtn = document.createElement('button');
-    copyBtn.className = 'semantic-card__copy';
-    copyBtn.type = 'button';
-    copyBtn.title = 'Copy result text';
-    copyBtn.textContent = 'Copy';
-    copyBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      copyTextToClipboard(body, copyBtn);
-    });
-    header.appendChild(copyBtn);
-    card.appendChild(header);
-
-    const bodyEl = document.createElement('pre');
-    bodyEl.className = 'semantic-card__body';
-    bodyEl.textContent = body;
-    card.appendChild(bodyEl);
-
-    const lineCount = body.split('\n').length;
-    if (lineCount > SEMANTIC_COLLAPSE_THRESHOLD) {
-      card.classList.add('semantic-card--collapsible');
-      card.classList.add('semantic-card--collapsed');
-      bodyEl.style.setProperty('--semantic-collapse-lines', String(SEMANTIC_COLLAPSE_LINES));
-      const toggle = document.createElement('button');
-      toggle.className = 'semantic-card__toggle';
-      toggle.type = 'button';
-      toggle.textContent = `Show all ${lineCount} lines`;
-      toggle.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const nowExpanded = card.classList.toggle('semantic-card--collapsed') === false;
-        toggle.textContent = nowExpanded ? 'Collapse' : `Show all ${lineCount} lines`;
-      });
-      card.appendChild(toggle);
-      header.addEventListener('click', (e) => {
-        if (e.target === copyBtn) return;
-        const nowExpanded = card.classList.toggle('semantic-card--collapsed') === false;
-        toggle.textContent = nowExpanded ? 'Collapse' : `Show all ${lineCount} lines`;
-      });
-    }
-
-    entry.bodyEl.appendChild(card);
-    entry.lastTextNode = null;
-    this.scrollTop = this.scrollHeight;
-  }
-
-  // Stream an explanation token into the latest semantic-card for
-  // this agent. Creates the explain region on the first token; later
-  // tokens append (uses cumulativeText when present so missing tokens
-  // don't drift).
-  _appendToExplain(msg) {
-    const bubble = this._openBubbles.get(msg.agentId);
-    if (!bubble) return;
-    const cards = bubble.bodyEl.querySelectorAll('.semantic-card');
-    const card = cards[cards.length - 1];
-    if (!card) return;
-    let region = card.querySelector('.semantic-card__explain');
-    if (!region) {
-      region = document.createElement('div');
-      region.className = 'semantic-card__explain';
-      const label = document.createElement('div');
-      label.className = 'semantic-card__explain-label';
-      label.textContent = msg.isError ? 'Explain (failed)' : 'Explain';
-      region.appendChild(label);
-      const body = document.createElement('div');
-      body.className = 'semantic-card__explain-body';
-      region.appendChild(body);
-      card.appendChild(region);
-    }
-    const body = region.querySelector('.semantic-card__explain-body');
-    if (msg.isError) {
-      region.classList.add('semantic-card__explain--error');
-      body.textContent = msg.text || '(unknown error)';
-    } else if (msg.cumulativeText) {
-      // Cumulative text is authoritative — preserves correctness if a
-      // token chunk was missed.
-      body.textContent = msg.cumulativeText;
-    } else if (msg.text) {
-      body.textContent += msg.text;
-    }
-    this.scrollTop = this.scrollHeight;
-  }
-
   _renderContextBadge(userBubble, hits, fileSource) {
     const badge = document.createElement('div');
     badge.className = 'context-badge';
@@ -546,46 +446,6 @@ function formatToolResultBody(content) {
 // underscores so a small fallback is plenty.
 function cssEscape(s) {
   return String(s).replace(/[^a-zA-Z0-9_-]/g, (c) => '\\' + c);
-}
-
-function labelForKind(kind) {
-  if (kind === 'semantic-help') return 'Help';
-  if (kind === 'semantic-no-match') return 'No match';
-  if (kind === 'semantic-slash') return 'Slash';
-  return 'Result';
-}
-
-// Copy with a quick visual confirmation. Falls back to execCommand
-// when the Clipboard API isn't available (older Electron, file://).
-async function copyTextToClipboard(text, button) {
-  let ok = false;
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-      ok = true;
-    }
-  } catch { /* fall through */ }
-  if (!ok) {
-    try {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.position = 'fixed';
-      ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.select();
-      ok = document.execCommand('copy');
-      document.body.removeChild(ta);
-    } catch { ok = false; }
-  }
-  if (button) {
-    const original = button.textContent;
-    button.textContent = ok ? 'Copied' : 'Failed';
-    button.classList.add(ok ? 'semantic-card__copy--ok' : 'semantic-card__copy--err');
-    setTimeout(() => {
-      button.textContent = original;
-      button.classList.remove('semantic-card__copy--ok', 'semantic-card__copy--err');
-    }, 1200);
-  }
 }
 
 // Render a small footer under the bubble showing what the turn looked

@@ -5,7 +5,7 @@
 //   - The textarea (auto-grow on input, capped via CSS max-height)
 //   - Send button
 //   - @-mention popup (filtered by store.workers + the @-token under cursor)
-//   - Slash-command popup (filtered by current semantic worker's toolkit)
+//   - Slash-command popup (filtered by the current worker's toolkit, if any)
 //   - Keyboard nav within either popup (ArrowUp/Down, Tab/Enter to accept,
 //     Escape to dismiss)
 //   - Enter to submit (Shift+Enter for newline)
@@ -215,7 +215,10 @@ export class ComposeInput extends LitElement {
   _currentWorkerTools() {
     const s = store.get();
     const w = s.workers.find((x) => x.id === s.currentTarget);
-    if (!w || w.kind !== 'semantic') return null;
+    if (!w) return null;
+    // Slash autocomplete is driven by whatever tools the worker's driver
+    // exposed via worker:list-tools (toolsByWorker). Drivers that expose no
+    // toolkit simply have no entry, so the popup stays hidden.
     return s.toolsByWorker.get(w.id) || null;
   }
 
@@ -231,8 +234,8 @@ export class ComposeInput extends LitElement {
     const before = text.slice(0, cursor);
 
     // Slash mode: only when `/` is the very first character of the
-    // textarea AND the active worker is semantic (others have no
-    // toolkit to autocomplete from).
+    // textarea AND the active worker exposed a toolkit (others have no
+    // tools to autocomplete from).
     if (text.startsWith('/')) {
       const tools = this._currentWorkerTools();
       if (tools && tools.length > 0) {

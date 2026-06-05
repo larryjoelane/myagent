@@ -30,6 +30,8 @@ const ALL_FORWARDED_CHANNELS = [
   { channel: 'chat:error',         emitAs: 'chat:error' },
   { channel: 'chat:driver-exit',   emitAs: 'chat:driver-exit' },
   { channel: 'chat:env-context',   emitAs: 'chat:env-context' },
+  { channel: 'chat:hook-blocked',  emitAs: 'chat:hook-blocked' },
+  { channel: 'chat:tool-blocked',  emitAs: 'chat:tool-blocked' },
   // Legacy agent-handler events. Renderer maps to short names for
   // backward compat.
   { channel: 'agent:chunk',        emitAs: 'chunk' },

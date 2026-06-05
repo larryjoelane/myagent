@@ -72,6 +72,9 @@ function run(ctx) {
       // Request body carries the model + streaming flag.
       eq(cap.body.model, 'vendor/x');
       eq(cap.body.stream, true);
+      // include_usage asks OpenRouter for the trailing token-usage chunk;
+      // without it the worker chip / token ledger has nothing to show.
+      eq(cap.body.stream_options.include_usage, true);
       // Structured events: content deltas then done.
       const text = events.filter((e) => e.type === 'content').map((e) => e.text).join('');
       eq(text, 'hello world');

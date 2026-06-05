@@ -298,6 +298,80 @@ function run(ctx) {
     eq(result.assistantText, 'final');
     ok(events.some((e) => e.type === 'thinking'));
   });
+
+  // ----- beforeSend gate (pre-LLM hooks) ---------------------------------
+
+  ctx.test('beforeSend block on iteration 1: NO LLM request is made', async () => {
+    const runner = fakeRunner([
+      [{ type: 'content', text: 'should never run' }, { type: 'done', totals: {} }],
+    ]);
+    const registry = new ToolRegistry();
+    const events = [];
+    const loop = new ToolUseLoop({
+      runner, registry,
+      onEvent: (e) => events.push(e),
+      beforeSend: () => ({ allow: false, reason: 'contains a secret', blockedBy: 'no-secrets' }),
+    });
+    const result = await loop.run([{ role: 'user', content: 'my password is hunter2' }]);
+    eq(runner.callCount(), 0, 'runner.stream must not be called when blocked');
+    eq(result.blocked, true);
+    eq(result.blockReason, 'contains a secret');
+    eq(result.blockedBy, 'no-secrets');
+    eq(result.assistantText, '');
+    ok(events.some((e) => e.type === 'hook-blocked' && e.blockedBy === 'no-secrets'));
+    const done = events.find((e) => e.type === 'done');
+    eq(done.blocked, true);
+  });
+
+  ctx.test('beforeSend allow on every iteration: loop runs normally', async () => {
+    const runner = fakeRunner([
+      [
+        { type: 'tool_call', call: { id: 'c1', name: 'echo', arguments: { message: 'x' } } },
+        { type: 'done', totals: {} },
+      ],
+      [{ type: 'content', text: 'done' }, { type: 'done', totals: {} }],
+    ]);
+    const registry = new ToolRegistry();
+    registry.add(require('../src/core/llm/tools/echo'));
+    const iterationsSeen = [];
+    const loop = new ToolUseLoop({
+      runner, registry,
+      beforeSend: ({ iteration }) => { iterationsSeen.push(iteration); return { allow: true }; },
+    });
+    const result = await loop.run([{ role: 'user', content: 'go' }]);
+    eq(result.iterations, 2);
+    eq(result.blocked, undefined);
+    // beforeSend fired before BOTH the user send and the tool re-entry.
+    deepEq(iterationsSeen, [1, 2]);
+  });
+
+  ctx.test('beforeSend block on iteration 2: gates the tool result re-entry', async () => {
+    // First send is allowed and yields a tool call. The hook then blocks
+    // the SECOND send (which would carry the tool result back to the LLM).
+    const runner = fakeRunner([
+      [
+        { type: 'tool_call', call: { id: 'c1', name: 'echo', arguments: { message: 'leak' } } },
+        { type: 'done', totals: {} },
+      ],
+      [{ type: 'content', text: 'must not run' }, { type: 'done', totals: {} }],
+    ]);
+    const registry = new ToolRegistry();
+    registry.add(require('../src/core/llm/tools/echo'));
+    const loop = new ToolUseLoop({
+      runner, registry,
+      beforeSend: ({ iteration, messages }) => {
+        if (iteration === 1) return { allow: true };
+        // On the re-entry the tool result is present in messages.
+        ok(messages.some((m) => m.role === 'tool'), 'tool result present on iter 2');
+        return { allow: false, reason: 'tool output blocked' };
+      },
+    });
+    const result = await loop.run([{ role: 'user', content: 'go' }]);
+    eq(runner.callCount(), 1, 'only the first send hit the runner');
+    eq(result.blocked, true);
+    eq(result.iterations, 2);
+    eq(result.blockReason, 'tool output blocked');
+  });
 }
 
 module.exports = { run };

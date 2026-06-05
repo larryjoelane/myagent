@@ -22,11 +22,11 @@
 /** @param {WorkerHandlerDeps} deps */
 function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, projectRoot }) {
   // --- Worker management --------------------------------------------------
-  // Workers are headless agents (claude / shell / semantic) the chat drives.
+  // Workers are headless agents (claude / shell / ollama-cloud / openrouter)
+  // the chat drives.
   ipcMain.handle('worker:spawn', async (_e, body = {}) => {
     try {
       const kind = body.kind === 'shell'         ? 'shell'
-                 : body.kind === 'semantic'      ? 'semantic'
                  : body.kind === 'ollama-cloud'  ? 'ollama-cloud'
                  : body.kind === 'openrouter'    ? 'openrouter'
                                                  : 'claude';
@@ -34,8 +34,6 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
       let result;
       if (kind === 'shell') {
         result = await workerManager.spawnShell({ name: body.name, cwd });
-      } else if (kind === 'semantic') {
-        result = await workerManager.spawnSemantic({ name: body.name, cwd });
       } else if (kind === 'ollama-cloud') {
         result = await workerManager.spawnOllamaCloud({
           name: body.name, cwd, model: body.model,
@@ -173,8 +171,8 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
     return { ok: true, models, default: def };
   });
 
-  // Tool list for a single worker (semantic only today). Returns
-  // {ok:true, tools:[...]} or {ok:false, error} when the worker
+  // Tool list for a single worker, when its driver exposes a toolkit.
+  // Returns {ok:true, tools:[...]} or {ok:false, error} when the worker
   // doesn't exist / has no toolkit. Renderer uses this to drive
   // the slash-command autocomplete popup.
   ipcMain.handle('worker:list-tools', (_e, body = {}) => {

@@ -6,8 +6,8 @@
 // Why a Worker instead of the renderer process: keeps WASM init,
 // model load (~3s for MiniLM, much longer for Qwen), and inference
 // off the chat-UI thread so PTY keystroke handling stays responsive.
-// Singleton — all driver kinds (semantic today, future kinds later)
-// share one instance via the model-bridge.
+// Singleton — every consumer of the in-process models (embed / generate)
+// shares one instance via the model-bridge.
 //
 // Protocol with the renderer (see renderer/model-bridge.js):
 //   in:  { id, type: 'embed'|'generate'|'status'|'cache-status'|'warmup', payload }

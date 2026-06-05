@@ -40,7 +40,19 @@ function createOpenRouterPreset({ host, model = DEFAULT_MODEL, apiKey } = {}) {
   if (apiKey) headers.authorization = `Bearer ${apiKey}`;
 
   // OpenRouter is OpenAI-standard: /chat/completions, not Ollama's /api/chat.
-  const chat = new OpenAIChat({ baseUrl, headers, model, chatPath: '/chat/completions' });
+  // `stream_options.include_usage` asks OpenAI-style backends to emit a final
+  // usage-only chunk (empty choices, `usage` populated) after the stream's
+  // finish_reason chunk. Without it, streaming responses carry NO token
+  // counts, so the worker chip / token ledger would show nothing for
+  // OpenRouter. Ollama doesn't take this option, which is why it lives in the
+  // OpenRouter preset rather than OpenAIChat's shared body.
+  const chat = new OpenAIChat({
+    baseUrl,
+    headers,
+    model,
+    chatPath: '/chat/completions',
+    extraBody: { stream_options: { include_usage: true } },
+  });
 
   return {
     get model() { return model; },

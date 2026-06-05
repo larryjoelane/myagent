@@ -26,10 +26,12 @@ test.beforeAll(async () => {
   // Pre-write settings: disable auto-context by default for the
   // baseline tests (they assert exact reply text and would break
   // when the prompt is augmented). Tests that exercise auto-context
-  // explicitly flip this on.
+  // explicitly flip this on. showClaudeWorker is enabled because the
+  // Claude worker is opt-in in the UI (hidden by default) and these
+  // tests drive the Claude spawn buttons directly.
   fs.writeFileSync(
     path.join(tmpSessionsDir, 'app-settings.json'),
-    JSON.stringify({ autoContext: false }, null, 2),
+    JSON.stringify({ autoContext: false, showClaudeWorker: true }, null, 2),
     'utf8'
   );
 
@@ -840,6 +842,55 @@ test('tool-result with is_error: true marks the card as errored', async () => {
   await expect(card).toHaveClass(/tool-card--error/);
 });
 
+test('chat:hook-blocked renders a guardrail notice with the reason + hook name', async () => {
+  const workerId = await ensureWorker(win);
+  expect(workerId).toBeTruthy();
+  await win.evaluate((agentId) => {
+    if (typeof window.__amTestFireEvent === 'function') {
+      window.__amTestFireEvent('chat:turn-start', { agentId });
+      window.__amTestFireEvent('chat:hook-blocked', {
+        agentId, blockedBy: 'no-secrets', reason: 'looks like a secret in a user message', iteration: 1,
+      });
+      window.__amTestFireEvent('chat:turn-end', {
+        agentId, ok: false, blocked: true, error: 'looks like a secret in a user message',
+      });
+    }
+  }, workerId);
+  await win.waitForTimeout(300);
+
+  const notice = win.locator('.bubble--hook-blocked').last();
+  await expect(notice).toBeVisible({ timeout: 3000 });
+  await expect(notice).toContainText('Blocked by a guardrail');
+  await expect(notice).toContainText('no-secrets');
+  await expect(notice).toContainText('looks like a secret');
+  // It is NOT styled as a hard error bubble.
+  await expect(win.locator('.bubble--error')).toHaveCount(0);
+});
+
+test('chat:tool-blocked renders a guardrail notice naming the tool (turn continues)', async () => {
+  const workerId = await ensureWorker(win);
+  expect(workerId).toBeTruthy();
+  await win.evaluate((agentId) => {
+    if (typeof window.__amTestFireEvent === 'function') {
+      window.__amTestFireEvent('chat:turn-start', { agentId });
+      window.__amTestFireEvent('chat:tool-blocked', {
+        agentId, call: { name: 'write_file' }, blockedBy: 'no-secrets',
+        reason: 'AWS access key id in write', iteration: 2,
+      });
+      // Unlike hook-blocked, the turn keeps going and ends ok:true.
+      window.__amTestFireEvent('chat:turn-end', { agentId, ok: true });
+    }
+  }, workerId);
+  await win.waitForTimeout(300);
+
+  const notice = win.locator('.bubble--hook-blocked').last();
+  await expect(notice).toBeVisible({ timeout: 3000 });
+  await expect(notice).toContainText('write_file');
+  await expect(notice).toContainText('no-secrets');
+  await expect(notice).toContainText('AWS access key');
+  await expect(win.locator('.bubble--error')).toHaveCount(0);
+});
+
 // Helper: spawn a worker if none exist, return one's id.
 async function ensureWorker(win) {
   let workerId = await win.evaluate(async () => {
@@ -1089,4 +1140,37 @@ test('Auto-context toggle: when off, no context injected and no badge appears', 
   await win.evaluate(async () => {
     await window.transport.settings.set('autoContext', true);
   });
+});
+
+test('Show Claude Code worker toggle hides/shows the Claude spawn buttons', async () => {
+  // The suite enables showClaudeWorker in beforeAll, so the Claude
+  // buttons are present to start. Open the settings drawer and confirm
+  // the toggle checkbox reflects that.
+  const drawerHidden = await win.locator('#am-settings').evaluate((el) =>
+    el.classList.contains('agent-manager__settings--hidden'));
+  if (drawerHidden) await win.locator('#am-settings-toggle').click();
+  await win.waitForTimeout(200);
+
+  const toggle = win.locator('settings-drawer').locator('#am-show-claude-worker');
+  await expect(toggle).toBeChecked();
+  // The workers-section Claude spawn button is visible while on.
+  await expect(win.locator('#am-spawn-claude')).toBeVisible({ timeout: 3000 });
+
+  // Turn it off → the workers-section Claude spawn button disappears;
+  // the other providers stay. (The empty-state's own copy re-reads the
+  // setting on mount, so it reflects the change next time it's shown —
+  // it's hidden here because a worker exists.)
+  await toggle.uncheck();
+  await win.waitForTimeout(300);
+  expect(await win.locator('#am-spawn-claude').count()).toBe(0);
+  await expect(win.locator('#am-spawn-shell')).toBeVisible();
+
+  // Turn it back on → the Claude spawn button returns.
+  await toggle.check();
+  await win.waitForTimeout(300);
+  await expect(win.locator('#am-spawn-claude')).toBeVisible({ timeout: 3000 });
+
+  // Restore the drawer to its prior state for following tests.
+  await win.locator('#am-settings-toggle').click();
+  await win.waitForTimeout(150);
 });

@@ -95,6 +95,41 @@ function run(ctx) {
     eq(events[2].totals.usage.total_tokens, 7);
   });
 
+  ctx.test('parseStream: openai SSE usage arrives in a separate trailing chunk (OpenRouter shape)', async () => {
+    // OpenRouter (and OpenAI with stream_options.include_usage) emits the
+    // finish_reason chunk FIRST, then a separate usage-only chunk with empty
+    // choices, then [DONE]. The parser must not return on finish_reason or
+    // the token counts are lost — which is why the worker chip showed nothing.
+    const body = bodyFrom([
+      'data: ' + JSON.stringify({ choices: [{ delta: { content: 'answer' } }] }) + '\n',
+      'data: ' + JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] }) + '\n',
+      'data: ' + JSON.stringify({ choices: [], usage: { prompt_tokens: 12, completion_tokens: 3, total_tokens: 15 } }) + '\n',
+      'data: [DONE]\n',
+    ]);
+    const events = await collect(parseStream(body));
+    const types = events.map((e) => e.type);
+    deepEq(types, ['content', 'done']);
+    const done = events[events.length - 1];
+    eq(done.totals.usage.prompt_tokens, 12);
+    eq(done.totals.usage.completion_tokens, 3);
+    eq(done.totals.usage.total_tokens, 15);
+  });
+
+  ctx.test('parseStream: SSE usage survives stream-end without [DONE]', async () => {
+    // Some backends close the body after the usage chunk without a [DONE]
+    // sentinel. The terminal done emit must still carry the totals.
+    const body = bodyFrom([
+      'data: ' + JSON.stringify({ choices: [{ delta: { content: 'x' } }] }) + '\n',
+      'data: ' + JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] }) + '\n',
+      'data: ' + JSON.stringify({ choices: [], usage: { prompt_tokens: 5, completion_tokens: 2 } }) + '\n',
+    ]);
+    const events = await collect(parseStream(body));
+    const done = events[events.length - 1];
+    eq(done.type, 'done');
+    eq(done.totals.usage.prompt_tokens, 5);
+    eq(done.totals.usage.completion_tokens, 2);
+  });
+
   ctx.test('parseStream: openai SSE tool_calls assembled across deltas', async () => {
     const body = bodyFrom([
       'data: ' + JSON.stringify({

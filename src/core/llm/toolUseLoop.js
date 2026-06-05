@@ -40,6 +40,8 @@ class ToolUseLoop {
     maxIterations = DEFAULT_MAX_ITERATIONS,
     parallelDispatch = true,
     toolArgsFormat = 'object',
+    beforeSend = null,
+    beforeTool = null,
   } = {}) {
     if (!runner || typeof runner.stream !== 'function') {
       throw new Error('ToolUseLoop: runner with .stream() is required');
@@ -63,6 +65,51 @@ class ToolUseLoop {
     //   'string' — OpenAI/OpenRouter require a JSON-encoded string and 400
     //              on an object.
     this.toolArgsFormat = toolArgsFormat === 'string' ? 'string' : 'object';
+    // Optional pre-send gate. Called with ({ messages, iteration }) right
+    // BEFORE every runner.stream() — i.e. the user send (iter 1) AND each
+    // tool-loop re-entry (iter 2+), so tool results are gated too. Must
+    // resolve to { allow: boolean, reason?, blockedBy? }. allow:false
+    // stops the loop without an LLM request. Provider-neutral: this is how
+    // pre-LLM hooks plug in (see hookRunner.js) without the loop importing
+    // them directly.
+    this.beforeSend = typeof beforeSend === 'function' ? beforeSend : null;
+    // Optional pre-tool gate. Called with ({ call, iteration }) right BEFORE
+    // each registry.dispatch(). Must resolve to { allow, reason?, blockedBy? }.
+    // Unlike beforeSend, a block here does NOT stop the loop: the tool is
+    // skipped and a synthetic { ok:false } tool message is fed back so the
+    // model sees the refusal and can react (pick a different tool, explain,
+    // etc.). This is how pre-tool hooks plug in (see hookRunner.js) — e.g.
+    // a no-secrets guard that stops a file write from reaching disk.
+    this.beforeTool = typeof beforeTool === 'function' ? beforeTool : null;
+  }
+
+  // Run the pre-tool gate for one call. Returns the dispatch result when the
+  // call is allowed (awaiting the real dispatch), or a synthetic blocked
+  // result when a hook refuses it — never throwing, so it slots into both
+  // the parallel and sequential dispatch paths uniformly. The 'tool-blocked'
+  // event lets the UI surface the refusal distinctly from a tool error.
+  async _dispatchGated(call, iteration, ctx) {
+    if (this.beforeTool) {
+      let decision;
+      try {
+        decision = await this.beforeTool({ call, iteration });
+      } catch (err) {
+        // Fail-closed: a gate that throws blocks the tool.
+        decision = { allow: false, reason: `pre-tool gate threw: ${err?.message || String(err)}` };
+      }
+      if (decision && decision.allow === false) {
+        const reason = decision.reason || 'blocked by a pre-tool hook';
+        this.onEvent({
+          type: 'tool-blocked',
+          call,
+          reason,
+          blockedBy: decision.blockedBy || null,
+          iteration,
+        });
+        return { ok: false, content: `Tool "${call.name}" blocked by guardrail: ${reason}`, blocked: true };
+      }
+    }
+    return this.registry.dispatch(call, ctx);
   }
 
   // Run the loop with a starting message list. Returns the final
@@ -76,6 +123,34 @@ class ToolUseLoop {
 
     for (let iter = 1; iter <= this.maxIterations; iter += 1) {
       this.onEvent({ type: 'iteration', n: iter });
+
+      // Pre-send gate (pre-LLM hooks). Runs before EVERY runner.stream(),
+      // so it sees the user prompt on iter 1 and every tool result on
+      // later iters. A block stops the loop with NO LLM request made.
+      if (this.beforeSend) {
+        const decision = await this.beforeSend({ messages: out, iteration: iter });
+        if (decision && decision.allow === false) {
+          const reason = decision.reason || 'blocked by a pre-LLM hook';
+          this.onEvent({
+            type: 'hook-blocked',
+            reason,
+            blockedBy: decision.blockedBy || null,
+            iteration: iter,
+          });
+          this.onEvent({
+            type: 'done',
+            assistantText,
+            iterations: iter,
+            totals,
+            blocked: true,
+            blockReason: reason,
+          });
+          return {
+            messages: out, assistantText, iterations: iter, totals,
+            blocked: true, blockReason: reason, blockedBy: decision.blockedBy || null,
+          };
+        }
+      }
 
       const turnText = [];
       const turnCalls = [];
@@ -138,7 +213,7 @@ class ToolUseLoop {
       if (this.parallelDispatch && turnCalls.length > 1) {
         for (const call of turnCalls) this.onEvent({ type: 'tool-call', call });
         const results = await Promise.all(
-          turnCalls.map((call) => this.registry.dispatch(call, { ...this.ctx, signal }))
+          turnCalls.map((call) => this._dispatchGated(call, iter, { ...this.ctx, signal }))
         );
         for (let i = 0; i < turnCalls.length; i += 1) {
           const call = turnCalls[i];
@@ -149,7 +224,7 @@ class ToolUseLoop {
       } else {
         for (const call of turnCalls) {
           this.onEvent({ type: 'tool-call', call });
-          const result = await this.registry.dispatch(call, { ...this.ctx, signal });
+          const result = await this._dispatchGated(call, iter, { ...this.ctx, signal });
           this.onEvent({ type: 'tool-result', call, result });
           out.push(toolMessage(call, result));
         }

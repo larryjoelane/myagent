@@ -473,6 +473,205 @@ exports.run = (ctx) => {
     eq(rec.last('chat:turn-end').payload.provider, 'ollama-cloud');
   });
 
+  ctx.test('hooks (plain mode): a blocking hook stops the send and ends turn ok:false', async () => {
+    const rec = recorder();
+    let streamed = false;
+    const drv = new OllamaCloudDriver({
+      agentId: 'a1',
+      apiKey: 'fake-key',
+      runnerFactory: () => ({
+        capabilities: { thinking: 'never' }, think: false,
+        async health() { return { ok: true }; },
+        async setThink() { return { ok: true, think: false }; },
+        async *stream() { streamed = true; yield 'must not run'; },
+      }),
+      // tools omitted => plain-chat path.
+      hooks: [{ name: 'no-secrets', preLlm: () => ({ allow: false, reason: 'secret detected' }) }],
+      envContext: false,
+      onEvent: rec.onEvent,
+    });
+    await drv.start();
+    drv.send('my password is hunter2');
+    await eventually(() => ok(rec.last('chat:turn-end')), { msg: 'turn-end' });
+
+    eq(streamed, false, 'runner.stream must not be called when a hook blocks');
+    const blocked = rec.last('chat:hook-blocked');
+    ok(blocked, 'chat:hook-blocked fired');
+    eq(blocked.payload.blockedBy, 'no-secrets');
+    contains(blocked.payload.reason, 'secret detected');
+    const end = rec.last('chat:turn-end').payload;
+    eq(end.ok, false);
+    eq(end.blocked, true);
+    contains(end.error, 'secret detected');
+  });
+
+  ctx.test('hooks (tools mode): block on the tool re-entry gates the tool result', async () => {
+    const { ToolRegistry } = require('../src/core/llm/tools/registry');
+    const echo = require('../src/core/llm/tools/echo');
+    const registry = new ToolRegistry();
+    registry.add(echo);
+
+    let turn = 0;
+    const presetFactory = () => ({
+      async *stream() {
+        turn += 1;
+        if (turn === 1) {
+          yield { type: 'tool_call', call: { id: 'c1', name: 'echo', arguments: { message: 'leak' } } };
+          yield { type: 'done', totals: {} };
+        } else {
+          // Should never be reached — the hook blocks iteration 2.
+          yield { type: 'content', text: 'must not run' };
+          yield { type: 'done', totals: {} };
+        }
+      },
+    });
+
+    const rec = recorder();
+    const drv = new OllamaCloudDriver({
+      agentId: 'a1',
+      apiKey: 'fake-key',
+      runnerFactory: () => fakeRunner({ chunks: [] }),
+      presetFactory,
+      toolRegistry: registry,
+      tools: true,
+      envContext: false,
+      hooks: [{ name: 'gate-tool-output', preLlm: ({ iteration }) => (iteration === 1 ? { allow: true } : { allow: false, reason: 'tool output blocked' }) }],
+      onEvent: rec.onEvent,
+    });
+    await drv.start();
+    drv.send('echo leak');
+    await eventually(() => ok(rec.last('chat:turn-end')), { msg: 'turn-end' });
+
+    // The first send ran (tool was called), the second (tool result) was blocked.
+    eq(rec.countOf('chat:tool-call'), 1);
+    eq(turn, 1, 'preset.stream called once; the re-entry was gated');
+    const blocked = rec.last('chat:hook-blocked');
+    ok(blocked, 'chat:hook-blocked fired on the re-entry');
+    eq(blocked.payload.iteration, 2);
+    const end = rec.last('chat:turn-end').payload;
+    eq(end.ok, false);
+    eq(end.blocked, true);
+  });
+
+  ctx.test('pre-tool hook: blocks the tool call but the turn continues (model recovers)', async () => {
+    const { ToolRegistry } = require('../src/core/llm/tools/registry');
+    const registry = new ToolRegistry();
+    let toolRan = false;
+    // A stand-in write tool: records whether it actually executed, so we can
+    // assert the guardrail stopped it from reaching "disk".
+    registry.add({
+      name: 'write_file',
+      description: 'write a file',
+      parameters: { type: 'object', properties: { content: { type: 'string' } } },
+      run: async (args) => { toolRan = true; return { ok: true, content: `wrote ${args.content}` }; },
+    });
+
+    let turn = 0;
+    const presetFactory = () => ({
+      async *stream() {
+        turn += 1;
+        if (turn === 1) {
+          // Model tries to write a secret.
+          yield { type: 'tool_call', call: { id: 'c1', name: 'write_file', arguments: { content: 'AKIA-SECRET' } } };
+          yield { type: 'done', totals: {} };
+        } else {
+          // After seeing the refusal, the model gives up gracefully.
+          yield { type: 'content', text: 'understood, not writing that' };
+          yield { type: 'done', totals: {} };
+        }
+      },
+    });
+
+    const rec = recorder();
+    const drv = new OllamaCloudDriver({
+      agentId: 'a1',
+      apiKey: 'fake-key',
+      runnerFactory: () => fakeRunner({ chunks: [] }),
+      presetFactory,
+      toolRegistry: registry,
+      tools: true,
+      envContext: false,
+      hooks: [{
+        name: 'no-secrets',
+        preTool: ({ tool, args }) => (
+          tool === 'write_file' && /AKIA/.test(JSON.stringify(args))
+            ? { allow: false, reason: 'AWS access key id in write' }
+            : { allow: true }
+        ),
+      }],
+      onEvent: rec.onEvent,
+    });
+    await drv.start();
+    drv.send('write my key');
+    await eventually(() => ok(rec.last('chat:turn-end')), { msg: 'turn-end' });
+
+    eq(toolRan, false, 'the write tool must NOT execute when the pre-tool hook blocks it');
+    const tb = rec.last('chat:tool-blocked');
+    ok(tb, 'chat:tool-blocked fired');
+    eq(tb.payload.call.name, 'write_file');
+    eq(tb.payload.blockedBy, 'no-secrets');
+    contains(tb.payload.reason, 'AWS access key');
+    // The turn is NOT aborted — the model re-entered and settled normally.
+    eq(turn, 2, 'the loop re-entered after the block so the model could react');
+    const end = rec.last('chat:turn-end').payload;
+    eq(end.ok, true, 'a single blocked tool does not fail the whole turn');
+    contains(end.assistantText, 'understood');
+  });
+
+  ctx.test('pre-tool hook: a worker with no preTool hooks runs the tool normally', async () => {
+    const { ToolRegistry } = require('../src/core/llm/tools/registry');
+    const registry = new ToolRegistry();
+    let toolRan = false;
+    registry.add({
+      name: 'write_file', description: 'write', parameters: { type: 'object', properties: {} },
+      run: async () => { toolRan = true; return { ok: true, content: 'wrote' }; },
+    });
+    let turn = 0;
+    const presetFactory = () => ({
+      async *stream() {
+        turn += 1;
+        if (turn === 1) {
+          yield { type: 'tool_call', call: { id: 'c1', name: 'write_file', arguments: {} } };
+          yield { type: 'done', totals: {} };
+        } else {
+          yield { type: 'content', text: 'done' };
+          yield { type: 'done', totals: {} };
+        }
+      },
+    });
+    const rec = recorder();
+    const drv = new OllamaCloudDriver({
+      agentId: 'a1', apiKey: 'fake-key',
+      runnerFactory: () => fakeRunner({ chunks: [] }),
+      presetFactory, toolRegistry: registry, tools: true, envContext: false,
+      // preLlm-only hook present: it must NOT gate the tool dispatch.
+      hooks: [{ name: 'llm-only', preLlm: () => ({ allow: true }) }],
+      onEvent: rec.onEvent,
+    });
+    await drv.start();
+    drv.send('go');
+    await eventually(() => ok(rec.last('chat:turn-end')), { msg: 'turn-end' });
+    eq(toolRan, true, 'tool runs when no preTool hook applies');
+    eq(rec.countOf('chat:tool-blocked'), 0);
+  });
+
+  ctx.test('hooks: a worker with no hooks behaves exactly as before (no gating)', async () => {
+    const rec = recorder();
+    const drv = new OllamaCloudDriver({
+      agentId: 'a1',
+      apiKey: 'fake-key',
+      runnerFactory: () => fakeRunner({ chunks: ['hello'] }),
+      hooks: [],
+      envContext: false,
+      onEvent: rec.onEvent,
+    });
+    await drv.start();
+    drv.send('hi');
+    await eventually(() => ok(rec.last('chat:turn-end')), { msg: 'turn-end' });
+    eq(rec.countOf('chat:hook-blocked'), 0);
+    eq(rec.last('chat:turn-end').payload.ok, true);
+  });
+
   ctx.test('tools mode: requires presetFactory and toolRegistry', () => {
     let threw;
     try {

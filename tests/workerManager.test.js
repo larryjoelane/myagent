@@ -27,7 +27,7 @@ function fakeFactories() {
   // reference so tests can drive it. The driver also captures the
   // full opts object so tests can assert kind-specific args (model,
   // cwd, etc.) flow through.
-  const created = { claude: [], shell: [], semantic: [], 'ollama-cloud': [] };
+  const created = { claude: [], shell: [], 'ollama-cloud': [] };
   function track(kind) {
     return (opts) => {
       const d = new FakeDriver({ ...opts, kind });
@@ -40,7 +40,6 @@ function fakeFactories() {
     factories: {
       claude: track('claude'),
       shell: track('shell'),
-      semantic: track('semantic'),
       'ollama-cloud': track('ollama-cloud'),
     },
     created,
@@ -346,43 +345,28 @@ function run(t) {
     eq(created.claude[0].sent[0], '/help', 'slash text reaches driver verbatim');
   });
 
-  t.test('semantic workers bypass auto-context (router needs literal prompt)', async () => {
-    const { factories, created } = fakeFactories();
-    let providerCalled = 0;
-    const contextProvider = async () => {
-      providerCalled++;
-      return { preamble: '[noise]\n\n', usedHits: [{ id: 1 }] };
-    };
-    const mgr = new WorkerManager({ factories, onEvent: () => {}, contextProvider });
-    const sem = await mgr.spawnSemantic({});
-    mgr.send({ to: sem.id, text: 'find references to WorkerManager' });
-    await new Promise((r) => setImmediate(r));
-    eq(providerCalled, 0, 'provider must not run for semantic workers');
-    eq(created.semantic[0].sent[0], 'find references to WorkerManager');
-  });
-
   t.test('listTools returns the toolkit for workers whose driver exposes one', async () => {
-    // Stand up a real semantic factory so the channel's driver has a
-    // toolkit. Use a fake embedder so we don't pull in MiniLM.
-    const { ToolKit } = require('../src/core/semantic/toolkit');
-    const { EmbeddingRouter } = require('../src/core/semantic/router');
-    const { SemanticDriver } = require('../src/core/drivers/semanticDriver');
-    const fakeEmbedder = { embed: async () => new Float32Array([1, 0, 0, 0]) };
-    const semFactory = ({ agentId, onEvent }) => {
-      const kit = new ToolKit([
-        { id: 'foo', name: 'Foo', description: 'foo desc', usage: ['/foo bar'], run: async () => ({ ok: true, text: 'x' }) },
-        { id: 'baz', name: 'Baz', description: 'baz desc', run: async () => ({ ok: true, text: 'y' }) },
-      ]);
-      const router = new EmbeddingRouter({ embedder: fakeEmbedder, toolkit: kit, threshold: 0 });
-      return new SemanticDriver({ agentId, router, toolkit: kit, onEvent });
+    // Generic mechanism: any driver that exposes a `toolkit` with list()
+    // surfaces its tools via listTools(). Use a FakeDriver with an injected
+    // toolkit (no real driver depends on this today, but the plumbing does).
+    const toolkit = {
+      list: () => [
+        { id: 'foo', name: 'Foo', description: 'foo desc', usage: ['/foo bar'] },
+        { id: 'baz', name: 'Baz', description: 'baz desc' },
+      ],
+    };
+    const toolFactory = ({ agentId, onEvent }) => {
+      const d = new FakeDriver({ agentId, onEvent, kind: 'tooly' });
+      d.toolkit = toolkit;
+      return d;
     };
     const { factories: base } = fakeFactories();
     const mgr = new WorkerManager({
-      factories: { ...base, semantic: semFactory },
+      factories: { ...base, claude: toolFactory },
       onEvent: () => {},
     });
-    const sem = await mgr.spawnSemantic({});
-    const tools = mgr.listTools(sem.id);
+    const w = await mgr.spawnWorker({});
+    const tools = mgr.listTools(w.id);
     eq(tools.length, 2, 'two tools');
     eq(tools[0].id, 'foo');
     eq(tools[0].name, 'Foo');

@@ -5,9 +5,6 @@
 //   - Chat side picker (Left | Right) — persisted via transport.settings
 //   - Tool details mode (Expanded | Collapsed | Hidden) — persisted
 //   - Workers section: spawn buttons + cwd picker + per-worker rows
-//   - Semantic device picker + status line + Benchmark/DevTools buttons
-//   - Explain model picker + cache info card + Pre-download/Recheck
-//   - Default-explain toggle
 //
 // Reads the relevant slices from the store. Mutations route through
 // renderer/state/actions.js where possible. The drawer dispatches
@@ -45,6 +42,8 @@ export class SettingsDrawer extends LitElement {
     _ollamaModels: { state: true },
     /** Currently-selected Ollama Cloud model in the spawn dropdown. */
     _ollamaModel: { state: true },
+    /** Whether the Claude (Claude Code) worker is exposed in the UI. */
+    _showClaudeWorker: { state: true },
   };
 
   static styles = [
@@ -318,6 +317,10 @@ export class SettingsDrawer extends LitElement {
     this._ollamaModels = [];
     /** @type {string} */
     this._ollamaModel = '';
+    // Claude (Claude Code) worker is hidden by default — opt in via the
+    // "Show Claude Code worker" toggle below. Persisted as showClaudeWorker.
+    /** @type {boolean} */
+    this._showClaudeWorker = false;
   }
 
   connectedCallback() {
@@ -347,6 +350,8 @@ export class SettingsDrawer extends LitElement {
     if (row) row.classList.toggle('app-row--chat-right', this._chatSide === 'right');
     this._autoContext = (await getSetting('autoContext', true)) !== false;
     this._autoFileContext = (await getSetting('autoFileContext', true)) !== false;
+    // Claude worker is opt-in; default off so it's hidden until enabled.
+    this._showClaudeWorker = (await getSetting('showClaudeWorker', false)) === true;
     // Hydrate the persisted toolDetails into the store so chat-bubble
     // and tool-card render with the right default mode.
     const td = await getSetting('toolDetails', 'collapsed');
@@ -405,6 +410,16 @@ export class SettingsDrawer extends LitElement {
                }} />
         <span>Auto-include active editor file</span>
       </label>
+      <label class="row" title="Expose the Claude Code worker spawn buttons. Off by default.">
+        <input id="am-show-claude-worker" type="checkbox"
+               .checked=${this._showClaudeWorker}
+               @change=${async (/** @type {any} */ e) => {
+                 this._showClaudeWorker = !!e.target.checked;
+                 await setSetting('showClaudeWorker', this._showClaudeWorker);
+                 this.requestUpdate();
+               }} />
+        <span>Show Claude Code worker</span>
+      </label>
     `;
   }
 
@@ -460,7 +475,7 @@ export class SettingsDrawer extends LitElement {
   }
 
   /**
-   * @param {'claude'|'shell'|'semantic'|'ollama-cloud'} kind
+   * @param {'claude'|'shell'|'ollama-cloud'} kind
    * @param {{ model?: string }} [opts]
    */
   _emitSpawn(kind, opts = {}) {
@@ -475,15 +490,14 @@ export class SettingsDrawer extends LitElement {
       <div class="row row--header">
         <span>Workers</span>
         <span class="spawn-buttons">
-          <button id="am-spawn-claude" class="cmd-btn cmd-btn--small cmd-btn--primary" type="button"
-                  title="Spawn another Claude worker"
-                  @click=${() => this._emitSpawn('claude')}>+ Claude</button>
+          ${this._showClaudeWorker ? html`
+            <button id="am-spawn-claude" class="cmd-btn cmd-btn--small cmd-btn--primary" type="button"
+                    title="Spawn another Claude worker"
+                    @click=${() => this._emitSpawn('claude')}>+ Claude</button>
+          ` : ''}
           <button id="am-spawn-shell" class="cmd-btn cmd-btn--small" type="button"
                   title="Spawn another shell"
                   @click=${() => this._emitSpawn('shell')}>+ Shell</button>
-          <button id="am-spawn-semantic" class="cmd-btn cmd-btn--small" type="button"
-                  title="Spawn a semantic-routing agent (in-process, no LLM)"
-                  @click=${() => this._emitSpawn('semantic')}>+ Semantic</button>
           <button id="am-spawn-ollama-cloud" class="cmd-btn cmd-btn--small" type="button"
                   title="Spawn a hosted Ollama Cloud worker (uses OLLAMA_API_KEY from .env)"
                   @click=${() => this._emitSpawn('ollama-cloud',

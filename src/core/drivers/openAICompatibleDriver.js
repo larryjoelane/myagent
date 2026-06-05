@@ -31,6 +31,7 @@
 
 const { ToolUseLoop } = require('../llm/toolUseLoop');
 const { resolveEnvContext } = require('../envContext');
+const { runPreLlmHooks, runPreToolHooks } = require('../hookRunner');
 const {
   resolveSkillCommand,
   buildSkillSeedMessage,
@@ -92,6 +93,8 @@ class OpenAICompatibleDriver {
     skills,
     skillScopeGuard,
     providerConfig,
+    hooks,
+    hooksProvider,
   } = {}) {
     const pc = providerConfig || OLLAMA_PROVIDER;
     this.provider = pc.provider;
@@ -134,6 +137,20 @@ class OpenAICompatibleDriver {
     // prepended to the system prompt on the first turn only.
     this.envContext = envContext != null ? envContext : null;
     this._envContextApplied = false;
+
+    // Hooks (guardrails), two phases — pre-LLM-send and pre-tool-dispatch —
+    // dispatched via hookRunner. Resolution is cwd-AWARE: rather than freeze
+    // the hook set at spawn, the driver asks `hooksProvider(cwd)` for the
+    // hooks that apply to the CURRENT working directory before each gate, so
+    // switching directories mid-run re-discovers project-local hooks (see
+    // createHookProvider in hooks.js). Back-compat: a plain `hooks` array is
+    // wrapped in a constant provider (ignores cwd). Empty/absent → no gating.
+    if (typeof hooksProvider === 'function') {
+      this.hooksProvider = hooksProvider;
+    } else {
+      const frozen = Array.isArray(hooks) ? hooks : [];
+      this.hooksProvider = () => frozen;
+    }
 
     // Diagnostic: one-line summary of the envContext spec the driver
     // received. Lands in the main-process console. Cheap, harmless,
@@ -366,12 +383,82 @@ class OpenAICompatibleDriver {
     }
   }
 
+  // Resolve the hook set for a working directory via the cwd-aware provider.
+  // Centralized so both gates (pre-LLM and pre-tool) discover hooks the same
+  // way, against the same cwd, every time they run.
+  _hooksFor(cwd) {
+    try {
+      const hooks = this.hooksProvider(cwd);
+      return Array.isArray(hooks) ? hooks : [];
+    } catch {
+      // A provider that throws must not wedge the turn; treat as "no hooks".
+      // (Loader-level failures already warn + skip; this is belt-and-braces.)
+      return [];
+    }
+  }
+
+  // Pre-LLM hook gate. Returns { allow, reason?, blockedBy? }. Provider/
+  // model/agent context is stamped here so hooks can branch on them. Hooks
+  // are resolved against `cwd` at call time (cwd-aware), so a directory
+  // switch mid-run is reflected. Bound and handed to ToolUseLoop as
+  // `beforeSend`; also called directly on the plain-chat path (no loop).
+  async _beforeSend({ messages, iteration, cwd }) {
+    const cur = cwd !== undefined ? cwd : this.cwd;
+    const hooks = this._hooksFor(cur);
+    if (!hooks.length) return { allow: true };
+    return runPreLlmHooks(hooks, {
+      messages,
+      iteration,
+      cwd: cur,
+      agentId: this.agentId,
+      provider: this.provider,
+      model: this.model,
+    });
+  }
+
+  // Pre-tool hook gate. Returns { allow, reason?, blockedBy? }. Runs before
+  // a tool is dispatched, with the tool name + parsed arguments, so a
+  // guardrail can stop e.g. a secret-bearing file write before it hits disk.
+  // Same cwd-aware resolution as _beforeSend. Handed to ToolUseLoop as
+  // `beforeTool`; a block there skips the one tool (synthetic refusal result)
+  // rather than ending the turn.
+  async _beforeTool({ call, iteration, cwd }) {
+    const cur = cwd !== undefined ? cwd : this.cwd;
+    const hooks = this._hooksFor(cur);
+    if (!hooks.length) return { allow: true };
+    let args = call && call.arguments;
+    if (typeof args === 'string') {
+      try { args = JSON.parse(args); } catch { /* pass the raw string through */ }
+    }
+    return runPreToolHooks(hooks, {
+      tool: call ? call.name : undefined,
+      args: args == null ? {} : args,
+      call,
+      iteration,
+      cwd: cur,
+      agentId: this.agentId,
+      provider: this.provider,
+      model: this.model,
+    });
+  }
+
   async _runTurnPlain(userText) {
     await this._ensureEnvContext();
     this.messages.push({ role: 'user', content: userText });
     this.abortCtrl = new AbortController();
     let assistantText = '';
     try {
+      // Gate the plain-chat send (the tool-loop path gates inside the loop).
+      const decision = await this._beforeSend({ messages: this.messages, iteration: 1, cwd: this.cwd });
+      if (decision && decision.allow === false) {
+        const reason = decision.reason || 'blocked by a pre-LLM hook';
+        this._emit('chat:hook-blocked', { reason, blockedBy: decision.blockedBy || null, iteration: 1 });
+        this._emit('chat:turn-end', {
+          userText, assistantText: '', ok: false, blocked: true,
+          error: reason, provider: this.provider, totals: { model: this.model },
+        });
+        return;
+      }
       for await (const chunk of this.runner.stream(this.messages, { signal: this.abortCtrl.signal })) {
         if (this.closed) break;
         if (!chunk) continue;
@@ -403,9 +490,13 @@ class OpenAICompatibleDriver {
     await this._ensureEnvContext();
     this.messages.push({ role: 'user', content: seedText != null ? seedText : userText });
     this.abortCtrl = new AbortController();
+    // Per-turn cwd: a skill scope guard can override it. Both hook gates and
+    // the tool ctx resolve against this same value, so a guarded turn's
+    // hooks are discovered from the skill's directory, not the spawn cwd.
+    const turnCwd = cwdOverride || this.cwd;
     const ctx = {
       scope: this.scope,
-      cwd: cwdOverride || this.cwd,
+      cwd: turnCwd,
       memory: this.memory,
       agentId: this.agentId,
     };
@@ -416,6 +507,11 @@ class OpenAICompatibleDriver {
       maxIterations: this.maxIterations,
       parallelDispatch: this.parallelDispatch,
       toolArgsFormat: this.toolArgsFormat,
+      // Always wire the gates: hook resolution is cwd-aware and short-circuits
+      // to allow when no hooks apply, so there's no spawn-time "has hooks?"
+      // check to make — and a directory switch can introduce hooks later.
+      beforeSend: (arg) => this._beforeSend({ ...arg, cwd: turnCwd }),
+      beforeTool: (arg) => this._beforeTool({ ...arg, cwd: turnCwd }),
       onEvent: (ev) => {
         if (this.closed) return;
         if (ev.type === 'content') {
@@ -426,6 +522,18 @@ class OpenAICompatibleDriver {
           this._emit('chat:tool-call', { call: ev.call });
         } else if (ev.type === 'tool-result') {
           this._emit('chat:tool-result', { call: ev.call, result: ev.result });
+        } else if (ev.type === 'hook-blocked') {
+          this._emit('chat:hook-blocked', {
+            reason: ev.reason, blockedBy: ev.blockedBy || null, iteration: ev.iteration,
+          });
+        } else if (ev.type === 'tool-blocked') {
+          // A pre-tool guardrail refused one call. Distinct from
+          // hook-blocked (which ends the turn) — the turn continues with a
+          // synthetic refusal fed back to the model.
+          this._emit('chat:tool-blocked', {
+            call: ev.call, reason: ev.reason,
+            blockedBy: ev.blockedBy || null, iteration: ev.iteration,
+          });
         }
       },
     });
@@ -435,7 +543,10 @@ class OpenAICompatibleDriver {
       this._emit('chat:turn-end', {
         userText,
         assistantText: result.assistantText,
-        ok: true,
+        // A hook block ends the turn cleanly but is NOT a successful send.
+        ok: !result.blocked,
+        blocked: !!result.blocked,
+        error: result.blocked ? result.blockReason : undefined,
         provider: this.provider,
         totals: { model: this.model, iterations: result.iterations, ...(result.totals || {}) },
         hitMaxIterations: !!result.hitMaxIterations,
@@ -496,9 +607,8 @@ function describeEnvContextSpec(spec) {
   return `unknown (${typeof spec})`;
 }
 
-// Same `/cmd rest` regex as semanticDriver.parseSlash; duplicated here
-// rather than imported because we want this driver to stay independent
-// of the semantic stack.
+// Parse a `/cmd rest` slash command. Self-contained so this driver has
+// no external slash-parsing dependency.
 function parseSlash(text) {
   // First char allows a digit so `/2do` can reach a skill named `2do`
   // (skill NAME_RE permits a leading digit). Kept case-insensitive; cmd

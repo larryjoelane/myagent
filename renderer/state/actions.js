@@ -25,13 +25,11 @@ export async function refreshWorkers() {
 }
 
 /**
- * Spawn a worker of the given kind. The model service (for semantic
- * workers' embeddings) chooses its own device internally — there's no
- * per-spawn device picker.
+ * Spawn a worker of the given kind.
  *
- * @param {'claude'|'shell'|'semantic'|'ollama-cloud'} kind
+ * @param {'claude'|'shell'|'ollama-cloud'|'openrouter'} kind
  * @param {{ model?: string }} [opts] - kind-specific overrides; `model`
- *   is honored by `ollama-cloud` and ignored elsewhere.
+ *   is honored by `ollama-cloud`/`openrouter` and ignored elsewhere.
  * @returns {Promise<{ ok: boolean, id?: string, name?: string, error?: string }>}
  */
 export async function spawnWorker(kind, opts = {}) {
@@ -45,8 +43,8 @@ export async function spawnWorker(kind, opts = {}) {
 
   store.update({ currentTarget: r.id });
 
-  // Cache the worker's toolkit for slash autocomplete. Only semantic
-  // workers expose tools; for other kinds we skip silently.
+  // Cache the worker's toolkit for slash autocomplete, when the driver
+  // exposes one. Drivers without a toolkit skip silently.
   try {
     const tr = await transport().workers.listTools(r.id);
     if (tr && tr.ok && Array.isArray(tr.tools)) {

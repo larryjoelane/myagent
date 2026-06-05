@@ -15,7 +15,7 @@
 
 import { LitElement, html, css } from 'lit';
 import { store } from '../state/store.js';
-import { pickCwd } from '../state/actions.js';
+import { pickCwd, getSetting } from '../state/actions.js';
 import { cmdBtnStyles } from './styles.js';
 
 /** @returns {string} */
@@ -38,6 +38,8 @@ export class EmptyState extends LitElement {
     _openrouterModels: { state: true },
     /** Currently-selected OpenRouter model in the dropdown. */
     _openrouterModel: { state: true },
+    /** Whether the Claude (Claude Code) worker spawn button is shown. */
+    _showClaudeWorker: { state: true },
   };
 
   static styles = [
@@ -151,6 +153,10 @@ export class EmptyState extends LitElement {
     /** @type {string[]} */
     this._openrouterModels = [];
     this._openrouterModel = '';
+    // Claude worker is opt-in (settings-drawer "Show Claude Code worker").
+    // Hidden by default until the persisted showClaudeWorker setting loads.
+    /** @type {boolean} */
+    this._showClaudeWorker = false;
   }
 
   connectedCallback() {
@@ -165,6 +171,13 @@ export class EmptyState extends LitElement {
     // the env default at spawn.
     this._loadOllamaModels();
     this._loadOpenRouterModels();
+    this._loadShowClaudeWorker();
+  }
+
+  async _loadShowClaudeWorker() {
+    try {
+      this._showClaudeWorker = (await getSetting('showClaudeWorker', false)) === true;
+    } catch { /* ignore — leave the Claude button hidden */ }
   }
 
   async _loadOllamaModels() {
@@ -202,6 +215,10 @@ export class EmptyState extends LitElement {
   _refreshVisibility() {
     const hasWorkers = store.get().workers.length > 0;
     const showEmpty = !hasWorkers;
+    // Re-read the opt-in Claude setting whenever we transition into view,
+    // so a toggle made in the settings drawer (while empty-state was
+    // hidden) is reflected the moment the panel reappears.
+    if (showEmpty && this.hidden) this._loadShowClaudeWorker();
     this.hidden = !showEmpty;
     this.classList.toggle('agent-manager__empty--hidden', !showEmpty);
     const chat = document.getElementById('am-chat');
@@ -209,7 +226,7 @@ export class EmptyState extends LitElement {
   }
 
   /**
-   * @param {'claude'|'shell'|'semantic'|'ollama-cloud'|'openrouter'} kind
+   * @param {'claude'|'shell'|'ollama-cloud'|'openrouter'} kind
    * @param {{ model?: string }} [opts]
    */
   _emitSpawn(kind, opts = {}) {
@@ -242,18 +259,15 @@ export class EmptyState extends LitElement {
         Spawn a worker and send prompts from this pane. Responses stream back here automatically.
       </p>
       <div class="actions">
-        <button id="am-empty-spawn-claude" class="cmd-btn cmd-btn--primary" type="button"
-                @click=${() => this._emitSpawn('claude')}>
-          + Spawn Claude worker
-        </button>
+        ${this._showClaudeWorker ? html`
+          <button id="am-empty-spawn-claude" class="cmd-btn cmd-btn--primary" type="button"
+                  @click=${() => this._emitSpawn('claude')}>
+            + Spawn Claude worker
+          </button>
+        ` : ''}
         <button id="am-empty-spawn-shell" class="cmd-btn" type="button"
                 @click=${() => this._emitSpawn('shell')}>
           + Open shell
-        </button>
-        <button id="am-empty-spawn-semantic" class="cmd-btn" type="button"
-                title="Spawn a semantic-routing agent (in-process, no LLM)"
-                @click=${() => this._emitSpawn('semantic')}>
-          + Spawn Semantic worker
         </button>
         <div class="model-row">
           <button id="am-empty-spawn-ollama-cloud" class="cmd-btn" type="button"
