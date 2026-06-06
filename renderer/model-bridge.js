@@ -39,6 +39,17 @@ function ensureWorker() {
 
 function onWorkerMessage(/** @type {MessageEvent<any>} */ ev) {
   const msg = ev.data || {};
+  // Worker log line (no id) — print in the MAIN renderer console (shows in
+  // DevTools, unlike the Worker's own console) and forward to main so it
+  // also lands in the [electron] terminal. This is how model load/progress
+  // becomes visible while debugging "is it stuck?".
+  if (msg.log !== undefined) {
+    // eslint-disable-next-line no-console
+    console.log('[model-worker]', msg.log);
+    const host = /** @type {any} */ (window).transport.modelHost;
+    if (host && typeof host.log === 'function') host.log(String(msg.log));
+    return;
+  }
   const id = msg.id;
   if (id == null) return;
   const host = /** @type {any} */ (window).transport.modelHost;

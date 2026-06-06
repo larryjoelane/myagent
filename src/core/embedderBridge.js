@@ -105,6 +105,14 @@ class EmbedderBridge {
       if (typeof p.onChunk === 'function') p.onChunk(msg.chunk);
       // Keep the entry — more chunks (and the terminal reply) coming.
     });
+
+    // Worker log forward — print model load/progress to the main terminal so
+    // "is it stuck?" is answerable without opening Worker DevTools.
+    ipcMain.on('model:log', (_e, line) => {
+      if (process.env.MYAGENT_QUIET) return;
+      // eslint-disable-next-line no-console
+      console.error('[model-worker]', String(line));
+    });
   }
 
   // Send a request to the host and await its reply. When `onChunk`

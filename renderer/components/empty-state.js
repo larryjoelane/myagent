@@ -226,7 +226,7 @@ export class EmptyState extends LitElement {
   }
 
   /**
-   * @param {'claude'|'shell'|'ollama-cloud'|'openrouter'} kind
+   * @param {'claude'|'shell'|'local'|'ollama-cloud'|'openrouter'} kind
    * @param {{ model?: string }} [opts]
    */
   _emitSpawn(kind, opts = {}) {
@@ -268,6 +268,11 @@ export class EmptyState extends LitElement {
         <button id="am-empty-spawn-shell" class="cmd-btn" type="button"
                 @click=${() => this._emitSpawn('shell')}>
           + Open shell
+        </button>
+        <button id="am-empty-spawn-local" class="cmd-btn" type="button"
+                title="Spawn a local in-process model worker (runs on CPU/GPU, no API key; drives tools via text commands)"
+                @click=${() => this._emitSpawn('local')}>
+          + Spawn Local model worker
         </button>
         <div class="model-row">
           <button id="am-empty-spawn-ollama-cloud" class="cmd-btn" type="button"

@@ -30,7 +30,18 @@ const MODELS = {
   'qwen2.5-0.5b-q4': {
     repo: 'onnx-community/Qwen2.5-0.5B-Instruct',
     pipeline: 'text-generation',
-    quantization: 'q4f16',
+    quantization: 'q4f16',     // GPU default (fp16 — needs a GPU)
+    cpuQuantization: 'q8',     // int8 on CPU: best ORT-CPU kernel support +
+                               // quality. fp16 (q4f16) FAILS to even create a
+                               // session on CPU ("InsertedPrecisionFreeCast"
+                               // / SimplifiedLayerNormFusion error). q4 also
+                               // works but q8 is the safer CPU choice.
+  },
+  'qwen2.5-coder-3b': {
+    repo: 'onnx-community/Qwen2.5-Coder-3B-Instruct',
+    pipeline: 'text-generation',
+    quantization: 'q4f16',     // GPU default
+    cpuQuantization: 'q8',     // int8 on CPU
   },
   'qwen3-4b-q4': {
     repo: 'onnx-community/Qwen3-4B-ONNX',
@@ -51,6 +62,10 @@ let transformersModule = null;
 function log(msg) {
   // eslint-disable-next-line no-console
   console.log('[model-worker]', msg);
+  // Also surface to the host (renderer console + main terminal) so model
+  // load/progress is visible without opening Worker DevTools. A log message
+  // carries no `id` and a `log` field; the bridge routes it specially.
+  try { self.postMessage({ log: String(msg) }); } catch { /* ignore */ }
 }
 
 async function loadTransformers() {
@@ -62,7 +77,15 @@ async function loadTransformers() {
   const env = transformersModule.env;
   env.allowLocalModels = false;
   if (env.backends?.onnx?.wasm) {
-    env.backends.onnx.wasm.wasmPaths = new URL('../vendor/transformers/', self.location.href).toString();
+    // wasmPaths is a RUNTIME URL (not rewritten by Vite). publicDir:'vendor'
+    // copies renderer/vendor/'s CONTENTS to the served root — so the ort-wasm
+    // files live at `/transformers/...` in dev AND `dist/transformers/...` in
+    // the built app. The worker is served from `/workers/` (dev) or `/assets/`
+    // (dist), so `../transformers/` resolves to the root in BOTH. (The old
+    // `../vendor/transformers/` pointed at a path that never existed — it only
+    // surfaced now because generation REQUIRES the asyncify wasm via wasmPaths,
+    // while the embedder did not.)
+    env.backends.onnx.wasm.wasmPaths = new URL('../transformers/', self.location.href).toString();
   }
   return transformersModule;
 }
@@ -122,6 +145,12 @@ async function resolveDevice(requested) {
     reason: `unknown device "${requested}"; using cpu` };
 }
 
+// True for half-float quantizations that need a GPU. On CPU these produce
+// empty/degenerate output with ONNX Runtime's weak fp16 support.
+function isFp16Quant(q) {
+  return typeof q === 'string' && /f16|fp16/i.test(q);
+}
+
 async function getPipeline(modelId, device) {
   const key = `${modelId}::${device}`;
   if (pipelinePromises.has(key)) return pipelinePromises.get(key);
@@ -132,9 +161,19 @@ async function getPipeline(modelId, device) {
     const { pipeline } = await loadTransformers();
     const opts = {};
     if (device !== 'cpu') opts.device = device;
-    if (entry.quantization) opts.dtype = entry.quantization;
+    // dtype selection: fp16 quants (q4f16/fp16) need GPU — ONNX Runtime's CPU
+    // backend has weak fp16 support and often yields EMPTY or degenerate
+    // output. On CPU, prefer an integer quant (the model's `cpuQuantization`,
+    // else fall back to 'q4'). On GPU, use the model's default quantization.
+    if (device === 'cpu') {
+      const cpuDtype = entry.cpuQuantization
+        || (isFp16Quant(entry.quantization) ? 'q4' : entry.quantization);
+      if (cpuDtype) opts.dtype = cpuDtype;
+    } else if (entry.quantization) {
+      opts.dtype = entry.quantization;
+    }
     const t0 = performance.now();
-    log(`loading ${entry.repo} on ${device}…`);
+    log(`loading ${entry.repo} on ${device} (dtype=${opts.dtype || 'default'})…`);
     const pipe = await pipeline(entry.pipeline, entry.repo, opts);
     const ms = Math.round(performance.now() - t0);
     log(`ready: ${entry.repo} on ${device} (${ms}ms)`);
@@ -299,7 +338,14 @@ const REQUIRED_FILES_BY_PIPELINE = {
     { path: 'generation_config.json', required: false },
     { path: 'special_tokens_map.json', required: false },
     { path: 'onnx/model.onnx', required: false },
+    // List EVERY weight variant we might load so the cache check recognizes
+    // whichever dtype actually got downloaded (GPU loads q4f16; CPU loads q8/
+    // q4 — see getPipeline). Listing only q4f16 made the cache report
+    // "not cached" → a permanent "downloading" claim after a CPU q8 load.
     { path: 'onnx/model_q4f16.onnx', required: false },
+    { path: 'onnx/model_q8.onnx', required: false },
+    { path: 'onnx/model_q4.onnx', required: false },
+    { path: 'onnx/model_int8.onnx', required: false },
     { path: 'onnx/model_quantized.onnx', required: false },
     { path: 'onnx/decoder_model_merged.onnx', required: false },
     { path: 'onnx/decoder_model_merged_q4f16.onnx', required: false },

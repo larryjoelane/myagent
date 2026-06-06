@@ -198,6 +198,9 @@ function buildTransport({ ipcRenderer, clipboard, listeners }) {
       reply: (msg) => ipcRenderer.send('model:reply', msg),
       chunk: (msg) => ipcRenderer.send('model:chunk', msg),
       ready: () => ipcRenderer.send('model:ready'),
+      // Worker log forward — so model load/progress prints in the main
+      // [electron] terminal (the Worker's own console is hard to see).
+      log: (line) => ipcRenderer.send('model:log', line),
     },
     editor: {
       // Agent renderer asks main to open a file in the editor window.

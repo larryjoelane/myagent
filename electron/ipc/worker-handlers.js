@@ -29,11 +29,14 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
       const kind = body.kind === 'shell'         ? 'shell'
                  : body.kind === 'ollama-cloud'  ? 'ollama-cloud'
                  : body.kind === 'openrouter'    ? 'openrouter'
+                 : body.kind === 'local'         ? 'local'
                                                  : 'claude';
       const cwd = body.cwd || appSettings.get('lastCwd') || projectRoot;
       let result;
       if (kind === 'shell') {
         result = await workerManager.spawnShell({ name: body.name, cwd });
+      } else if (kind === 'local') {
+        result = await workerManager.spawnLocal({ name: body.name, cwd, model: body.model });
       } else if (kind === 'ollama-cloud') {
         result = await workerManager.spawnOllamaCloud({
           name: body.name, cwd, model: body.model,

@@ -371,14 +371,15 @@ exports.run = (ctx) => {
 // electron/ipc/*.js. Document each with a one-line reason. If a new
 // orphan appears, prefer registering a handler over adding to this list.
 const KNOWN_NON_IPC_HANDLERS = new Set([
-  // model:reply, model:chunk, model:ready — handled by EmbedderBridge
-  // (src/core/embedderBridge.js) which registers ipcMain.on directly
-  // because the bridge owns the model-worker conversation lifecycle.
+  // model:reply, model:chunk, model:ready, model:log — handled by
+  // EmbedderBridge (src/core/embedderBridge.js) which registers ipcMain.on
+  // directly because the bridge owns the model-worker conversation lifecycle.
   // Not in electron/ipc/ because the bridge is constructed from
   // electron/main.js as a peer, not as a handler module.
   'model:reply',
   'model:chunk',
   'model:ready',
+  'model:log',
 ]);
 
 // Channels handled by ipcMain but not invoked from the renderer transport.

@@ -475,7 +475,7 @@ export class SettingsDrawer extends LitElement {
   }
 
   /**
-   * @param {'claude'|'shell'|'ollama-cloud'} kind
+   * @param {'claude'|'shell'|'local'|'ollama-cloud'} kind
    * @param {{ model?: string }} [opts]
    */
   _emitSpawn(kind, opts = {}) {
@@ -498,6 +498,9 @@ export class SettingsDrawer extends LitElement {
           <button id="am-spawn-shell" class="cmd-btn cmd-btn--small" type="button"
                   title="Spawn another shell"
                   @click=${() => this._emitSpawn('shell')}>+ Shell</button>
+          <button id="am-spawn-local" class="cmd-btn cmd-btn--small" type="button"
+                  title="Spawn a local in-process model worker (no API key; tools via text commands)"
+                  @click=${() => this._emitSpawn('local')}>+ Local</button>
           <button id="am-spawn-ollama-cloud" class="cmd-btn cmd-btn--small" type="button"
                   title="Spawn a hosted Ollama Cloud worker (uses OLLAMA_API_KEY from .env)"
                   @click=${() => this._emitSpawn('ollama-cloud',

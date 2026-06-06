@@ -54,9 +54,30 @@ const REGISTRY = [
     kind: 'generate',
     backend: 'transformers-web',
     repo: 'onnx-community/Qwen2.5-0.5B-Instruct',
-    quantization: 'q4f16',
+    quantization: 'q4f16',     // GPU default (fp16 — needs a GPU)
+    cpuQuantization: 'q8',     // int8 on CPU (fp16/q4f16 FAILS to create an
+                               // ONNX session on CPU; q8 is the safe choice)
     pipeline: 'text-generation',
     approxSizeMB: 370,
+    defaultDevice: 'webgpu',
+    capabilities: { cpu: true, webgpu: true },
+  },
+  {
+    id: 'qwen2.5-coder-3b',
+    name: 'Qwen2.5-Coder-3B (q4f16)',
+    description:
+      'Coder-tuned 3B model — the default for the local worker. Far better ' +
+      'than the 0.5B at writing code and following command syntax. ~2.5GB ' +
+      'VRAM at q4f16 on WebGPU (fits an 8GB GPU comfortably); falls back to ' +
+      'int8 on CPU (much slower). Best local choice for tool-driving / code ' +
+      'tasks when a GPU is available.',
+    kind: 'generate',
+    backend: 'transformers-web',
+    repo: 'onnx-community/Qwen2.5-Coder-3B-Instruct',
+    quantization: 'q4f16',     // GPU default (fp16 — needs a GPU)
+    cpuQuantization: 'q8',     // int8 on CPU (fp16 can't create a session there)
+    pipeline: 'text-generation',
+    approxSizeMB: 1900,
     defaultDevice: 'webgpu',
     capabilities: { cpu: true, webgpu: true },
   },

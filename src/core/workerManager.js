@@ -129,6 +129,20 @@ class WorkerManager {
     });
   }
 
+  // Local in-process text model (ONNX via the model worker) that drives tools
+  // by parsed text commands — for no/low-GPU users. model is optional
+  // (defaults to the smallest registered generate model in the driver).
+  async spawnLocal({ name, cwd, model } = {}) {
+    if (typeof this.factories.local !== 'function') {
+      throw new Error('local agent type is not available (no factories.local)');
+    }
+    return this._spawn({
+      kind: 'local',
+      name: name || this._nextProviderName('Local', model),
+      driverOpts: { cwd, model },
+    });
+  }
+
   send({ to, text, originalText }) {
     const target = this._resolve(to);
     if (!target) {

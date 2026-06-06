@@ -29,6 +29,7 @@ const { WorkerManager } = require('../src/core/workerManager');
 const { Scope } = require('../src/core/scope');
 const { ClaudeDriver } = require('../src/core/drivers/claudeDriver');
 const { ShellDriver } = require('../src/core/drivers/shellDriver');
+const { LocalModelDriver } = require('../src/core/drivers/localModelDriver');
 const {
   OpenAICompatibleDriver,
   OPENROUTER_PROVIDER,
@@ -429,6 +430,28 @@ function buildOpenAICompatibleWorker(opts, cfg) {
   });
 }
 
+// Build a local-model worker (LocalModelDriver). Generates via the in-process
+// model worker (bridge.generate) and dispatches parsed text commands through
+// the same tool registry + cwd-aware hooks the cloud workers use.
+function buildLocalWorker(opts) {
+  const workerCwd = opts.cwd || PROJECT_ROOT;
+  const skills = loadSkills({ cwd: workerCwd });
+  const hooksProvider = createHookProvider({ fallbackCwd: workerCwd });
+  const bridge = getEmbedderBridge();
+  return new LocalModelDriver({
+    ...opts,
+    cwd: workerCwd,
+    model: opts.model,
+    // Stream tokens so the user sees output as it generates (a 0.5B CPU model
+    // is ~2 tok/s — a non-streaming call would block silently for minutes).
+    // onToken is invoked per token with { token, cumulativeText, index }.
+    generate: (prompt, genOpts, onToken) =>
+      bridge.generateStream(prompt, genOpts, onToken),
+    toolRegistry: buildRegistryWithSkills({ skills }),
+    hooksProvider,
+  });
+}
+
 const workerManager = new WorkerManager({
   factories: {
     claude: (opts) => new ClaudeDriver({ ...opts, cwd: opts.cwd || PROJECT_ROOT }),
@@ -458,6 +481,11 @@ const workerManager = new WorkerManager({
       runnerFactory: (runnerOpts) => new OpenRouterRunner(runnerOpts),
       presetFactory: (presetOpts) => createOpenRouterPreset(presetOpts),
     }),
+    // Local in-process text model (ONNX via the model worker). Drives tools by
+    // parsed text commands instead of JSON tool-calling — for no/low-GPU
+    // users. Reuses the same tool registry + cwd-aware hooks as the cloud
+    // workers, so the no-secrets guardrail + per-worker scope still apply.
+    local: (opts) => buildLocalWorker(opts),
   },
   onEvent: (name, payload) => broadcastChat(name, payload),
   // Chat turns mirror to MySecondBrain (one row per Q+A pair). `store` is
