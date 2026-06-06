@@ -173,11 +173,12 @@ test('second worker can receive a distinct prompt and respond', async () => {
   await expect(reply).toContainText('Response to: the unicorn-marker-XYZ', { timeout: 10_000 });
 });
 
-test('memory mirror captures BOTH workers turns with distinct source labels', async () => {
-  // Wait briefly for memory-store async writes to settle.
+test('memory mirror captures BOTH workers turns as MySecondBrain Q+A pairs', async () => {
+  // Wait briefly for the turn-store async writes to settle.
   await new Promise((r) => setTimeout(r, 1500));
 
-  // Worker 1's text from the very first test should be in memory.
+  // Worker 1's answer from the very first test should be in memory (the
+  // answer side of a Q+A turn).
   const r1 = await runMemorySearch('Response to: hello fake claude');
   expect(r1.stdout).toContain('Response to: hello fake claude');
 
@@ -185,23 +186,25 @@ test('memory mirror captures BOTH workers turns with distinct source labels', as
   const r2 = await runMemorySearch('unicorn-marker-XYZ');
   expect(r2.stdout).toContain('unicorn-marker-XYZ');
 
-  // Verify the source labels point to TWO different agent ids — this
-  // is what proves "memory mirror works per worker" rather than
-  // accidentally collapsing both into one record.
-  const sources = new Set();
-  // Match either kind of source label:
-  // <memory:chat-user:abcdef> or <memory:chat-assistant:abcdef>
-  const re = /<memory:chat-(?:user|assistant):([0-9a-f]+)>/g;
+  // Each hit is a Q+A turn tagged with the worker_id that produced it.
+  // Two different workers ran, so we expect ≥2 distinct worker ids across
+  // the results — proving the mirror records turns per worker (not collapsed).
+  const workers = new Set();
+  const re = /"workerId"\s*:\s*"([0-9a-f]+)"/g;
   let m;
-  while ((m = re.exec(r1.stdout + '\n' + r2.stdout)) !== null) sources.add(m[1]);
-  if (sources.size < 2) {
-    throw new Error(`expected at least 2 distinct worker ids in memory, found ${sources.size}: ${[...sources].join(', ')}`);
+  while ((m = re.exec(r1.stdout + '\n' + r2.stdout)) !== null) workers.add(m[1]);
+  if (workers.size < 2) {
+    throw new Error(`expected ≥2 distinct worker ids in memory turns, found ${workers.size}: ${[...workers].join(', ')}`);
   }
 });
 
-test('chat turns land in the memory index', async () => {
+test('chat turns land in the MySecondBrain index (searchable by answer text)', async () => {
   const { stdout } = await runMemorySearch('Response to: hello fake claude');
+  // The assistant answer is searchable — the whole point of the Q+A turn
+  // store (the old design only reliably surfaced the user prompt).
   expect(stdout).toContain('Response to: hello fake claude');
+  // And it comes back as a turn (has an answer field), not a flat row.
+  expect(stdout).toContain('"answer"');
 });
 
 test('chat fills the window when terminal area is hidden, shrinks when terminal opens', async () => {
@@ -489,6 +492,64 @@ test('@memory works with no workers attached', async () => {
   await win.waitForTimeout(500);
 });
 
+test('/memory-search is a slash alias for @memory (standalone, no worker needed)', async () => {
+  // The semantic worker's /memory-search tool was removed; /memory-search
+  // now routes to the same built-in memory command as @memory. Self-
+  // contained: seed a unique memory, search via the slash form.
+  await win.evaluate(async () => {
+    await window.transport.memory.store({
+      text: 'slash-alias-marker quokka deployment notes', source: 'slash-alias-test',
+    });
+  });
+  await win.waitForTimeout(800);
+
+  const input = win.locator('#am-input');
+  await input.click();
+  await input.fill('/memory-search slash-alias-marker');
+  await win.keyboard.press('Enter');
+
+  // Same results bubble the @memory command renders.
+  const memBubble = win.locator('.bubble--memory').last();
+  await expect(memBubble).toBeVisible({ timeout: 5000 });
+  const hits = memBubble.locator('.bubble--memory__hit');
+  await expect(hits.first()).toBeVisible({ timeout: 8000 });
+  expect(await hits.first().textContent()).toContain('slash-alias-marker');
+
+  // The echoed user bubble preserves the /memory-search prefix the user
+  // typed (the command echoes resolved flags too, so match prefix + query
+  // rather than the exact string).
+  const userBubble = win.locator('.bubble--user').last();
+  await expect(userBubble).toContainText('/memory-search');
+  await expect(userBubble).toContainText('slash-alias-marker');
+});
+
+test('slash-command autocomplete popup lists built-in commands and accepts one', async () => {
+  const input = win.locator('#am-input');
+  await input.click();
+  // Typing "/" opens the popup with the always-on built-in commands —
+  // independent of whether a tool-exposing worker is attached.
+  await input.fill('/');
+  const popup = win.locator('compose-input').locator('#am-mention-popup');
+  await expect(popup).toBeVisible({ timeout: 3000 });
+  const items = popup.locator('.mention-item--slash');
+  await expect(items.filter({ hasText: '/memory-search' })).toHaveCount(1);
+  await expect(items.filter({ hasText: '/attach' })).toHaveCount(1);
+
+  // Filtering narrows the list as you type.
+  await input.fill('/mem');
+  await expect(items.filter({ hasText: '/memory-search' })).toHaveCount(1);
+  await expect(items.filter({ hasText: '/attach' })).toHaveCount(0);
+
+  // Accept the highlighted command (Enter/Tab) → textarea gets "/memory-search ".
+  await win.keyboard.press('Tab');
+  await expect(input).toHaveValue(/^\/memory-search /);
+  // Popup dismisses after accept.
+  await expect(popup).toBeHidden();
+
+  // Clear so we don't disturb following tests.
+  await input.fill('');
+});
+
 test('@memory --limit N raises the result count', async () => {
   await win.waitForTimeout(500);
   const workerCount = await win.locator('.worker-chip').count();
@@ -597,9 +658,9 @@ test('default @memory filters low-confidence hits; --all reveals them', async ()
   await expect(bubble).toBeVisible({ timeout: 5000 });
   await win.waitForTimeout(500);
   const allCount = await bubble.locator('.bubble--memory__hit').count();
-  // --all may return more hits (default 0.5 filter usually hides
-  // some), or the same count if all candidates already had ≥0.5
-  // confidence. Either way, --all >= filtered.
+  // --all may return more hits (the default min-confidence filter usually
+  // hides some), or the same count if all candidates already cleared the
+  // default threshold. Either way, --all >= filtered.
   expect(allCount).toBeGreaterThanOrEqual(filteredCount);
 });
 

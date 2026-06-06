@@ -15,19 +15,17 @@
 /** @param {MemoryHandlerDeps} deps */
 function register({ ipcMain, indexHost, runIngest }) {
   ipcMain.handle('memory:search', async (_e, body = {}) => {
-    const { query, limit, kindFilter, minConfidence } = body;
+    const { query, limit, minConfidence } = body;
     if (!query || typeof query !== 'string') return { hits: [], totalCandidates: 0, stats: null };
-    await runIngest();
-    const opts = { query, kindFilter: kindFilter || null };
-    // Only pass limit when caller specified one — sessionIndex.search
-    // falls back to its default of 10. Threshold-only queries (no
-    // explicit limit) intentionally leave limit undefined so the
-    // search returns all rows ≥ threshold. See docs/memory-search.md.
+    // Chat memory now lives in MySecondBrain (one row per Q+A turn), written
+    // synchronously on turn-end — no file ingest needed for it. We search
+    // ONLY MySecondBrain (the old `rows` chat data is frozen until migrated).
+    const opts = { query };
     if (typeof limit === 'number') opts.limit = limit;
     if (typeof minConfidence === 'number' && minConfidence > 0) {
       opts.minConfidence = minConfidence;
     }
-    const hits = await indexHost.search(opts);
+    const hits = await indexHost.searchTurns(opts);
     // hits is an Array with a non-enumerable totalCandidates property —
     // pull it out explicitly so it survives the IPC JSON roundtrip.
     const totalCandidates = (hits && typeof hits.totalCandidates === 'number')
@@ -43,12 +41,33 @@ function register({ ipcMain, indexHost, runIngest }) {
     return indexHost.stats();
   });
 
-  // Write a freeform memory directly to the index. Mirrors the
-  // /memory/store HTTP route but stays in-process so the renderer test
-  // panel doesn't need to talk to the loopback server.
+  // Write a freeform memory (e.g. the model's memory_store tool, or a direct
+  // note). Routed into MySecondBrain so it's findable by the same search that
+  // serves chat turns: the note text becomes the `answer`, and `prompt` holds
+  // a provenance label (what caused the note) so it's tied to its trigger and
+  // distinguishable from a real Q+A pair.
   ipcMain.handle('memory:store', async (_e, body = {}) => {
-    return indexHost.storeMemory(body);
+    const text = String(body.text || '').trim();
+    if (!text) return { ok: false, error: 'empty text' };
+    const prompt = freeformProvenance(body);
+    return indexHost.storeTurn({
+      prompt,
+      answer: text,
+      provider: 'note',
+      ts: body.ts || undefined,
+    });
   });
+}
+
+// Build a provenance label for a freeform note from its source/tags, so the
+// stored turn records WHAT caused the note (not an empty prompt).
+function freeformProvenance(body) {
+  const source = body.source ? String(body.source).trim() : '';
+  const tags = Array.isArray(body.tags) ? body.tags.filter(Boolean) : [];
+  const parts = ['saved note'];
+  if (source) parts.push(`source: ${source}`);
+  if (tags.length) parts.push(`tags: ${tags.join(', ')}`);
+  return `[${parts.join(' · ')}]`;
 }
 
 module.exports = { register };

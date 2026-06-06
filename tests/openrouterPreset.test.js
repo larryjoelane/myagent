@@ -38,7 +38,7 @@ function run(ctx) {
     eq(p.host, DEFAULT_HOST);
     eq(p.model, DEFAULT_MODEL);
     eq(p.host, 'https://openrouter.ai/api/v1');
-    eq(p.model, 'mistralai/devstral-small');
+    eq(p.model, 'openai/gpt-5-nano');
   });
 
   ctx.test('capabilities report no reasoning toggle', () => {

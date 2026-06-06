@@ -129,7 +129,7 @@ function run(t) {
     });
   });
 
-  t.test('per-query BM25 normalization: best FTS hit has bm25 ratio 1.0', async () => {
+  t.test('BM25 normalization is ABSOLUTE (best hit is not pinned at 1.0)', async () => {
     await withFreshDb(async (db) => {
       await seed(db, [
         'lorem ipsum lorem ipsum lorem ipsum lorem ipsum',
@@ -139,18 +139,28 @@ function run(t) {
       const hits = await sessionIndex.search(db, 'lorem ipsum', { limit: 10 });
       const ftsHits = hits.filter((h) => h.bm25 !== null);
       ok(ftsHits.length >= 2, 'multiple FTS-matching rows');
-      // best_bm25 is the most-negative number; expose it for assertion
-      // by reading from the search result's __bm25Best (test hook), or
-      // re-derive from raw bm25 values.
       const bestBm25 = Math.min(...ftsHits.map((h) => h.bm25));
-      // For the row with bestBm25, the bm25-normalized component should
-      // equal 1.0. For others, it should be < 1.0. Confidence is the
-      // max of cosine_norm and bm25_norm, so we can't read bm25_norm
-      // directly — but we can assert the row at bestBm25 has
-      // confidence ≥ 0.999.
       const bestRow = ftsHits.find((h) => h.bm25 === bestBm25);
-      ok(bestRow.confidence >= 0.999,
-        `best-BM25 row should have confidence ≈ 1.0, got ${bestRow.confidence}`);
+      // The fix: confidence is an ABSOLUTE relevance signal (1 - exp(k·bm25)),
+      // NOT bm25/bestBm25 — so the best hit reflects true strength and is no
+      // longer artificially pinned to exactly 1.0. (Combined confidence is
+      // max(cosine, bm25Norm), so we don't assert cross-row monotonicity —
+      // cosine can reorder rows — only that the best hit isn't a fake 1.0.)
+      ok(bestRow.confidence > 0 && bestRow.confidence <= 1.0001,
+        `best-BM25 confidence is a real value in (0,1], got ${bestRow.confidence}`);
+    });
+  });
+
+  t.test('BM25 component is absolute: low-magnitude bm25 yields LOW confidence (no fake 1.0)', async () => {
+    await withFreshDb(async (db) => {
+      // A single doc → IDF degenerate → bm25 ≈ 0 for a keyword query. The old
+      // formula gave that hit confidence 1.0 (bm25/bestBm25). The fix makes
+      // it fall back to the honest cosine, which for a loose keyword is < 1.
+      await seed(db, ['the quick brown fox jumps over the lazy dog']);
+      const hits = await sessionIndex.search(db, 'fox', { limit: 5 });
+      ok(hits.length >= 1, 'keyword matched');
+      ok(hits[0].confidence < 0.99,
+        `single-doc keyword hit must not be auto-1.0; got ${hits[0].confidence}`);
     });
   });
 

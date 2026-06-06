@@ -894,6 +894,42 @@ body.is-resizing * {
   text-overflow: ellipsis;
   line-height: 1.4;
 }
+/* Q+A turn hit (MySecondBrain). The whole card is clickable to insert the
+   pair; the answer expands via its own toggle (which stops propagation). */
+.bubble--memory__q {
+  font-family: 'Cascadia Code', Consolas, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  line-height: 1.4;
+}
+.bubble--memory__a {
+  font-family: 'Cascadia Code', Consolas, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  line-height: 1.4;
+  margin-top: 4px;
+}
+.bubble--memory__a--collapsed {
+  max-height: 3em;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent);
+          mask-image: linear-gradient(to bottom, #000 55%, transparent);
+}
+.bubble--memory__toggle {
+  margin-top: 4px;
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  font-size: 11px;
+  font-family: inherit;
+  padding: 0;
+  cursor: pointer;
+}
+.bubble--memory__toggle:hover { text-decoration: underline; }
 .bubble--memory__error {
   color: var(--warn);
   font-size: 11px;

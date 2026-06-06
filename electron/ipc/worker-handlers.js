@@ -143,31 +143,20 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
   });
 
   // Model list for the OpenRouter spawn dropdown. Mirrors the ollama-cloud
-  // handler: OPENROUTER_MODELS (comma-separated) overrides a small built-in
-  // default set; OPENROUTER_MODEL (or `openrouter/auto`) is the default
-  // selection. OpenRouter model ids are `vendor/model` slugs. Env-driven by
-  // design — no network call here; the live catalog has hundreds of entries.
+  // handler: OPENROUTER_MODELS (comma-separated) overrides the built-in
+  // default set; OPENROUTER_MODEL is the default selection. OpenRouter model
+  // ids are `vendor/model` slugs. Env-driven by design — no network call
+  // here; the live catalog has hundreds of entries.
   ipcMain.handle('worker:openrouter-models', () => {
     const raw = (process.env.OPENROUTER_MODELS || '').trim();
     const models = raw
       ? raw.split(',').map((s) => s.trim()).filter(Boolean)
       : [
-          'mistralai/devstral-small',
-          'mistralai/devstral-2512',
-          'mistralai/codestral-2508',
-          'openrouter/auto',
-          'anthropic/claude-3.7-sonnet',
-          'openai/gpt-4o',
+          'openai/gpt-5-nano',
           'openai/gpt-4o-mini',
-          'google/gemini-2.0-flash-001',
-          'meta-llama/llama-3.3-70b-instruct',
-          'deepseek/deepseek-chat',
-          'qwen/qwen-2.5-coder-32b-instruct',
         ];
-    // Devstral Small (Mistral's agentic coding model). env OPENROUTER_MODEL
-    // overrides. Note: this slug may have no active OpenRouter provider
-    // endpoints at times — switch to mistralai/devstral-2512 if it 404s.
-    const def = (process.env.OPENROUTER_MODEL || '').trim() || 'mistralai/devstral-small';
+    // GPT-5-nano is the default selection; env OPENROUTER_MODEL overrides.
+    const def = (process.env.OPENROUTER_MODEL || '').trim() || 'openai/gpt-5-nano';
     return { ok: true, models, default: def };
   });
 

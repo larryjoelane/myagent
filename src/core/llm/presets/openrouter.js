@@ -21,10 +21,10 @@
 const { OpenAIChat } = require('../openaiChat');
 
 const DEFAULT_HOST = 'https://openrouter.ai/api/v1';
-// Devstral Small — Mistral's agentic coding model. (If OpenRouter shows no
-// active provider endpoints for this slug, mistralai/devstral-2512 is the
-// fully-served alternative.)
-const DEFAULT_MODEL = 'mistralai/devstral-small';
+// GPT-5-nano — the default OpenRouter model the app offers (matches the
+// spawn dropdown's default selection; gpt-4o-mini is also offered). Override
+// per-spawn with a `model` arg or via the OPENROUTER_MODEL env var.
+const DEFAULT_MODEL = 'openai/gpt-5-nano';
 
 // Sent so OpenRouter can attribute requests to this app (optional but
 // recommended by their docs). Overridable via env for forks/deploys.

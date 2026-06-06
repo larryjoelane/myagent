@@ -81,6 +81,11 @@ class WorkerHost {
   storeMemory({ text, source, tags, ts } = {}) {
     return this._send('storeMemory', { text, source, tags, ts });
   }
+  // MySecondBrain: chat Q+A turns.
+  storeTurn(payload = {}) { return this._send('storeTurn', payload); }
+  searchTurns({ query, limit, minConfidence } = {}) {
+    return this._send('searchTurns', { query, limit, minConfidence });
+  }
   stats() { return this._send('stats', {}); }
 
   // Single-flight ingest helper — multiple callers (startup, post-turn,

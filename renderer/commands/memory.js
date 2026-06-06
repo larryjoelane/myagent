@@ -3,7 +3,11 @@
 // results into the chat log inline. Reserved name; never resolves to
 // a worker even if one is somehow named "memory".
 //
-// Forms:
+// Also accepts `/memory-search` as a slash-command alias for `@memory`
+// (same grammar, same handler) — this is the standalone replacement for
+// the removed semantic worker's /memory-search tool.
+//
+// Forms (either `@memory …` or `/memory-search …`):
 //   @memory                           → help bubble
 //   @memory --help | -h | help        → help bubble
 //   @memory <query>                   → top results, default min-confidence
@@ -22,13 +26,17 @@
 // Default min-confidence applied when the user didn't specify --min
 // or --all. Filters obvious noise without being aggressive.
 //
-// Cosine similarity in MiniLM-L6 lands at 0.3–0.4 for random sentence
-// pairs (noise floor), so 0.5 is the right cutoff for "this is
-// plausibly related." Users can drop lower with --min 0.3 or see
-// everything with --all. See docs/memory-search.md.
-export const DEFAULT_MIN_CONFIDENCE = 0.5;
+// Empirically (after the BM25-normalization fix that made scores honest),
+// MiniLM-L6 rates genuinely relevant paraphrase matches around 0.37–0.49
+// and unrelated noise near 0.10. The old 0.5 default sat ABOVE the relevant
+// cluster, so real matches got filtered. 0.35 catches the relevant band
+// while staying clear of the noise floor. Tighten with --min 0.6 for
+// precision, or --all to see everything. See docs/memory-search.md.
+export const DEFAULT_MIN_CONFIDENCE = 0.35;
 
-const MEMORY_RE = /^\s*@memory(?:\s+([\s\S]+))?$/i;
+// Matches `@memory …` or the slash alias `/memory-search …`. Capture
+// group 1 is the trailing args (flags + query), if any.
+const MEMORY_RE = /^\s*(?:@memory|\/memory-search)(?:\s+([\s\S]+))?$/i;
 
 /**
  * Parse the flags + query out of a "@memory ..." input.
@@ -111,7 +119,8 @@ async function runMemorySearch(chatLog, query, opts) {
   if (typeof opts.limit === 'number') flagsLabel.push(`--limit ${opts.limit}`);
   if (opts.minConfidence > 0 && !opts.showAll) flagsLabel.push(`--min ${opts.minConfidence}`);
   const echoQuery = (flagsLabel.length ? flagsLabel.join(' ') + ' ' : '') + query;
-  chatLog.pushUser(`@memory ${echoQuery}`);
+  // Echo back the prefix the user actually typed (@memory or /memory-search).
+  chatLog.pushUser(`${opts.prefix || '@memory'} ${echoQuery}`);
 
   const bubble = appendMemoryBubble(chatLog, query);
   try {
@@ -147,6 +156,8 @@ async function runMemorySearch(chatLog, query, opts) {
 export async function tryHandleMemoryCommand(raw, chatLog) {
   const m = raw.match(MEMORY_RE);
   if (!m) return false;
+  // Preserve which prefix the user typed so the echoed bubble matches.
+  const prefix = /^\s*\//.test(raw) ? '/memory-search' : '@memory';
   const tail = (m[1] || '').trim();
   if (!tail || tail === '--help' || tail === '-h' || tail === 'help') {
     appendHelpBubble(chatLog);
@@ -161,6 +172,7 @@ export async function tryHandleMemoryCommand(raw, chatLog) {
     limit: parsed.limit,
     minConfidence: parsed.minConfidence,
     showAll: parsed.showAll,
+    prefix,
   });
   return true;
 }

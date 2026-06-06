@@ -89,6 +89,20 @@ const indexHost = new WorkerHost({
 });
 function runIngest() { return indexHost.ensureIngested(); }
 
+// Convert a freeform memory note ({ text, source, tags }) into a
+// MySecondBrain turn: the note text is the `answer`, and `prompt` records
+// the note's provenance (what caused it) so it's tied to its trigger and
+// distinguishable from a real Q+A pair.
+function noteToTurn(body = {}) {
+  const text = String(body.text || '').trim();
+  const source = body.source ? String(body.source).trim() : '';
+  const tags = Array.isArray(body.tags) ? body.tags.filter(Boolean) : [];
+  const parts = ['saved note'];
+  if (source) parts.push(`source: ${source}`);
+  if (tags.length) parts.push(`tags: ${tags.join(', ')}`);
+  return { prompt: `[${parts.join(' · ')}]`, answer: text, provider: 'note', ts: body.ts || undefined };
+}
+
 // In-memory leader/worker registry shared across all PTY-hosted agents
 // in this app. Lives behind the loopback HTTP server so the bin/agent.js
 // CLI can reach it from anywhere on the machine.
@@ -192,7 +206,8 @@ const tokenLedger = new TokenLedger({
 // scale rationale.
 
 const AUTO_CONTEXT_DEFAULTS = {
-  minConfidence: 0.6,    // tighter than chat default (0.5)
+  minConfidence: 0.6,    // tighter than the chat search default (0.35) —
+                         // auto-injected context must be high-precision
   maxHits: 3,            // top-k injected
   maxChars: 1500,        // hard cap on preamble size (~500 tokens)
 };
@@ -201,7 +216,7 @@ async function memoryContextProvider({ text }) {
   if (!appSettings.get('autoContext', true)) return { preamble: '', usedHits: [] };
   if (!text || !text.trim()) return { preamble: '', usedHits: [] };
   try {
-    const hits = await indexHost.search({
+    const hits = await indexHost.searchTurns({
       query: text,
       limit: AUTO_CONTEXT_DEFAULTS.maxHits,
       minConfidence: AUTO_CONTEXT_DEFAULTS.minConfidence,
@@ -403,11 +418,13 @@ function buildOpenAICompatibleWorker(opts, cfg) {
     // Default env context: the built-in builder (cwd/platform/git/scope/
     // date). Per-spawn opts.envContext overrides; `false` disables it.
     envContext: opts.envContext === undefined ? true : opts.envContext,
-    // Wire the session index so memory_search / memory_store work when
-    // the model invokes them (same backend the memory features use).
+    // Wire the session index so memory_search / memory_store work when the
+    // model invokes them. Both go through MySecondBrain (the unified store):
+    // search uses searchTurns; a stored note becomes a turn whose `answer` is
+    // the note and whose `prompt` records its provenance.
     memory: {
-      search: (opts2) => indexHost.search(opts2),
-      store: (body) => indexHost.storeMemory(body),
+      search: (opts2) => indexHost.searchTurns(opts2),
+      store: (body) => indexHost.storeTurn(noteToTurn(body)),
     },
   });
 }
@@ -443,7 +460,12 @@ const workerManager = new WorkerManager({
     }),
   },
   onEvent: (name, payload) => broadcastChat(name, payload),
-  memoryStore: { store: (body) => indexHost.storeMemory(body) },
+  // Chat turns mirror to MySecondBrain (one row per Q+A pair). `store` is
+  // kept for any legacy single-text callers; the mirror uses storeTurn.
+  memoryStore: {
+    store: (body) => indexHost.storeMemory(body),
+    storeTurn: (turn) => indexHost.storeTurn(turn),
+  },
   memoryMirrorDefault: true,
   contextProvider: autoContextProvider,
   // Per-worker scopes (ADR-0008). Each spawn snapshots the editor
@@ -557,10 +579,11 @@ async function startSearchServer() {
       // Server-side adapter — translates HTTP routes into worker host
       // calls. The host already serializes its own ops, so the server
       // can be as thin as possible.
-      search: (opts) => indexHost.search(opts),
+      // Unified store: search + freeform store go through MySecondBrain.
+      search: (opts) => indexHost.searchTurns(opts),
       stats: () => indexHost.stats(),
       ingest: () => runIngest(),
-      storeMemory: (opts) => indexHost.storeMemory(opts),
+      storeMemory: (opts) => indexHost.storeTurn(noteToTurn(opts)),
       agents: agentRegistry,
     });
     searchServerStop = handle.stop;

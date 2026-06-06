@@ -5,7 +5,8 @@
 //   - The textarea (auto-grow on input, capped via CSS max-height)
 //   - Send button
 //   - @-mention popup (filtered by store.workers + the @-token under cursor)
-//   - Slash-command popup (filtered by the current worker's toolkit, if any)
+//   - Slash-command popup (built-in commands + the current worker's
+//     toolkit, if any; filtered by the typed /token)
 //   - Keyboard nav within either popup (ArrowUp/Down, Tab/Enter to accept,
 //     Escape to dismiss)
 //   - Enter to submit (Shift+Enter for newline)
@@ -30,6 +31,19 @@
 import { LitElement, html, css } from 'lit';
 import { store } from '../state/store.js';
 import { cmdBtnStyles } from './styles.js';
+
+// Built-in slash commands — always available in any chat, independent of
+// which worker (if any) is attached. These are the renderer-side commands
+// handled in agentManager.send() BEFORE the worker routing (see
+// renderer/commands/*.js). Drivers that expose their own `toolkit` (none
+// today, but the path is kept) get their tools merged in on top.
+//
+// `id` is the command name after the `/`; `description` shows as the popup
+// subtitle. Keep ids in sync with the command parsers.
+const BUILTIN_SLASH_COMMANDS = [
+  { id: 'memory-search', description: 'Search memory and show results inline. Flags: --all, --limit N, --min X. Alias of @memory.' },
+  { id: 'attach', description: 'Stage a file to include with your next message.' },
+];
 
 export class ComposeInput extends LitElement {
   static styles = [
@@ -212,14 +226,20 @@ export class ComposeInput extends LitElement {
 
   // ---- Popup logic -------------------------------------------------------
 
-  _currentWorkerTools() {
+  // Slash commands available right now: the always-on built-ins, plus any
+  // tools the active worker's driver exposed via worker:list-tools
+  // (toolsByWorker). Built-ins come first; worker tools are appended,
+  // de-duped by id so a worker can't shadow a built-in.
+  _availableSlashCommands() {
     const s = store.get();
+    const out = [...BUILTIN_SLASH_COMMANDS];
     const w = s.workers.find((x) => x.id === s.currentTarget);
-    if (!w) return null;
-    // Slash autocomplete is driven by whatever tools the worker's driver
-    // exposed via worker:list-tools (toolsByWorker). Drivers that expose no
-    // toolkit simply have no entry, so the popup stays hidden.
-    return s.toolsByWorker.get(w.id) || null;
+    const workerTools = (w && s.toolsByWorker.get(w.id)) || [];
+    const seen = new Set(out.map((c) => c.id));
+    for (const t of workerTools) {
+      if (t && t.id && !seen.has(t.id)) { out.push(t); seen.add(t.id); }
+    }
+    return out;
   }
 
   /**
@@ -233,26 +253,21 @@ export class ComposeInput extends LitElement {
     const cursor = ta.selectionStart || 0;
     const before = text.slice(0, cursor);
 
-    // Slash mode: only when `/` is the very first character of the
-    // textarea AND the active worker exposed a toolkit (others have no
-    // tools to autocomplete from).
+    // Slash mode: when `/` is the very first character of the textarea.
+    // The command list is the always-on built-ins plus any active-worker
+    // tools — so the popup works in every chat, not just when a tool-
+    // exposing worker is attached.
     if (text.startsWith('/')) {
-      const tools = this._currentWorkerTools();
-      if (tools && tools.length > 0) {
-        const m = text.match(/^\/([a-zA-Z0-9_-]*)/);
-        const typedCmd = (m && m[1]) ? m[1].toLowerCase() : '';
-        const entries = [
-          { id: 'help', name: 'Help', description: 'List all tools or show help for one.' },
-          ...tools,
-        ];
-        const matches = entries.filter((t) => t.id.toLowerCase().includes(typedCmd));
-        this._popupMode = 'slash';
-        this._matches = matches;
-        if (this._slashSelected >= matches.length) this._slashSelected = Math.max(0, matches.length - 1);
-        if (this._slashSelected < 0) this._slashSelected = 0;
-        this.requestUpdate();
-        return;
-      }
+      const entries = this._availableSlashCommands();
+      const m = text.match(/^\/([a-zA-Z0-9_-]*)/);
+      const typedCmd = (m && m[1]) ? m[1].toLowerCase() : '';
+      const matches = entries.filter((t) => t.id.toLowerCase().includes(typedCmd));
+      this._popupMode = 'slash';
+      this._matches = matches;
+      if (this._slashSelected >= matches.length) this._slashSelected = Math.max(0, matches.length - 1);
+      if (this._slashSelected < 0) this._slashSelected = 0;
+      this.requestUpdate();
+      return;
     }
 
     // @-mention mode. Match @prefix at end of prefix-up-to-cursor.
@@ -335,7 +350,12 @@ export class ComposeInput extends LitElement {
         this.requestUpdate();
         return;
       }
-      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+      // Tab ALWAYS accepts the highlighted command. Enter accepts only while
+      // you're still picking — i.e. the textarea is just a bare `/token` with
+      // no space yet. Once you've typed `/cmd <args>`, Enter SUBMITS so a
+      // command like `/memory-search foo` runs instead of re-inserting `/cmd`.
+      const stillPicking = /^\/[a-zA-Z0-9_-]*$/.test(this.value);
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && stillPicking)) {
         e.preventDefault();
         const pick = this._matches[this._slashSelected];
         if (pick) this._acceptSlash(pick.id);

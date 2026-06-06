@@ -168,45 +168,103 @@ export class MemoryBubble extends HTMLElement {
     }
 
     this._hits.forEach((hit, i) => {
-      const item = document.createElement('div');
-      item.className = 'bubble--memory__hit';
-      item.title = 'Click to append this snippet to the compose box';
-
-      const meta = document.createElement('div');
-      meta.className = 'bubble--memory__meta';
-      const sourceLabel = sourceShortName(hit.file);
-      // User-facing confidence (0–1): max of normalized cosine and per-query
-      // BM25. Falls back to RRF score for hits that predate the field.
-      const conf = (typeof hit.confidence === 'number')
-        ? hit.confidence.toFixed(2)
-        : (typeof hit.score === 'number' ? hit.score.toFixed(3) : '?');
-      const ts = (hit.ts || '').slice(0, 19).replace('T', ' ');
-      meta.textContent = `${i + 1}. ${sourceLabel} · ${ts} · conf ${conf}`;
-      meta.title =
-        'Confidence (0–1): max of cosine similarity and per-query BM25 ' +
-        'normalized score. See docs/memory-search.md.';
-      item.appendChild(meta);
-
-      const snippet = document.createElement('div');
-      snippet.className = 'bubble--memory__snippet';
-      snippet.textContent = hit.snippet || '';
-      item.appendChild(snippet);
-
-      // Click → dispatch full hit text. We use hit.text (entire row) over
-      // hit.snippet (truncated to 400 chars) so users ground their next
-      // prompt in the complete memory.
-      item.addEventListener('click', () => {
-        const text = hit.text || hit.snippet || '';
-        if (!text) return;
-        this.dispatchEvent(new CustomEvent('insert-snippet', {
-          detail: { text },
-          bubbles: true,
-          composed: true,
-        }));
-      });
-
+      // MySecondBrain turns carry discrete prompt/answer; older rows carry a
+      // single `text`. Render the Q+A pair (collapsed answer, click to
+      // expand) when we have a prompt; fall back to the flat snippet otherwise.
+      const isTurn = typeof hit.prompt === 'string';
+      const item = isTurn ? this._renderTurnHit(hit, i) : this._renderFlatHit(hit, i);
       body.appendChild(item);
     });
+  }
+
+  // A Q+A turn hit: meta line, the prompt (Q), and a COLLAPSED answer that
+  // expands on click. Clicking the prompt inserts the full pair into compose.
+  _renderTurnHit(hit, i) {
+    const item = document.createElement('div');
+    item.className = 'bubble--memory__hit bubble--memory__hit--turn';
+    item.title = 'Click to append this Q+A to the compose box';
+
+    const meta = document.createElement('div');
+    meta.className = 'bubble--memory__meta';
+    const conf = (typeof hit.confidence === 'number')
+      ? hit.confidence.toFixed(2)
+      : (typeof hit.score === 'number' ? hit.score.toFixed(3) : '?');
+    const ts = (hit.ts || '').slice(0, 19).replace('T', ' ');
+    const src = hit.model || hit.provider || 'chat';
+    meta.textContent = `${i + 1}. ${src} · ${ts} · conf ${conf}`;
+    meta.title = 'Confidence (0–1): max of cosine similarity and per-query BM25. See docs/memory-search.md.';
+    item.appendChild(meta);
+
+    // Q — the prompt.
+    const q = document.createElement('div');
+    q.className = 'bubble--memory__q';
+    q.textContent = `Q: ${hit.prompt}`;
+    item.appendChild(q);
+
+    // A — collapsed by default; a toggle expands the full answer.
+    const answer = String(hit.answer || '');
+    const a = document.createElement('div');
+    a.className = 'bubble--memory__a bubble--memory__a--collapsed';
+    a.textContent = `A: ${answer}`;
+    item.appendChild(a);
+
+    // Only show the expand control when there's enough answer to hide.
+    if (answer.length > 160) {
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'bubble--memory__toggle';
+      toggle.textContent = 'Show answer';
+      toggle.addEventListener('click', (e) => {
+        // Don't let the expand click also trigger the item's insert.
+        e.stopPropagation();
+        const collapsed = a.classList.toggle('bubble--memory__a--collapsed');
+        toggle.textContent = collapsed ? 'Show answer' : 'Hide answer';
+      });
+      item.appendChild(toggle);
+    } else {
+      a.classList.remove('bubble--memory__a--collapsed');
+    }
+
+    // Clicking anywhere on the hit (except the expand toggle) inserts the
+    // full Q+A pair into compose — matches the flat-hit behavior.
+    item.addEventListener('click', () => {
+      const text = hit.text || `Q: ${hit.prompt}\n\nA: ${answer}`;
+      this.dispatchEvent(new CustomEvent('insert-snippet', {
+        detail: { text }, bubbles: true, composed: true,
+      }));
+    });
+    return item;
+  }
+
+  // Legacy/flat hit (old `rows`-style result with a single text/snippet).
+  _renderFlatHit(hit, i) {
+    const item = document.createElement('div');
+    item.className = 'bubble--memory__hit';
+    item.title = 'Click to append this snippet to the compose box';
+
+    const meta = document.createElement('div');
+    meta.className = 'bubble--memory__meta';
+    const sourceLabel = sourceShortName(hit.file);
+    const conf = (typeof hit.confidence === 'number')
+      ? hit.confidence.toFixed(2)
+      : (typeof hit.score === 'number' ? hit.score.toFixed(3) : '?');
+    const ts = (hit.ts || '').slice(0, 19).replace('T', ' ');
+    meta.textContent = `${i + 1}. ${sourceLabel} · ${ts} · conf ${conf}`;
+    item.appendChild(meta);
+
+    const snippet = document.createElement('div');
+    snippet.className = 'bubble--memory__snippet';
+    snippet.textContent = hit.snippet || '';
+    item.appendChild(snippet);
+
+    item.addEventListener('click', () => {
+      const text = hit.text || hit.snippet || '';
+      if (!text) return;
+      this.dispatchEvent(new CustomEvent('insert-snippet', {
+        detail: { text }, bubbles: true, composed: true,
+      }));
+    });
+    return item;
   }
 }
 

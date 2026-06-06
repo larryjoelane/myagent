@@ -60,10 +60,13 @@ function recorder() {
 }
 
 function fakeMemoryStore() {
-  const stored = [];
+  const stored = [];   // legacy single-text store() calls
+  const turns = [];    // MySecondBrain storeTurn() calls (one per Q+A turn)
   return {
     store(payload) { stored.push(payload); return Promise.resolve(); },
+    storeTurn(turn) { turns.push(turn); return Promise.resolve({ id: turns.length }); },
     stored,
+    turns,
   };
 }
 
@@ -190,7 +193,7 @@ function run(t) {
     contains(r.last('chat:turn-end').payload.assistantText, 'reply');
   });
 
-  t.test('memory mirror writes user+assistant on chat:turn-end when enabled', async () => {
+  t.test('memory mirror writes ONE Q+A turn on chat:turn-end when enabled', async () => {
     const memoryStore = fakeMemoryStore();
     const { factories, created } = fakeFactories();
     const mgr = new WorkerManager({
@@ -202,14 +205,20 @@ function run(t) {
     const a = await mgr.spawnWorker({ name: 'mem' });
     created.claude[0].emit('chat:turn-end', {
       userText: 'remember this', assistantText: 'noted', ok: true,
+      provider: 'openrouter', totals: { model: 'openai/gpt-5-nano' },
     });
-    // storeMemory may be async; let it settle.
+    // storeTurn may be async; let it settle.
     await new Promise((res) => setImmediate(res));
-    eq(memoryStore.stored.length, 2, 'two rows stored (user + assistant)');
-    contains(memoryStore.stored[0].text, 'remember this');
-    contains(memoryStore.stored[0].source, a.id);
-    contains(memoryStore.stored[1].text, 'noted');
-    contains(memoryStore.stored[1].tags.join(','), 'assistant');
+    // ONE combined turn, not two separate rows (the old unlinked design).
+    eq(memoryStore.turns.length, 1, 'one Q+A turn stored');
+    const turn = memoryStore.turns[0];
+    eq(turn.prompt, 'remember this');
+    eq(turn.answer, 'noted');
+    eq(turn.workerId, a.id);
+    eq(turn.provider, 'openrouter');
+    eq(turn.model, 'openai/gpt-5-nano');
+    // Legacy two-row store() path is no longer used by the mirror.
+    eq(memoryStore.stored.length, 0, 'no legacy single-text rows');
   });
 
   t.test('memory mirror skipped when default is off and no per-worker override', async () => {
@@ -226,7 +235,7 @@ function run(t) {
       userText: 'a', assistantText: 'b', ok: true,
     });
     await new Promise((res) => setImmediate(res));
-    eq(memoryStore.stored.length, 0);
+    eq(memoryStore.turns.length, 0);
   });
 
   t.test('per-worker memory mirror override flips behavior', async () => {
@@ -244,7 +253,7 @@ function run(t) {
       userText: 'a', assistantText: 'b', ok: true,
     });
     await new Promise((res) => setImmediate(res));
-    eq(memoryStore.stored.length, 2);
+    eq(memoryStore.turns.length, 1);
   });
 
   t.test('rename(id, name) updates worker name and respects uniqueness', async () => {
@@ -473,9 +482,10 @@ function run(t) {
       ok: true,
     });
     await new Promise((r) => setImmediate(r));
-    const userMirror = memory.stored.find((s) => s.tags?.includes('user'));
-    ok(userMirror, 'user-side mirror written');
-    eq(userMirror.text, 'remember this', 'mirror got the ORIGINAL, not the augmented prompt');
+    const turn = memory.turns[0];
+    ok(turn, 'turn mirrored');
+    eq(turn.prompt, 'remember this', 'mirror got the ORIGINAL prompt, not the augmented one');
+    eq(turn.answer, 'sure', 'answer captured');
   });
 
   t.test('no auto-context = no rewrite (passthrough)', async () => {

@@ -44,6 +44,16 @@ const OPS = {
   async storeMemory({ text, source, tags, ts }) {
     return sessionIndex.storeMemory(ensureDb(), { text, source, tags, ts });
   },
+  // MySecondBrain: store/search chat Q+A turns (prompt + answer together).
+  async storeTurn(payload = {}) {
+    return sessionIndex.storeTurn(ensureDb(), payload);
+  },
+  async searchTurns({ query, limit, minConfidence } = {}) {
+    const opts = {};
+    if (typeof limit === 'number') opts.limit = limit;
+    if (typeof minConfidence === 'number') opts.minConfidence = minConfidence;
+    return sessionIndex.searchTurns(ensureDb(), query, opts);
+  },
   stats() {
     return sessionIndex.stats(ensureDb());
   },

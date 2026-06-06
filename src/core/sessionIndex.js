@@ -22,6 +22,13 @@ const fs = require('fs');
 const path = require('path');
 const { embed, vectorToBlob, blobToVector, cosine, DIM } = require('./embedder');
 
+// Saturation constant for mapping a raw (negative) BM25 score to an absolute
+// [0,1) relevance: bm25Norm = 1 - exp(BM25_K * bm25). Tuned so a strong
+// single-term match (bm25 ≈ -5) lands ~0.7 and a weak one (≈ -1) ~0.22.
+// Independent of other rows — unlike the old bm25/bestBm25 ratio, which
+// pinned the top hit at 1.0 regardless of true relevance.
+const BM25_K = 0.25;
+
 let Database;
 function loadDriver() {
   if (!Database) Database = require('better-sqlite3');
@@ -84,6 +91,47 @@ CREATE TABLE IF NOT EXISTS auto_memory_cursor (
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT
+);
+
+-- MySecondBrain: one row per chat Q+A TURN (prompt + answer together), so a
+-- search hit recalls the whole exchange. Replaces the old two-unlinked-rows
+-- chat mirror (user prompt and assistant answer used to be separate rows in
+-- the rows table with nothing linking them). prompt/answer are discrete
+-- columns; there is no combined search_text column — the FTS table below
+-- indexes BOTH columns directly, and the embedding is computed from
+-- prompt+answer at write time (transient, not persisted).
+CREATE TABLE IF NOT EXISTS MySecondBrain (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  prompt          TEXT    NOT NULL,
+  answer          TEXT,
+  worker_id       TEXT,
+  provider        TEXT,
+  model           TEXT,
+  conversation_id TEXT,
+  ts              TEXT    NOT NULL,
+  tokens_in       INTEGER,
+  tokens_out      INTEGER,
+  cost            REAL
+);
+CREATE INDEX IF NOT EXISTS msb_ts ON MySecondBrain(ts);
+CREATE INDEX IF NOT EXISTS msb_conversation ON MySecondBrain(conversation_id);
+
+-- FTS over BOTH prompt and answer (a query matches either side). External-
+-- content table mirrors rows_fts; we keep it in sync with manual INSERTs.
+CREATE VIRTUAL TABLE IF NOT EXISTS MySecondBrain_fts USING fts5(
+  prompt,
+  answer,
+  content='MySecondBrain',
+  content_rowid='id',
+  tokenize='unicode61'
+);
+
+-- One embedding per turn (vector of the combined prompt + answer). Mirrors
+-- the vectors table; ON DELETE CASCADE keeps it tidy when a turn is removed.
+CREATE TABLE IF NOT EXISTS MySecondBrain_vectors (
+  turn_id INTEGER PRIMARY KEY REFERENCES MySecondBrain(id) ON DELETE CASCADE,
+  dim     INTEGER NOT NULL,
+  vec     BLOB    NOT NULL
 );
 `;
 
@@ -529,16 +577,20 @@ async function search(db, query, opts = {}) {
     const cosineRaw = cosineById.has(f.id) ? cosineById.get(f.id) : null;
     const bm25Raw = bm25ById.has(f.id) ? bm25ById.get(f.id) : null;
     const cosineNorm = Math.max(0, cosineRaw == null ? 0 : cosineRaw);
-    // Per-query BM25 normalization. Both numbers are negative; the
-    // best row has the most-negative bm25 (largest magnitude). To
-    // produce a [0, 1] ratio where the best row gets 1.0:
-    //   bm25Norm = rowBm25 / bestBm25
-    //              = less_negative / more_negative
-    //              = positive in [0, 1]
-    // Best row: bestBm25 / bestBm25 = 1.0. Weaker rows: smaller ratio.
-    // (Inverted formula gives values > 1 — that was a regression.)
-    const bm25Norm = (bm25Raw != null && bestBm25 != null && bestBm25 < 0)
-      ? bm25Raw / bestBm25
+    // ABSOLUTE BM25 normalization. The old formula divided by the best
+    // row's bm25, which made the top hit ALWAYS score 1.0 (and a single
+    // result trivially 1.0) — a relative ranking, not a relevance signal.
+    // That manufactured fake-perfect confidence for any keyword match and
+    // made keyword vs. semantic hits incomparable on one threshold.
+    //
+    // bm25() is ≤ 0 (more negative = better). Map magnitude to [0,1) with a
+    // saturating transform that doesn't depend on other rows:
+    //   bm25Norm = 1 - exp(BM25_K * bm25Raw)
+    // bm25Raw=0 → 0 (no lexical signal); large magnitude → →1. This also
+    // self-corrects the small-corpus case: with few docs, IDF collapses and
+    // bm25≈0, so bm25Norm≈0 and cosine becomes the honest dominant signal.
+    const bm25Norm = (bm25Raw != null && bm25Raw < 0)
+      ? 1 - Math.exp(BM25_K * bm25Raw)
       : 0;
     const confidence = Math.max(cosineNorm, bm25Norm);
     return {
@@ -610,6 +662,177 @@ async function search(db, query, opts = {}) {
   return result;
 }
 
+// --- MySecondBrain: chat Q+A turns ----------------------------------------
+// One row per turn (prompt + answer together), hybrid-searchable like the
+// `rows` index but keeping the pair linked. The embedding indexes
+// prompt + "\n" + answer; the FTS table indexes both columns directly.
+
+// Combined text used for the embedding (FTS indexes the columns separately,
+// so this is only for the vector). Kept transient — never persisted.
+function turnEmbedText(prompt, answer) {
+  return `${String(prompt || '').trim()}\n${String(answer || '').trim()}`.trim();
+}
+
+// Store one Q+A turn. Returns the new turn id. Embedding failure is
+// non-fatal (the turn still lands + is FTS-searchable). `answer` may be
+// empty (an aborted turn) — we still store the prompt.
+async function storeTurn(db, {
+  prompt, answer = '', workerId = null, provider = null, model = null,
+  conversationId = null, ts = null, tokensIn = null, tokensOut = null, cost = null,
+} = {}) {
+  const p = String(prompt || '').trim();
+  const a = String(answer || '').trim();
+  if (!p && !a) throw new Error('storeTurn: prompt and answer both empty');
+  const stamp = ts || new Date().toISOString();
+  const info = db.prepare(`
+    INSERT INTO MySecondBrain
+      (prompt, answer, worker_id, provider, model, conversation_id, ts, tokens_in, tokens_out, cost)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(p, a, workerId, provider, model, conversationId, stamp, tokensIn, tokensOut, cost);
+  const turnId = info.lastInsertRowid;
+  // FTS5 external-content: insert prompt + answer under the turn's rowid.
+  db.prepare('INSERT INTO MySecondBrain_fts(rowid, prompt, answer) VALUES (?, ?, ?)')
+    .run(turnId, p, a);
+  try {
+    const vec = await embed(turnEmbedText(p, a));
+    db.prepare('INSERT OR REPLACE INTO MySecondBrain_vectors(turn_id, dim, vec) VALUES (?, ?, ?)')
+      .run(turnId, DIM, vectorToBlob(vec));
+  } catch {
+    // Embedder unavailable — turn is still FTS-searchable; vector backfills later.
+  }
+  return { id: turnId, ts: stamp };
+}
+
+// Delete a turn from MySecondBrain + its FTS entry + vector. (Used by a
+// future migration/cleanup; not wired to UI.)
+function deleteTurn(db, turnId) {
+  const existing = db.prepare('SELECT prompt, answer FROM MySecondBrain WHERE id = ?').get(turnId);
+  if (!existing) return false;
+  db.prepare("INSERT INTO MySecondBrain_fts(MySecondBrain_fts, rowid, prompt, answer) VALUES ('delete', ?, ?, ?)")
+    .run(turnId, existing.prompt, existing.answer);
+  db.prepare('DELETE FROM MySecondBrain_vectors WHERE turn_id = ?').run(turnId);
+  db.prepare('DELETE FROM MySecondBrain WHERE id = ?').run(turnId);
+  return true;
+}
+
+// Hybrid search over MySecondBrain turns. Same BM25+cosine fusion as
+// search() but against the turn table. Returns hits with prompt/answer
+// surfaced separately (so the UI can render the pair) plus a combined
+// `text` for compatibility with the existing memory-results bubble.
+async function searchTurns(db, query, opts = {}) {
+  const { minConfidence = 0 } = opts;
+  const limitProvided = typeof opts.limit === 'number';
+  const limit = limitProvided ? opts.limit : 10;
+  const N = (minConfidence > 0 && !limitProvided)
+    ? Number.MAX_SAFE_INTEGER
+    : Math.max(limit * 4, 20);
+
+  // Lexical over the two-column FTS. bm25() scores the whole row (both cols).
+  const ftsQ = ftsQuote(query);
+  const lexicalScored = db.prepare(`
+    SELECT f.rowid AS id, bm25(MySecondBrain_fts) AS bm25
+    FROM MySecondBrain_fts f
+    WHERE MySecondBrain_fts MATCH ?
+    ORDER BY bm25 ASC
+    LIMIT ?
+  `).all(ftsQ, N === Number.MAX_SAFE_INTEGER ? -1 : N);
+  const lexicalRows = lexicalScored.map((r) => r.id);
+  const bm25ById = new Map(lexicalScored.map((r) => [r.id, r.bm25]));
+  const bestBm25 = lexicalScored.length > 0
+    ? Math.min(...lexicalScored.map((r) => r.bm25))
+    : null;
+
+  // Semantic over the turn vectors.
+  let semanticRows = [];
+  const cosineById = new Map();
+  try {
+    const qVec = await embed(query);
+    const scan = db.prepare('SELECT turn_id AS id, vec FROM MySecondBrain_vectors').all();
+    const scored = [];
+    for (const row of scan) {
+      const v = blobToVector(row.vec);
+      if (v.length !== qVec.length) continue;
+      const c = cosine(qVec, v);
+      scored.push({ id: row.id, score: c });
+      cosineById.set(row.id, c);
+    }
+    scored.sort((x, y) => y.score - x.score);
+    const take = N === Number.MAX_SAFE_INTEGER ? scored.length : N;
+    semanticRows = scored.slice(0, take).map((r) => r.id);
+  } catch {
+    // Embedder unavailable — lexical only.
+  }
+
+  const fused = fuse(lexicalRows, semanticRows);
+  if (fused.length === 0) {
+    const empty = [];
+    Object.defineProperty(empty, 'totalCandidates', { value: 0, enumerable: false });
+    return empty;
+  }
+
+  const annotated = fused.map((f) => {
+    const cosineRaw = cosineById.has(f.id) ? cosineById.get(f.id) : null;
+    const bm25Raw = bm25ById.has(f.id) ? bm25ById.get(f.id) : null;
+    const cosineNorm = Math.max(0, cosineRaw == null ? 0 : cosineRaw);
+    // Absolute BM25 → [0,1) relevance (see the long note in search()). The
+    // old bm25Raw/bestBm25 made every keyword hit score 1.0 regardless of
+    // real relevance, so keyword and semantic hits couldn't share a
+    // threshold. This transform is independent of other rows.
+    const bm25Norm = (bm25Raw != null && bm25Raw < 0)
+      ? 1 - Math.exp(BM25_K * bm25Raw)
+      : 0;
+    const confidence = Math.max(cosineNorm, bm25Norm);
+    return { id: f.id, score: f.score, cosine: cosineRaw, bm25: bm25Raw, confidence };
+  });
+
+  const totalCandidates = annotated.length;
+  let filtered = annotated;
+  if (minConfidence > 0) filtered = annotated.filter((h) => h.confidence >= minConfidence);
+  if (limitProvided || minConfidence === 0) filtered = filtered.slice(0, limit);
+  if (filtered.length === 0) {
+    const empty = [];
+    Object.defineProperty(empty, 'totalCandidates', { value: totalCandidates, enumerable: false });
+    return empty;
+  }
+
+  const ids = filtered.map((f) => f.id);
+  const placeholders = ids.map(() => '?').join(',');
+  const hydrated = db.prepare(`
+    SELECT id, prompt, answer, worker_id, provider, model, conversation_id, ts, tokens_in, tokens_out, cost
+    FROM MySecondBrain WHERE id IN (${placeholders})
+  `).all(...ids);
+  const byId = new Map(hydrated.map((r) => [r.id, r]));
+  const result = filtered.map((f) => {
+    const r = byId.get(f.id);
+    if (!r) return null;
+    // Combined text kept for the existing results-bubble (which renders a
+    // single `text`/`snippet`); prompt/answer also surfaced for the new
+    // collapsed-expand Q+A display.
+    const combined = `Q: ${r.prompt}\n\nA: ${r.answer || ''}`.trim();
+    return {
+      id: r.id,
+      score: f.score,
+      cosine: f.cosine,
+      bm25: f.bm25,
+      confidence: f.confidence,
+      ts: r.ts,
+      kind: 'turn',
+      prompt: r.prompt,
+      answer: r.answer || '',
+      workerId: r.worker_id,
+      provider: r.provider,
+      model: r.model,
+      conversationId: r.conversation_id,
+      tokensIn: r.tokens_in,
+      tokensOut: r.tokens_out,
+      text: combined,
+      snippet: combined.length > 400 ? combined.slice(0, 400) + '…' : combined,
+    };
+  }).filter(Boolean);
+  Object.defineProperty(result, 'totalCandidates', { value: totalCandidates, enumerable: false });
+  return result;
+}
+
 // --- Stats (handy for debugging from DevTools) ----------------------------
 
 function stats(db) {
@@ -628,6 +851,10 @@ module.exports = {
   storeMemory,
   search,
   stats,
+  // MySecondBrain (chat Q+A turns)
+  storeTurn,
+  deleteTurn,
+  searchTurns,
   // exported for tests
   extractIndexable,
   ftsQuote,

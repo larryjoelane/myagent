@@ -159,9 +159,10 @@ async function main() {
     process.exit(2);
   }
 
-  const hits = await sessionIndex.search(db, args.query, {
+  // Search MySecondBrain (chat Q+A turns) — the unified store the app writes
+  // to. Each hit carries prompt/answer plus a combined `text`.
+  const hits = await sessionIndex.searchTurns(db, args.query, {
     limit: args.limit,
-    kindFilter: args.kindFilter,
   });
   process.stdout.write(JSON.stringify({ hits, stats: sessionIndex.stats(db) }, null, 2) + '\n');
 }

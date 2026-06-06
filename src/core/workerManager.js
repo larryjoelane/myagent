@@ -428,26 +428,31 @@ class WorkerManager {
   }
 
   async _mirrorTurn(id, payload) {
-    if (!this.memoryStore) return;
+    if (!this.memoryStore || typeof this.memoryStore.storeTurn !== 'function') return;
     if (!this._shouldMirror(id)) return;
-    const stamp = new Date().toISOString();
+    const userText = payload.userText ? String(payload.userText).trim() : '';
+    const assistantText = payload.assistantText ? String(payload.assistantText).trim() : '';
+    // Nothing worth storing — skip (e.g. an empty/aborted turn).
+    if (!userText && !assistantText) return;
+    // Store the turn as ONE MySecondBrain row holding the full Q+A pair, so a
+    // search hit recalls the whole exchange. This replaces the old
+    // two-unlinked-rows mirror (prompt and answer were separate rows in the
+    // `rows` table with nothing tying them together). prompt/answer are
+    // discrete columns; metadata (provider/model/tokens) rides along.
+    const w = this.workers.get(id);
+    const totals = payload.totals || {};
     try {
-      if (payload.userText && String(payload.userText).trim()) {
-        await this.memoryStore.store({
-          text: String(payload.userText).trim(),
-          source: `chat-user:${id}`,
-          tags: ['chat', 'user'],
-          ts: stamp,
-        });
-      }
-      if (payload.assistantText && String(payload.assistantText).trim()) {
-        await this.memoryStore.store({
-          text: String(payload.assistantText).trim(),
-          source: `chat-assistant:${id}`,
-          tags: ['chat', 'assistant'],
-          ts: stamp,
-        });
-      }
+      await this.memoryStore.storeTurn({
+        prompt: userText,
+        answer: assistantText,
+        workerId: id,
+        provider: payload.provider || (w && w.kind) || null,
+        model: totals.model || null,
+        conversationId: (w && w.sessionId) || null,
+        ts: new Date().toISOString(),
+        tokensIn: typeof totals.promptTokens === 'number' ? totals.promptTokens : null,
+        tokensOut: typeof totals.completionTokens === 'number' ? totals.completionTokens : null,
+      });
     } catch { /* never let memory write break the chat */ }
   }
 }
