@@ -15,6 +15,7 @@
     "typecheck": "tsc -p tsconfig.json",
     "start:web": "node web/server.js",
     "memory:search": "node bin/memory-search.js",
+    "graph": "node research/plasticity-graph-viewer.js",
     "sft:export": "node scripts/sft-export.js",
     "sft:label": "node scripts/sft-label.js",
     "sft:build": "node scripts/sft-build.js",

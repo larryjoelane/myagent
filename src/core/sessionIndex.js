@@ -133,6 +133,35 @@ CREATE TABLE IF NOT EXISTS MySecondBrain_vectors (
   dim     INTEGER NOT NULL,
   vec     BLOB    NOT NULL
 );
+
+-- ── Neuroplasticity layer (turn-grained) ─────────────────────────────────
+-- Treats each turn as a "neuron" whose retrieval RANK is modulated by two
+-- biological signals. NOTHING is ever deleted by decay — energy only re-ranks
+-- (per the design decision: rank-don't-prune for now).
+--
+-- msb_neuron: per-turn vitality. retrieval_count + last_retrieved_ts feed an
+--   energy() computed at query time as recency × frequency (an Ebbinghaus-style
+--   forgetting curve). A turn that's recalled often and recently stays "hot".
+CREATE TABLE IF NOT EXISTS msb_neuron (
+  turn_id           INTEGER PRIMARY KEY REFERENCES MySecondBrain(id) ON DELETE CASCADE,
+  retrieval_count   INTEGER NOT NULL DEFAULT 0,
+  last_retrieved_ts TEXT
+);
+
+-- msb_edge: Hebbian co-retrieval graph — "neurons that fire together wire
+--   together". When one query returns a set of turns, every unordered PAIR
+--   among them gets its edge weight incremented. Later, a query that hits one
+--   turn spreads a fraction of that hit's score to its wired neighbours
+--   (associative recall a plain vector store can't do). Stored undirected by
+--   convention turn_a < turn_b so each pair has exactly one row. Both FK ends
+--   CASCADE so deleting a turn sweeps its synapses.
+CREATE TABLE IF NOT EXISTS msb_edge (
+  turn_a INTEGER NOT NULL REFERENCES MySecondBrain(id) ON DELETE CASCADE,
+  turn_b INTEGER NOT NULL REFERENCES MySecondBrain(id) ON DELETE CASCADE,
+  weight REAL    NOT NULL DEFAULT 0,
+  PRIMARY KEY (turn_a, turn_b)
+);
+CREATE INDEX IF NOT EXISTS msb_edge_b ON msb_edge(turn_b);
 `;
 
 // --- Open / close ---------------------------------------------------------
@@ -715,12 +744,245 @@ function deleteTurn(db, turnId) {
   return true;
 }
 
+// ── Neuroplasticity: energy, firing, spreading activation ────────────────
+//
+// These operate on the msb_neuron / msb_edge tables. All weighting is a
+// RANKING signal layered on top of the BM25+cosine relevance fusion — it
+// never filters or deletes (rank-don't-prune). Tunables live here so they're
+// easy to sweep.
+
+// Energy half-life: how long since last retrieval until the recency term
+// halves. ~14 days — a turn recalled in the last fortnight is still "warm".
+const ENERGY_HALF_LIFE_MS = 14 * 24 * 60 * 60 * 1000;
+// Frequency saturation: retrieval_count is mapped through 1 - exp(-count/K)
+// so the 1st few recalls matter a lot and it saturates (a turn pulled 50×
+// isn't 50× more vital than one pulled 5×). K≈4 → ~63% at 4 recalls.
+const FREQ_SATURATION_K = 4;
+// Blend of recency vs frequency in the [0,1] energy score.
+const RECENCY_WEIGHT = 0.6;
+const FREQUENCY_WEIGHT = 0.4;
+// How strongly energy nudges the final rank. The fused relevance score is the
+// backbone; energy multiplies it within [1-AMP, 1+AMP] so a hot memory floats
+// up and a cold one sinks, WITHOUT a stale-but-perfect match being buried.
+const ENERGY_RANK_AMPLITUDE = 0.35;
+// Fraction of a direct hit's score that cascades along each synapse to a
+// wired-but-not-directly-matched neighbour (associative recall).
+const SPREAD_FACTOR = 0.25;
+// Edge weights are normalized by this when spreading, so a single very strong
+// synapse can't dominate. Spreading boost per neighbour is capped at the hit.
+const SPREAD_WEIGHT_NORM = 5;
+// Reinforcement floor: a turn is only FIRED (energy bumped + wired) if its
+// relevance confidence clears this bar — independent of the display threshold
+// (minConfidence). This decouples "what we show" from "what we learn": an
+// exploratory/unfiltered query (minConfidence 0) can still surface weak hits
+// to the user WITHOUT teaching the graph that those weak hits are important.
+// Prevents the "garbage-in → garbage-amplified" pollution the demo exposed
+// (an off-topic turn riding along in a thin top-k result set, getting wired in).
+// Override per-call via opts.minFiringConfidence (set to 0 to fire everything).
+const DEFAULT_MIN_FIRING_CONFIDENCE = 0.4;
+
+// Compute a [0,1] energy from a neuron's frequency + recency at time `nowMs`.
+// A turn never retrieved (no neuron row) has the neutral baseline 0.5 — it is
+// neither boosted nor penalized until it participates in a firing.
+function neuronEnergy(neuron, nowMs) {
+  if (!neuron || !neuron.last_retrieved_ts) return 0.5;
+  const last = Date.parse(neuron.last_retrieved_ts);
+  const recency = Number.isFinite(last)
+    ? Math.pow(2, -(nowMs - last) / ENERGY_HALF_LIFE_MS) // 1 just-now → →0 old
+    : 0.5;
+  const freq = 1 - Math.exp(-(neuron.retrieval_count || 0) / FREQ_SATURATION_K);
+  return RECENCY_WEIGHT * recency + FREQUENCY_WEIGHT * freq;
+}
+
+// Map an energy in [0,1] to a rank multiplier in [1-AMP, 1+AMP], centered so
+// the neutral 0.5 baseline leaves the relevance score unchanged (×1.0).
+function energyMultiplier(energy) {
+  return 1 + ENERGY_RANK_AMPLITUDE * (2 * energy - 1);
+}
+
+// Record a "firing": the set of turn ids returned by one query fired together.
+// Bumps each neuron's retrieval_count + last_retrieved_ts, and strengthens the
+// Hebbian edge for every unordered pair (turn_a < turn_b). One transaction so
+// a search either fully records or not at all. Best-effort — never throws into
+// the caller (a plasticity write must not break search).
+function recordFiring(db, turnIds, nowIso) {
+  const ids = [...new Set(turnIds.filter((n) => Number.isInteger(n)))];
+  if (ids.length === 0) return;
+  try {
+    const bumpNeuron = db.prepare(`
+      INSERT INTO msb_neuron (turn_id, retrieval_count, last_retrieved_ts)
+      VALUES (?, 1, ?)
+      ON CONFLICT(turn_id) DO UPDATE SET
+        retrieval_count = retrieval_count + 1,
+        last_retrieved_ts = excluded.last_retrieved_ts
+    `);
+    const bumpEdge = db.prepare(`
+      INSERT INTO msb_edge (turn_a, turn_b, weight)
+      VALUES (?, ?, 1)
+      ON CONFLICT(turn_a, turn_b) DO UPDATE SET weight = weight + 1
+    `);
+    const tx = db.transaction(() => {
+      for (const id of ids) bumpNeuron.run(id, nowIso);
+      for (let i = 0; i < ids.length; i += 1) {
+        for (let j = i + 1; j < ids.length; j += 1) {
+          const a = Math.min(ids[i], ids[j]);
+          const b = Math.max(ids[i], ids[j]);
+          bumpEdge.run(a, b);
+        }
+      }
+    });
+    tx();
+  } catch {
+    // Plasticity is advisory; a failed write must not fail the search.
+  }
+}
+
+// Load neuron rows for a set of turn ids → Map(turn_id -> neuron row).
+function loadNeurons(db, turnIds) {
+  const ids = [...new Set(turnIds.filter((n) => Number.isInteger(n)))];
+  if (ids.length === 0) return new Map();
+  const ph = ids.map(() => '?').join(',');
+  const rows = db.prepare(
+    `SELECT turn_id, retrieval_count, last_retrieved_ts FROM msb_neuron WHERE turn_id IN (${ph})`,
+  ).all(...ids);
+  return new Map(rows.map((r) => [r.turn_id, r]));
+}
+
+// Spreading activation: given the directly-matched hits (id -> relevance
+// score), cascade a fraction of each hit's score to its wired neighbours.
+// Returns Map(neighbourId -> boost). Only neighbours NOT among the direct
+// hits receive a boost (direct hits already have their own relevance). This
+// is what lets a query surface an associatively-linked turn the vector search
+// alone would miss.
+function spreadingBoost(db, directScoreById) {
+  const ids = [...directScoreById.keys()];
+  if (ids.length === 0) return new Map();
+  const ph = ids.map(() => '?').join(',');
+  // Edges touching any direct hit, from either end.
+  const edges = db.prepare(`
+    SELECT turn_a, turn_b, weight FROM msb_edge
+    WHERE turn_a IN (${ph}) OR turn_b IN (${ph})
+  `).all(...ids, ...ids);
+  const boost = new Map();
+  const direct = new Set(ids);
+  for (const e of edges) {
+    // Figure out which end is the hit and which is the neighbour.
+    let hit; let neighbour;
+    if (direct.has(e.turn_a) && !direct.has(e.turn_b)) { hit = e.turn_a; neighbour = e.turn_b; }
+    else if (direct.has(e.turn_b) && !direct.has(e.turn_a)) { hit = e.turn_b; neighbour = e.turn_a; }
+    else continue; // both direct (no spread between hits) or neither
+    const hitScore = directScoreById.get(hit) || 0;
+    const w = Math.min(1, (e.weight || 0) / SPREAD_WEIGHT_NORM);
+    const add = hitScore * SPREAD_FACTOR * w;
+    boost.set(neighbour, (boost.get(neighbour) || 0) + add);
+  }
+  return boost;
+}
+
+// Export the plasticity graph as a renderer-agnostic snapshot for
+// visualization (a standalone Cytoscape viewer today; an in-app panel later).
+// Joins turns ← neuron vitality ← synapses, computes energy per node at
+// `nowMs`, and returns { nodes, edges, meta }. Pure read — never fires/mutates.
+//
+// opts:
+//   limit          max nodes (default 200), ordered by energy desc so the
+//                  most-vital memories are always included
+//   minEnergy      drop nodes below this energy (default 0 → keep all)
+//   includeIsolated  keep never-fired turns (energy 0.5, no edges)? default true
+//   nowMs          clock for energy (default Date.now()) — injectable for tests
+//
+// node: { id, label, prompt, answer, energy, retrievalCount, lastRetrieved, ts }
+// edge: { id, source, target, weight }   (source<target by storage convention)
+function graphSnapshot(db, opts = {}) {
+  const {
+    limit = 200, minEnergy = 0, includeIsolated = true,
+    nowMs = Date.now(),
+  } = opts;
+
+  // All turns, left-joined to their neuron row (may be null = never fired).
+  const turns = db.prepare(`
+    SELECT t.id, t.prompt, t.answer, t.ts,
+           n.retrieval_count AS retrieval_count,
+           n.last_retrieved_ts AS last_retrieved_ts
+    FROM MySecondBrain t
+    LEFT JOIN msb_neuron n ON n.turn_id = t.id
+  `).all();
+
+  let nodes = turns.map((t) => {
+    const energy = neuronEnergy(
+      { retrieval_count: t.retrieval_count, last_retrieved_ts: t.last_retrieved_ts },
+      nowMs,
+    );
+    const prompt = String(t.prompt || '');
+    return {
+      id: t.id,
+      label: prompt.length > 48 ? `${prompt.slice(0, 48)}…` : prompt,
+      prompt,
+      answer: String(t.answer || ''),
+      energy,
+      retrievalCount: t.retrieval_count || 0,
+      lastRetrieved: t.last_retrieved_ts || null,
+      ts: t.ts,
+    };
+  });
+
+  if (minEnergy > 0) nodes = nodes.filter((n) => n.energy >= minEnergy);
+  // Most-vital first, then cap — so the limit keeps the interesting nodes.
+  nodes.sort((a, b) => b.energy - a.energy);
+  if (nodes.length > limit) nodes = nodes.slice(0, limit);
+
+  const keep = new Set(nodes.map((n) => n.id));
+  // Only edges whose BOTH endpoints survived the node filter/cap.
+  const allEdges = db.prepare('SELECT turn_a, turn_b, weight FROM msb_edge').all();
+  const edges = allEdges
+    .filter((e) => keep.has(e.turn_a) && keep.has(e.turn_b))
+    .map((e) => ({
+      id: `${e.turn_a}-${e.turn_b}`,
+      source: e.turn_a,
+      target: e.turn_b,
+      weight: e.weight,
+    }));
+
+  if (!includeIsolated) {
+    const connected = new Set();
+    for (const e of edges) { connected.add(e.source); connected.add(e.target); }
+    nodes = nodes.filter((n) => connected.has(n.id));
+  }
+
+  // Handy ranges so the viewer can scale sizes/widths without a second pass.
+  const energies = nodes.map((n) => n.energy);
+  const weights = edges.map((e) => e.weight);
+  return {
+    nodes,
+    edges,
+    meta: {
+      nodeCount: nodes.length,
+      edgeCount: edges.length,
+      energyMin: energies.length ? Math.min(...energies) : 0,
+      energyMax: energies.length ? Math.max(...energies) : 0,
+      weightMax: weights.length ? Math.max(...weights) : 0,
+      generatedAt: new Date(nowMs).toISOString(),
+    },
+  };
+}
+
 // Hybrid search over MySecondBrain turns. Same BM25+cosine fusion as
 // search() but against the turn table. Returns hits with prompt/answer
 // surfaced separately (so the UI can render the pair) plus a combined
 // `text` for compatibility with the existing memory-results bubble.
+//
+// Neuroplasticity (opt-out via opts.plasticity === false): the fused
+// relevance is modulated by each turn's energy (recency×frequency) and by
+// spreading activation along the Hebbian co-retrieval graph, then the final
+// returned set is recorded as a "firing" (strengthening neurons + edges) so
+// future queries recall associatively. Ranking only — never filters/deletes.
 async function searchTurns(db, query, opts = {}) {
   const { minConfidence = 0 } = opts;
+  // Reinforcement floor (see DEFAULT_MIN_FIRING_CONFIDENCE). Independent of the
+  // display threshold so weak hits can be shown without being learned.
+  const minFiringConfidence = typeof opts.minFiringConfidence === 'number'
+    ? opts.minFiringConfidence
+    : DEFAULT_MIN_FIRING_CONFIDENCE;
   const limitProvided = typeof opts.limit === 'number';
   const limit = limitProvided ? opts.limit : 10;
   const N = (minConfidence > 0 && !limitProvided)
@@ -785,6 +1047,38 @@ async function searchTurns(db, query, opts = {}) {
     return { id: f.id, score: f.score, cosine: cosineRaw, bm25: bm25Raw, confidence };
   });
 
+  // ── Neuroplasticity re-ranking (opt-out via opts.plasticity === false) ──
+  // Layer energy (recency×frequency) and spreading activation onto the fused
+  // relevance, THEN re-sort, so a hot or associatively-linked turn can climb
+  // into the top-`limit`. We do this over the FULL candidate set (before the
+  // slice) so spreading can pull a neighbour up from the long tail. Ranking
+  // only: confidence (the relevance floor / threshold) is left untouched, so
+  // this never resurrects an irrelevant turn past minConfidence.
+  const plasticity = opts.plasticity !== false;
+  if (plasticity) {
+    const nowMs = Date.now();
+    const directScoreById = new Map(annotated.map((a) => [a.id, a.score]));
+    const boost = spreadingBoost(db, directScoreById);
+    // Neighbours surfaced purely by spreading (not in the fused set) join the
+    // candidate pool with zero base relevance + their boost. They still must
+    // clear minConfidence (confidence 0) so they only appear when no threshold
+    // is set — associative recall is opt-in via an unfiltered query.
+    for (const [neighbourId, add] of boost.entries()) {
+      if (!directScoreById.has(neighbourId)) {
+        annotated.push({ id: neighbourId, score: 0, cosine: null, bm25: null, confidence: 0 });
+      }
+    }
+    const neurons = loadNeurons(db, annotated.map((a) => a.id));
+    for (const a of annotated) {
+      const energy = neuronEnergy(neurons.get(a.id), nowMs);
+      const spread = boost.get(a.id) || 0;
+      a.energy = energy;
+      // Final rank = (relevance + associative spread) × energy multiplier.
+      a.score = (a.score + spread) * energyMultiplier(energy);
+    }
+    annotated.sort((x, y) => y.score - x.score);
+  }
+
   const totalCandidates = annotated.length;
   let filtered = annotated;
   if (minConfidence > 0) filtered = annotated.filter((h) => h.confidence >= minConfidence);
@@ -815,6 +1109,7 @@ async function searchTurns(db, query, opts = {}) {
       cosine: f.cosine,
       bm25: f.bm25,
       confidence: f.confidence,
+      energy: typeof f.energy === 'number' ? f.energy : null,
       ts: r.ts,
       kind: 'turn',
       prompt: r.prompt,
@@ -829,6 +1124,26 @@ async function searchTurns(db, query, opts = {}) {
       snippet: combined.length > 400 ? combined.slice(0, 400) + '…' : combined,
     };
   }).filter(Boolean);
+
+  // Record the firing: the turns we actually return fired together for this
+  // query → strengthen their neurons + Hebbian edges so future queries recall
+  // them faster and surface their associations. After hydration so we only
+  // reinforce turns that truly exist. Best-effort; never throws.
+  //
+  // ONLY turns clearing minFiringConfidence are fired — so a weak hit shown in
+  // an unfiltered query (minConfidence 0) is NOT learned. This is the guard for
+  // the "garbage amplified" pollution: an off-topic turn that merely rode along
+  // in the top-k never gets wired in. Display set (result) and firing set are
+  // intentionally different.
+  if (plasticity) {
+    const firingIds = result
+      .filter((h) => typeof h.confidence === 'number' && h.confidence >= minFiringConfidence)
+      .map((h) => h.id);
+    if (firingIds.length > 0) {
+      recordFiring(db, firingIds, new Date().toISOString());
+    }
+  }
+
   Object.defineProperty(result, 'totalCandidates', { value: totalCandidates, enumerable: false });
   return result;
 }
@@ -855,6 +1170,13 @@ module.exports = {
   storeTurn,
   deleteTurn,
   searchTurns,
+  // Neuroplasticity layer (exported for tests + future tools/UI)
+  recordFiring,
+  loadNeurons,
+  neuronEnergy,
+  energyMultiplier,
+  spreadingBoost,
+  graphSnapshot,
   // exported for tests
   extractIndexable,
   ftsQuote,
