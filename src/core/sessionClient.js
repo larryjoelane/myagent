@@ -1,4 +1,4 @@
-// Thin client used by bin/memory-search.js to talk to a running Electron
+// Thin client used by .claude/skills/recall/recall.js to talk to a running Electron
 // app's sessionServer. If the discovery file exists and the server
 // responds to /health, we route the query through it — saves ~3s of
 // model load per CLI call. Otherwise the caller falls back to opening

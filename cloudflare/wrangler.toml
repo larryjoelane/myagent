@@ -1,0 +1,23 @@
+# Cloudflare Worker — memory plasticity graph demo.
+#
+# Fill in the two TODO ids after running the wrangler commands in README.md:
+#   1. `wrangler d1 create memories` prints database_id → paste below.
+#   2. account_id is optional if you're logged in via `wrangler login`.
+
+name = "memory-plasticity-graph"
+main = "src/worker.mjs"
+compatibility_date = "2026-06-01"
+
+# Let the Worker import viewer.html as a string (text module).
+rules = [
+  { type = "Text", globs = ["**/*.html"], fallthrough = true },
+]
+
+# D1 binding — the Worker accesses the database as `env.DB`.
+[[d1_databases]]
+binding = "DB"
+database_name = "memories"
+database_id = "TODO_PASTE_DATABASE_ID_FROM_wrangler_d1_create"
+
+# Optional: pin your account if you have more than one.
+# account_id = "TODO_YOUR_ACCOUNT_ID"

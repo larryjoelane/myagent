@@ -68,8 +68,8 @@ practice, or is this premature?
 - `git-diff` — show currently-changed lines (`git diff` + path filter)
 - `git-blame` — who wrote line N of file X
 - `run-tests` — `npm test` + parse the tail
-- `mcp-call` — bridge to `myagent-memory-mcp` and any registered MCP
-  server (universal escape hatch)
+- `mcp-call` — bridge to any registered MCP server (universal escape
+  hatch)
 
 **Realistic gain**: pushes ceiling from ~30–40% → ~60% of read-only
 developer questions. Still 0% writes.
@@ -166,7 +166,7 @@ hook from the semantic-card "Open" button
 **Goal**: Let the user open any tool result (memory-search hit, file
 contents from `/read-file`, etc.) in a built-in markdown editor that
 supports edit + preview side-by-side. Useful for note-taking and for
-hand-curating memories before saving them back via `/memory-store`.
+hand-curating memories before saving them back via `/recall-save`.
 **Open questions**:
 1. Standalone window (BrowserWindow) or new tab type in the existing
    tabs strip (alongside Terminal / Browser / Semantic)?

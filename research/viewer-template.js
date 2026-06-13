@@ -1,4 +1,40 @@
-<!DOCTYPE html>
+// viewer-template.js — the memory-graph viewer HTML, with NO database or
+// Node-native deps. Pure: takes a graphSnapshot() object, returns an HTML string.
+// Shared by the standalone generator (plasticity-graph-viewer.js) AND the
+// Cloudflare Worker vendor step, so there is ONE source for the page.
+//
+// renderHtml(snapshot, { embed, apiPath }):
+//   embed=true  -> bake data in as window.__GRAPH__ (offline standalone file)
+//   embed=false -> omit data; page fetch()es apiPath (Worker / in-app panel)
+
+// Short on-canvas label: a few words, hard-capped, single line. The FULL
+// prompt/answer stays available on hover (the tooltip), so the node label only
+// needs to be a recognizable handle — long wrapped labels collide when nodes
+// sit close together (the "jumbled words" problem).
+const NODE_LABEL_MAX = 22;
+function shortLabel(prompt) {
+  const s = String(prompt || '').replace(/\s+/g, ' ').trim();
+  if (s.length <= NODE_LABEL_MAX) return s;
+  // Cut at the last word boundary within the cap so we don't slice mid-word.
+  const cut = s.slice(0, NODE_LABEL_MAX);
+  const lastSpace = cut.lastIndexOf(' ');
+  return `${(lastSpace > 8 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+}
+
+// Render the viewer HTML. Two data-delivery modes (same markup + JS either way):
+//   embed=true  → bake the snapshot into the page as window.__GRAPH__ (the
+//                 standalone file works offline, no server needed).
+//   embed=false → omit the data; the page fetch()es opts.apiPath at load
+//                 (the Worker / in-app panel serves the graph from /api/graph).
+// The snapshot→cytoscape transform + render now run CLIENT-SIDE (in boot()), so
+// fetched and embedded data take the identical path.
+function renderHtml(snapshot, { embed = true, apiPath = '/api/graph' } = {}) {
+  const embeddedData = embed
+    ? `\n  window.__GRAPH__ = ${JSON.stringify(snapshot)};`
+    : '';
+
+  // Self-contained: Cytoscape + fcose layout from CDN, everything else inline.
+  return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -68,18 +104,17 @@
   <div id="cy"></div>
   <div id="legend"></div>
   <div id="tip"></div>
-<script>
-  window.__GRAPH__ = {"nodes":[{"id":2,"label":"which gguf model fits 8gb vram","prompt":"which gguf model fits 8gb vram","answer":"Qwen2.5-Coder-7B Q4_K_M is 4.68GB and fits with room for KV cache.","energy":0.7573877343958315,"retrievalCount":2,"lastRetrieved":"2026-06-08T03:39:12.412Z","ts":"2026-06-08T03:39:12.336Z"},{"id":3,"label":"can we constrain the model output format","prompt":"can we constrain the model output format","answer":"Yes — GBNF grammar constrains decoding so invalid tokens cannot be sampled.","energy":0.7573877343958315,"retrievalCount":2,"lastRetrieved":"2026-06-08T03:39:12.412Z","ts":"2026-06-08T03:39:12.347Z"},{"id":1,"label":"how does the vulkan fallback work on intel","prompt":"how does the vulkan fallback work on intel","answer":"llama.cpp uses the Vulkan backend on the Intel GPU; CPU fallback otherwise.","energy":0.7573877309576015,"retrievalCount":2,"lastRetrieved":"2026-06-08T03:39:12.402Z","ts":"2026-06-08T03:39:11.693Z"},{"id":5,"label":"what is spreading activation in the memory graph","prompt":"what is spreading activation in the memory graph","answer":"A hit cascades score to wired neighbours — associative recall.","energy":0.6884796864276149,"retrievalCount":1,"lastRetrieved":"2026-06-08T03:39:12.416Z","ts":"2026-06-08T03:39:12.368Z"},{"id":4,"label":"how should we weigh decayed memories","prompt":"how should we weigh decayed memories","answer":"Rank by energy (recency x frequency), do not delete them.","energy":0.5,"retrievalCount":0,"lastRetrieved":null,"ts":"2026-06-08T03:39:12.362Z"},{"id":6,"label":"remind me about the quarterly tax filing deadlin…","prompt":"remind me about the quarterly tax filing deadline","answer":"Noted — unrelated to the model work.","energy":0.5,"retrievalCount":0,"lastRetrieved":null,"ts":"2026-06-08T03:39:12.375Z"}],"edges":[{"id":"2-3","source":2,"target":3,"weight":1}],"meta":{"nodeCount":6,"edgeCount":1,"energyMin":0.5,"energyMax":0.7573877343958315,"weightMax":1,"generatedAt":"2026-06-08T03:39:12.417Z"}};
-  const API_PATH = "/api/graph";
+<script>${embeddedData}
+  const API_PATH = ${JSON.stringify(apiPath)};
 
   // Short on-canvas label (full text stays in the hover tooltip).
-  const NODE_LABEL_MAX = 22;
+  const NODE_LABEL_MAX = ${NODE_LABEL_MAX};
   function shortLabel(prompt) {
-    const s = String(prompt || '').replace(/\s+/g, ' ').trim();
+    const s = String(prompt || '').replace(/\\s+/g, ' ').trim();
     if (s.length <= NODE_LABEL_MAX) return s;
     const cut = s.slice(0, NODE_LABEL_MAX);
     const lastSpace = cut.lastIndexOf(' ');
-    return (lastSpace > 8 ? cut.slice(0, lastSpace) : cut).replace(/\s+$/, '') + '…';
+    return (lastSpace > 8 ? cut.slice(0, lastSpace) : cut).replace(/\\s+$/, '') + '…';
   }
 
   // Transform a graphSnapshot() {nodes,edges,meta} into cytoscape elements.
@@ -296,4 +331,7 @@
     });
 </script>
 </body>
-</html>
+</html>`;
+}
+
+module.exports = { renderHtml, shortLabel, NODE_LABEL_MAX };

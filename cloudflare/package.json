@@ -1,0 +1,19 @@
+{
+  "name": "memory-plasticity-graph-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare Worker + D1 serving a live, self-reinforcing memory plasticity graph. Reuses the desktop app's pure plasticity core.",
+  "type": "module",
+  "scripts": {
+    "vendor": "node scripts/vendor-core.cjs",
+    "test": "node --import ./test/html-loader.mjs test/worker.test.mjs",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:create": "wrangler d1 create memories",
+    "db:seed:local": "wrangler d1 execute memories --file=seed.sql",
+    "db:seed:remote": "wrangler d1 execute memories --file=seed.sql --remote"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

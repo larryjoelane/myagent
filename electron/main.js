@@ -594,7 +594,7 @@ function createWindow() {
 }
 
 // ---- Loopback search server ------------------------------------------------
-// When the Electron app is running, the CLI shim (bin/memory-search.js) talks
+// When the Electron app is running, the CLI shim (.claude/skills/recall/recall.js) talks
 // to this instead of loading its own copy of the embedding model — saves ~3s
 // per CLI call when claude chains queries.
 

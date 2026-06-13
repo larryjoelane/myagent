@@ -836,7 +836,7 @@ test('@memory <query> shows results bubble; clicking a hit appends to compose', 
 const { spawnSync } = require('child_process');
 function runMemorySearch(query) {
   const env = { ...process.env, MYAGENT_SESSIONS_DIR: tmpSessionsDir };
-  const r = spawnSync(process.execPath, [path.join(REPO_ROOT, 'bin', 'memory-search.js'), '--limit', '10', query], {
+  const r = spawnSync(process.execPath, [path.join(REPO_ROOT, '.claude', 'skills', 'recall', 'recall.js'), '--limit', '10', query], {
     env, cwd: REPO_ROOT, encoding: 'utf8', timeout: 30_000,
   });
   return { stdout: r.stdout || '', stderr: r.stderr || '', status: r.status };

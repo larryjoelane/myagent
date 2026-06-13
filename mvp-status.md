@@ -7,7 +7,7 @@ All five MVP pieces are in.
 ### Cross-session memory (read + write)
 - `src/core/sessionIndex.js` — added `storeMemory()`: writes a row with synthetic file `<memory:source>`, FTS + embedding, kind=`memory`. Searchable through the existing hybrid search.
 - Plumbed through worker → host → `POST /memory/store` route on the loopback server.
-- `bin/memory-store.js` CLI mirrors `memory-search.js`: server-first, standalone-fallback. `--source`, `--tags`, accepts text via args or stdin.
+- `.claude/skills/recall/recall-store.js` CLI mirrors `recall.js`: server-first, standalone-fallback. `--source`, `--tags`, accepts text via args or stdin.
 
 ### Pre-input hook
 - `bin/claude.cmd` + `bin/claude` (sh) → exec `bin/claude-wrapped.js`.
@@ -21,7 +21,7 @@ All five MVP pieces are in.
 
 ## Known caveats (intentional for MVP)
 
-1. **Standalone-fallback `memory-store` needs Node-built native modules.** With Electron rebuilt (`npm run prestart`), `bin/memory-store.js --local` errors on `better-sqlite3`. Run `npm run rebuild:node` to use the standalone path. The Electron-server path (which is how the bin scripts will normally be hit) is unaffected.
+1. **Standalone-fallback `memory-store` needs Node-built native modules.** With Electron rebuilt (`npm run prestart`), `.claude/skills/recall/recall-store.js --local` errors on `better-sqlite3`. Run `npm run rebuild:node` to use the standalone path. The Electron-server path (which is how the bin scripts will normally be hit) is unaffected.
 2. **Wrapper's positional-arg heuristic is naive** — treats the last non-flag arg as the prompt. If `claude` ever takes `--flag value` style options where `value` doesn't start with `-`, the hook could see it as a prompt. Fine for the typical `claude "..."` and stdin cases.
 3. **Agent registry is non-persistent** — Electron restart clears it. Terminals re-register on reconnect.
 4. **Heartbeats aren't auto-fired** — the CLI exposes `heartbeat` but nothing schedules it yet. For the MVP, a worker that goes silent for 60s gets reaped on the next registry access. Easy to bolt on a background heartbeater later.
@@ -33,7 +33,7 @@ All five MVP pieces are in.
 3. In another: same thing, gets `worker`.
 4. Leader: `node bin/agent.js send <worker-id> "do the thing"`.
 5. Worker: `node bin/agent.js inbox`.
-6. Either: `node bin/memory-store.js --source claude "..."` then `node bin/memory-search.js "..."`.
+6. Either: `node .claude/skills/recall/recall-store.js --source claude "..."` then `node .claude/skills/recall/recall.js "..."`.
 7. Type `claude "what is 2+2"` — wrapper logs `[myagent pre-input hook ran: ...]` to stderr and `.myagent/sessions/pre-input.log`.
 
 ## Open for discussion
@@ -59,5 +59,5 @@ All five MVP pieces are in.
 - `bin/claude-wrapped.js` — wrapper that runs the hook then execs real `claude`
 - `bin/claude.cmd` — Windows shim
 - `bin/claude` — Unix shim
-- `bin/memory-store.js` — CLI
+- `.claude/skills/recall/recall-store.js` — CLI
 - `bin/agent.js` — CLI
