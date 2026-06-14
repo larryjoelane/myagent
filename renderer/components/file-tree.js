@@ -53,6 +53,8 @@ export class FileTree extends LitElement {
     /** True while an fs:* call is in flight for the root. Used to
      *  show a small spinner / "loading" placeholder. */
     _rootLoading: { state: true },
+    /** Open right-click context menu: { path, type, name, x, y } or null. */
+    _ctx: { state: true },
   };
 
   static styles = css`
@@ -161,6 +163,49 @@ export class FileTree extends LitElement {
       font-size: 11px;
       text-align: center;
     }
+
+    /* Right-click context menu (anchored at the cursor, fixed to viewport). */
+    .ctx-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+    }
+    .ctx-menu {
+      position: fixed;
+      z-index: 41;
+      min-width: 160px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      box-shadow: 0 6px 22px #0008;
+      padding: 4px;
+      font-size: 12px;
+    }
+    .ctx-title {
+      padding: 4px 8px 6px;
+      color: var(--text-dim);
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 4px;
+    }
+    .ctx-item {
+      display: block;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border: none;
+      color: var(--text);
+      cursor: pointer;
+      padding: 6px 8px;
+      font: inherit;
+      border-radius: 4px;
+    }
+    .ctx-item:hover { background: var(--surface-3); }
+    .ctx-danger { color: var(--warn, #ff7a6b); }
+    .ctx-danger:hover { background: var(--warn-bg, #3a1d1d); color: #ffb4ab; }
   `;
 
   constructor() {
@@ -170,6 +215,7 @@ export class FileTree extends LitElement {
     this._root = '';
     this._tick = 0;
     this._rootLoading = false;
+    this._ctx = null;
     /** @type {TreeState} */
     this._tree = new TreeState();
   }
@@ -419,6 +465,57 @@ export class FileTree extends LitElement {
     await this._initRoot();
   }
 
+  /** Right-click a row: open the context menu at the cursor. */
+  _onContextMenu(ev, path, type, name) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    // Clamp into the viewport so the menu doesn't open off-screen near edges.
+    const x = Math.min(ev.clientX, window.innerWidth - 180);
+    const y = Math.min(ev.clientY, window.innerHeight - 90);
+    this._ctx = { path, type, name, x: Math.max(4, x), y: Math.max(4, y) };
+  }
+
+  _closeContextMenu() { this._ctx = null; }
+
+  /** Delete (to OS trash) the context-menu target, then reload its parent
+   *  folder so the row disappears. Confirms first — destructive + recursive
+   *  for directories. */
+  async _onDelete(ctx) {
+    this._closeContextMenu();
+    if (!ctx || !ctx.path) return;
+    const what = ctx.type === 'dir' ? `folder "${ctx.name}" and everything in it` : `"${ctx.name}"`;
+    // eslint-disable-next-line no-alert
+    if (!window.confirm(`Move ${what} to the trash?`)) return;
+
+    let res;
+    try {
+      res = await transport()?.fs?.deleteFile?.(ctx.path);
+    } catch (err) {
+      res = { ok: false, error: err?.message || String(err) };
+    }
+    if (!res || !res.ok) {
+      const reason = (res && (res.error || res.reason)) || 'delete failed';
+      // eslint-disable-next-line no-alert
+      window.alert(`Could not delete ${ctx.name}: ${reason}`);
+      return;
+    }
+    // Tell the editor a path went away (so an open tab for it can close).
+    this.dispatchEvent(new CustomEvent('file-deleted', {
+      detail: { path: ctx.path, type: ctx.type },
+      bubbles: true,
+      composed: true,
+    }));
+    // Reload the parent dir so the deleted entry drops out of the tree.
+    const parent = parentDir(ctx.path);
+    if (parent && this._tree.has(parent)) {
+      const existing = this._tree.get(parent);
+      this._tree.forget(parent);
+      await this._loadChildren(parent, !!existing?.expanded);
+    } else {
+      await this._onRefresh();
+    }
+  }
+
   async _onToggleHidden() {
     this.showHidden = !this.showHidden;
     try { await transport()?.settings?.set?.('fileTreeShowHidden', this.showHidden); }
@@ -461,6 +558,24 @@ export class FileTree extends LitElement {
       </div>
       <div class="body" id="ft-body">
         ${this._renderTreeBody()}
+      </div>
+      ${this._renderContextMenu()}
+    `;
+  }
+
+  _renderContextMenu() {
+    const ctx = this._ctx;
+    if (!ctx) return '';
+    const label = ctx.type === 'dir' ? 'folder' : 'file';
+    return html`
+      <div class="ctx-backdrop" @click=${this._closeContextMenu}
+           @contextmenu=${(/** @type {Event} */ e) => { e.preventDefault(); this._closeContextMenu(); }}></div>
+      <div class="ctx-menu" style=${`left:${ctx.x}px; top:${ctx.y}px;`} role="menu">
+        <div class="ctx-title" title=${ctx.path}>${ctx.name}</div>
+        <button class="ctx-item ctx-danger" type="button" role="menuitem"
+                @click=${() => this._onDelete(ctx)}>
+          Delete ${label}…
+        </button>
       </div>
     `;
   }
@@ -520,6 +635,7 @@ export class FileTree extends LitElement {
       return html`
         <div class="row" style=${indentStyle(depth)}
              @click=${() => this._onFolderClick(childPath)}
+             @contextmenu=${(/** @type {MouseEvent} */ ev) => this._onContextMenu(ev, childPath, 'dir', e.name)}
              title=${childPath}>
           <span class="twisty">${tw}</span>
           <span class="icon icon--folder">▣</span>
@@ -534,6 +650,7 @@ export class FileTree extends LitElement {
     return html`
       <div class="row" style=${indentStyle(depth)}
            @click=${() => this._onFileClick(childPath)}
+           @contextmenu=${(/** @type {MouseEvent} */ ev) => this._onContextMenu(ev, childPath, e.type, e.name)}
            title=${childPath}>
         <span class="twisty twisty--placeholder">·</span>
         <span class="icon icon--file">·</span>

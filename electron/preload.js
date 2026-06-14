@@ -139,6 +139,7 @@ function buildTransport({ ipcRenderer, clipboard, listeners }) {
       readFile: (path) => ipcRenderer.invoke('fs:read-file', { path }),
       writeFile: (path, content, opts) =>
         ipcRenderer.invoke('fs:write-file', { path, content, ...(opts || {}) }),
+      deleteFile: (path) => ipcRenderer.invoke('fs:delete-file', { path }),
       stat: (path) => ipcRenderer.invoke('fs:stat', { path }),
       scopeList: () => ipcRenderer.invoke('fs:scope-list'),
       scopeAdd: (path) => ipcRenderer.invoke('fs:scope-add', { path }),

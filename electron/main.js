@@ -15,7 +15,7 @@ const path = require('path');
 // Keeps secrets like OLLAMA_API_KEY out of settings.json by design.
 require('dotenv').config({ path: path.resolve(__dirname, '..', '.env') });
 
-const { app, BrowserWindow, ipcMain, Menu, dialog, session } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, dialog, session, shell } = require('electron');
 
 const csp = require('./csp');
 
@@ -632,7 +632,7 @@ function registerIpcHandlers() {
     ipcMain, BrowserWindow, dialog, workerManager, appSettings,
     projectRoot: PROJECT_ROOT,
   });
-  fsHandlers.register({ ipcMain, scope: editorScope });
+  fsHandlers.register({ ipcMain, scope: editorScope, shell });
   editorHandlers.register({ ipcMain, editorWindow, scope: editorScope, appSettings });
   modelHandlers.register({ ipcMain, getEmbedderBridge });
   ptyHandlers.register({

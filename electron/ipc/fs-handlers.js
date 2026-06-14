@@ -5,6 +5,8 @@
 //   fs:write-file(path, content, { expectedMtime? })
 //                                       — write; mtime conflict refusal
 //                                         when expectedMtime is provided
+//   fs:delete-file(path)                — move a file or directory to the OS
+//                                         trash (recoverable). Scope-gated.
 //   fs:stat(path)                       — exists / type / size / mtime
 //   fs:scope-add(path)                  — extend the editor scope
 //   fs:scope-remove(path)               — shrink the editor scope
@@ -31,16 +33,22 @@ const DEFAULT_MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
  * @property {import('electron').IpcMain} ipcMain
  * @property {import('../../src/core/scope').Scope} scope
  * @property {number} [maxFileSize]
+ * @property {{ trashItem: (path: string) => Promise<void> }} [shell]
+ *   Electron shell (injectable so tests can stub trashItem). Defaults to the
+ *   real electron.shell, resolved lazily so non-Electron unit tests can omit it.
  */
 
 /** @param {FsHandlerDeps} deps */
-function register({ ipcMain, scope, maxFileSize = DEFAULT_MAX_FILE_SIZE }) {
+function register({ ipcMain, scope, maxFileSize = DEFAULT_MAX_FILE_SIZE, shell }) {
   if (!ipcMain || typeof ipcMain.handle !== 'function') {
     throw new Error('fs-handlers: ipcMain is required');
   }
   if (!scope || typeof scope.contains !== 'function') {
     throw new Error('fs-handlers: scope is required');
   }
+  // Resolve the trash backend once. Injected stub wins; otherwise pull
+  // electron.shell at register time (we're in the main process here).
+  const trash = shell || requireElectronShell();
 
   ipcMain.handle('fs:list-dir', async (_e, body = {}) => {
     return await listDir({ ...body, scope });
@@ -52,6 +60,10 @@ function register({ ipcMain, scope, maxFileSize = DEFAULT_MAX_FILE_SIZE }) {
 
   ipcMain.handle('fs:write-file', async (_e, body = {}) => {
     return await writeFile({ ...body, scope });
+  });
+
+  ipcMain.handle('fs:delete-file', async (_e, body = {}) => {
+    return await deleteFile({ ...body, scope, trash });
   });
 
   ipcMain.handle('fs:stat', async (_e, body = {}) => {
@@ -218,6 +230,44 @@ async function writeFile({ path: target, content, expectedMtime, scope }) {
   };
 }
 
+/**
+ * Move a file or directory to the OS trash (recoverable). Scope-gated like
+ * every other op. Uses shell.trashItem so the user gets Recycle Bin / Trash
+ * recovery rather than a permanent unlink. Works for both files and dirs —
+ * trashItem handles a directory recursively.
+ * @param {{ path: string, scope: any, trash: { trashItem: (p: string) => Promise<void> } }} args
+ */
+async function deleteFile({ path: target, scope, trash }) {
+  if (!target || typeof target !== 'string') {
+    return { ok: false, reason: 'bad-input', error: 'path is required' };
+  }
+  if (!(await scope.contains(target))) {
+    return outOfScope(target, scope);
+  }
+  if (!trash || typeof trash.trashItem !== 'function') {
+    return { ok: false, reason: 'unsupported', error: 'trash backend unavailable' };
+  }
+  // Confirm it exists first so we can report a clean error (trashItem throws
+  // an opaque message on a missing path) and surface the type for the caller.
+  let st;
+  try { st = await fsp.stat(target); }
+  catch (err) {
+    if (err.code === 'ENOENT') return { ok: false, reason: 'not-found', error: `${target} does not exist` };
+    return { ok: false, reason: 'io', error: err.message };
+  }
+  try {
+    await trash.trashItem(target);
+  } catch (err) {
+    return { ok: false, reason: 'io', error: err.message };
+  }
+  return {
+    ok: true,
+    path: target,
+    type: st.isDirectory() ? 'dir' : 'file',
+    trashed: true,
+  };
+}
+
 /** @param {{ path: string, scope: any }} args */
 async function stat({ path: target, scope }) {
   if (!target || typeof target !== 'string') {
@@ -249,4 +299,16 @@ function outOfScope(target, scope) {
   };
 }
 
-module.exports = { register, listDir, readFile, writeFile, stat };
+// Lazily pull electron.shell at register time. Wrapped so unit tests that
+// require this module outside Electron don't crash on import — they inject
+// their own `shell` stub instead, and this fallback simply returns null.
+function requireElectronShell() {
+  try {
+    // eslint-disable-next-line global-require
+    return require('electron').shell || null;
+  } catch {
+    return null;
+  }
+}
+
+module.exports = { register, listDir, readFile, writeFile, deleteFile, stat };

@@ -8,8 +8,18 @@ const fsp = fs.promises;
 const os = require('os');
 const path = require('path');
 const { Scope } = require('../src/core/scope');
-const { listDir, readFile, writeFile, stat } = require('../electron/ipc/fs-handlers');
+const { listDir, readFile, writeFile, deleteFile, stat } = require('../electron/ipc/fs-handlers');
 const { eq, ok, notOk, contains, deepEq } = require('./assert');
+
+// A trash backend stub that records the paths it was asked to trash, so we can
+// assert the handler called it (instead of permanently unlinking in tests).
+function trashStub() {
+  const trashed = [];
+  return {
+    trashed,
+    trashItem: async (p) => { trashed.push(p); },
+  };
+}
 
 async function tmpdir() {
   return await fsp.mkdtemp(path.join(os.tmpdir(), 'fs-handlers-'));
@@ -220,6 +230,78 @@ exports.run = (ctx) => {
       eq(r.ok, true);
       eq(await fsp.readFile(f, 'utf8'), 'born');
     } finally { await rmrf(root); }
+  });
+
+  ctx.test('deleteFile: trashes an existing file via the shell stub', async () => {
+    const root = await tmpdir();
+    try {
+      const f = path.join(root, 'doomed.txt');
+      await fsp.writeFile(f, 'bye');
+      const trash = trashStub();
+      const r = await deleteFile({ path: f, scope: new Scope([root]), trash });
+      eq(r.ok, true);
+      eq(r.type, 'file');
+      eq(r.trashed, true);
+      deepEq(trash.trashed, [f], 'trashItem called with the file path');
+    } finally { await rmrf(root); }
+  });
+
+  ctx.test('deleteFile: reports type "dir" for a directory', async () => {
+    const root = await tmpdir();
+    try {
+      const d = path.join(root, 'subdir');
+      await fsp.mkdir(d);
+      await fsp.writeFile(path.join(d, 'inner.txt'), 'x');
+      const trash = trashStub();
+      const r = await deleteFile({ path: d, scope: new Scope([root]), trash });
+      eq(r.ok, true);
+      eq(r.type, 'dir');
+      deepEq(trash.trashed, [d], 'trashItem called with the directory path');
+    } finally { await rmrf(root); }
+  });
+
+  ctx.test('deleteFile: refuses out-of-scope', async () => {
+    const a = await tmpdir();
+    const b = await tmpdir();
+    try {
+      const f = path.join(b, 'safe.txt');
+      await fsp.writeFile(f, 'x');
+      const trash = trashStub();
+      const r = await deleteFile({ path: f, scope: new Scope([a]), trash });
+      eq(r.ok, false);
+      eq(r.reason, 'out-of-scope');
+      deepEq(trash.trashed, [], 'trashItem NOT called for an out-of-scope path');
+    } finally { await rmrf(a); await rmrf(b); }
+  });
+
+  ctx.test('deleteFile: not-found for a path that does not exist', async () => {
+    const root = await tmpdir();
+    try {
+      const trash = trashStub();
+      const r = await deleteFile({
+        path: path.join(root, 'ghost.txt'), scope: new Scope([root]), trash,
+      });
+      eq(r.ok, false);
+      eq(r.reason, 'not-found');
+      deepEq(trash.trashed, []);
+    } finally { await rmrf(root); }
+  });
+
+  ctx.test('deleteFile: unsupported when no trash backend is available', async () => {
+    const root = await tmpdir();
+    try {
+      const f = path.join(root, 'x.txt');
+      await fsp.writeFile(f, 'x');
+      const r = await deleteFile({ path: f, scope: new Scope([root]), trash: null });
+      eq(r.ok, false);
+      eq(r.reason, 'unsupported');
+    } finally { await rmrf(root); }
+  });
+
+  ctx.test('deleteFile: bad input rejected', async () => {
+    const r = await deleteFile({ scope: new Scope(), trash: trashStub() });
+    eq(r.ok, false);
+    eq(r.reason, 'bad-input');
   });
 
   ctx.test('stat: existing file returns metadata', async () => {
