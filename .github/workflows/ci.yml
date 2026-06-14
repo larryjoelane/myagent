@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs for the same ref when a new commit lands.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fast, hermetic gate — pure `tsc`, no Electron, no display. Runs on every
+  # push/PR and should stay green at all times.
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '23'
+          cache: npm
+      - run: npm ci
+        # postinstall rebuilds better-sqlite3 against Electron; allow it to run.
+        env:
+          # Skip the transformers vendor copy noise where possible.
+          MYAGENT_QUIET: '1'
+      - run: npm run typecheck
+
+  # Unit tests run under Electron's bundled Node (ELECTRON_RUN_AS_NODE=1) so
+  # they share the app's better-sqlite3 ABI. Electron needs a display on Linux,
+  # so we wrap the run in xvfb.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '23'
+          cache: npm
+      - name: Install Linux libs for Electron
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libnss3 libatk1.0-0 libatk-bridge2.0-0 \
+            libgtk-3-0 libgbm1 libasound2t64 libdrm2 libxkbcommon0 libxshmfence1
+      - run: npm ci
+        env:
+          MYAGENT_QUIET: '1'
+      - name: Run unit tests (under xvfb)
+        run: xvfb-run --auto-servernum npm test
+        env:
+          MYAGENT_QUIET: '1'
+          # Keep live-network driver tests out of CI; they need real API keys.
+          MYAGENT_SKIP_LIVE: '1'

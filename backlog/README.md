@@ -4,7 +4,6 @@ One folder per planned feature. Each has a `README.md` with the problem, propose
 
 | Item | Folder |
 |---|---|
-| Multi-turn conversation history | [`multi-turn-conversation/`](./multi-turn-conversation/README.md) |
 | Runtime model-runner switching | [`runtime-runner-switching/`](./runtime-runner-switching/README.md) |
 | Configurable output directory | [`configurable-output-directory/`](./configurable-output-directory/README.md) |
 | Web app deployment | [`web-app-deployment/`](./web-app-deployment/README.md) |

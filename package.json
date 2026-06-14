@@ -1,7 +1,8 @@
 {
   "name": "myagent",
   "version": "0.1.0",
-  "description": "Local coding agent powered by SmolLM3-3B via Ollama, with an xterm.js terminal UI",
+  "description": "Local-first coding agent desktop app: pluggable model backends (in-process ONNX, Ollama, Ollama Cloud, OpenRouter), hybrid FTS5 + vector memory search, a file explorer with CodeMirror editor, multi-pane xterm.js terminals, and gated hooks + Agent Skills.",
+  "license": "AGPL-3.0-only",
   "main": "electron/main.js",
   "scripts": {
     "postinstall": "node scripts/ensure-native.js electron && node scripts/copy-transformers.js",

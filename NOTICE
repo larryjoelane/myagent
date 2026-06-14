@@ -1,0 +1,48 @@
+MyAgent
+Copyright (c) 2026 Larry Lane
+
+This product is licensed under the GNU Affero General Public License v3.0
+(AGPL-3.0-only), or under a separate commercial license. See LICENSE and
+LICENSING.md.
+
+================================================================================
+Third-party software
+================================================================================
+
+MyAgent bundles and depends on third-party open-source packages, each under its
+own license. The dependency tree is overwhelmingly permissive (MIT, BSD,
+Apache-2.0, ISC). Notable items:
+
+  - Electron, xterm.js, CodeMirror, lit, better-sqlite3, onnxruntime-web,
+    @huggingface/transformers, pdfkit, and others — MIT / BSD / Apache-2.0 / ISC.
+
+  - @img/sharp (transitive) — Apache-2.0 AND LGPL-3.0-or-later. Used as an
+    unmodified, dynamically-linked npm dependency; its license text is retained
+    in node_modules and redistributed with any distribution that includes it.
+
+For the complete, authoritative list of dependency licenses, generate it from
+the lockfile, e.g.:
+
+    npx license-checker --production --json
+
+================================================================================
+Machine-learning model weights
+================================================================================
+
+MyAgent does NOT redistribute model weights. Models are downloaded by the end
+user at runtime from Hugging Face (and, for Ollama-backed models, via Ollama),
+each under its own license. Models referenced by the app include:
+
+  - Xenova/all-MiniLM-L6-v2            (embedder)        — Apache-2.0*
+  - onnx-community/Qwen2.5-0.5B-Instruct                 — Apache-2.0*
+  - onnx-community/Qwen2.5-Coder-3B-Instruct             — Apache-2.0*
+  - onnx-community/Qwen3-4B-ONNX                         — verify on model card
+  - hf.co/ggml-org/SmolLM3-3B-GGUF    (via Ollama)       — Apache-2.0*
+  - ibm/granite-docling               (Ollama Cloud)     — verify on model card
+
+  * License of the upstream base model; confirm the specific (re-)distribution's
+    license on its Hugging Face model card before relying on it commercially.
+
+Because weights are fetched by the user at runtime, they are obtained under the
+end user's acceptance of the respective model licenses, not redistributed by
+this project.

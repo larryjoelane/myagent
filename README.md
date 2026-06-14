@@ -1,74 +1,93 @@
 # MyAgent
 
-A small, local coding agent powered by **SmolLM3-3B** running on **Ollama** (which uses `llama.cpp` under the hood). The UI is an `xterm.js` terminal hosted in an Electron window today, and is structured so the same renderer can be served as a web app later.
+A local-first coding agent desktop app. It pairs a multi-pane `xterm.js`
+terminal with **pluggable model backends**, a **hybrid memory search** over your
+sessions, a **file explorer + CodeMirror editor**, and **gated hooks + Agent
+Skills** — all in an Electron window structured so the same renderer can be
+served as a web app later.
 
-Generated files are written to `./project-output/`. Future versions will let you target other directories.
+**Model backends (worker "kinds"):**
+
+| Kind | What it is | Auth |
+|---|---|---|
+| `local` | In-process ONNX model via `@huggingface/transformers` (CPU/WebGPU), e.g. Qwen2.5-Coder. For no/low-GPU or fully offline use. | none |
+| `ollama` | Local Ollama (`llama.cpp` under the hood), e.g. SmolLM3-3B GGUF. | none |
+| `ollama-cloud` | Hosted Ollama models. | `OLLAMA_API_KEY` |
+| `openrouter` | OpenRouter-hosted models via an OpenAI-compatible driver. | `OPENROUTER_API_KEY` |
+
+Generated files are written to `./project-output/` (default).
 
 ---
 
 ## Architecture at a glance
 
 ```
-renderer/        UI: xterm.js + transport-agnostic shell
+renderer/        UI: xterm.js terminals, chat surface (lit), file explorer
   transports/    electron preload bridge today, web (HTTP) stub for later
-electron/        Electron main + preload (only platform-specific code)
-src/core/        Pure Node modules — reusable from a web server
-  runners/       Pluggable model runners; ollama.js today, others tomorrow
-  agent.js       System prompt + streaming orchestrator
-  fileWriter.js  Parses fenced blocks → writes to project-output/
-web/server.js    Placeholder for future web app entry point
-project-output/  Where generated files land
+electron/        Electron main + preload (platform-specific) + ipc/ handlers
+  ipc/           per-domain IPC handlers (agent, memory, worker, fs, editor…)
+src/core/        Pure Node modules — no Electron imports; reusable elsewhere
+  drivers/       Model drivers (OpenAI-compatible, local model, …)
+  runners/       Pluggable model runners (Ollama, etc.)
+  workerManager.js   spawn/list/send/close for chat agents + shells
+  sessionIndex.js    SQLite (FTS5 + vector) memory store ("MySecondBrain")
+  sessionWorker*.js  off-thread host + worker for the memory index
+  sessionServer.js   loopback HTTP API for search/store (CLI reuse)
+  tokenLedger.js     per-worker/model/provider token tally
+  skills.js          Agent Skills loader
+web/server.js    Web app entry point (in progress)
+.myagent/        Local runtime state (gitignored): index.db, logs, settings
 research/        Design notes
+docs/            Design docs + decision records (ADRs)
 ```
 
-**Why structured this way:** everything in `src/core/` is plain Node with no Electron dependencies. When we promote MyAgent to a web app, `web/server.js` will import the same `Agent`, `OllamaRunner`, and `writeFiles`, and the renderer will swap from `window.transport` (Electron preload) to `createWebTransport()` (HTTP/streaming) — no UI changes needed.
+**Why structured this way:** everything in `src/core/` is plain Node with no
+Electron dependencies, so the same modules back the Electron app, the CLI
+skills, and (eventually) a web server. Heavy work — SQLite, embeddings —
+runs in a worker thread off the main process. See `docs/` for the design docs
+and decision records.
 
 ---
 
 ## Prerequisites
 
-1. **Node.js 20+** (we use the global `fetch` and `ReadableStream`).
-2. **Ollama** — install from <https://ollama.com/download>.
+1. **Node.js 23.x** (matches `engines.node`; we use modern `fetch` /
+   `ReadableStream`).
+2. **At least one model backend.** The fully-local `local` kind needs nothing
+   external (it downloads ONNX weights from Hugging Face on first use). For the
+   Ollama backends, install **Ollama** from <https://ollama.com/download>:
    - Windows: `winget install Ollama.Ollama`
    - macOS: `brew install ollama`
    - Linux: `curl -fsSL https://ollama.com/install.sh | sh`
+3. *(Optional)* `OLLAMA_API_KEY` / `OPENROUTER_API_KEY` in a `.env` file for the
+   cloud backends (loaded via `dotenv` in `electron/main.js`).
 
 ---
 
-## Downloading the model
+## Models
 
-We use the **GGUF build of SmolLM3-3B published by the llama.cpp / ggml maintainers** (most authoritative source).
+MyAgent loads models from a registry (`src/core/models/registry.js`). Two
+categories:
 
-Run this once. It downloads the model and starts an Ollama session you can immediately exit (`/bye`):
+- **Embedder** — `Xenova/all-MiniLM-L6-v2` (384-dim). Powers the memory-search
+  index and the semantic router. Downloaded from Hugging Face at runtime.
+- **Generative** — local ONNX models (Qwen2.5-0.5B, Qwen2.5-Coder-3B, Qwen3-4B)
+  for the `local` worker, plus whatever you pull through Ollama / Ollama Cloud /
+  OpenRouter.
+
+Model weights are **not** bundled — they're downloaded by you at runtime under
+their own licenses (see [NOTICE](./NOTICE)).
+
+### Using an Ollama model
 
 ```bash
 ollama run hf.co/ggml-org/SmolLM3-3B-GGUF:Q4_K_M
 ```
 
-`Q4_K_M` is the recommended 4-bit quantization (~2 GB, good speed/quality tradeoff). Other tags available in that repo: `Q5_K_M`, `Q6_K`, `Q8_0`, `F16`.
-
-### Where the model is stored on disk
-
-Ollama stores model blobs in a content-addressed store at:
-
-| OS | Path |
-|---|---|
-| **Windows** | `%USERPROFILE%\.ollama\models` (e.g. `C:\Users\<you>\.ollama\models`) |
-| **macOS** | `~/.ollama/models` |
-| **Linux** | `~/.ollama/models` (or `/usr/share/ollama/.ollama/models` if installed as the `ollama` system user via the install script) |
-
-Inside `models/` you'll find:
-- `blobs/` — the actual GGUF weights, named by SHA256 hash (`sha256-<hex>`)
-- `manifests/registry.ollama.ai/...` and `manifests/hf.co/ggml-org/SmolLM3-3B-GGUF/...` — small JSON files that map the human-readable tag to the blob hashes
-
-To see exactly where it landed and verify the download:
-
-```bash
-ollama list
-ollama show hf.co/ggml-org/SmolLM3-3B-GGUF:Q4_K_M
-```
-
-To override the storage location, set `OLLAMA_MODELS` before starting the Ollama service — e.g. `OLLAMA_MODELS=D:\ollama-models` on Windows.
+`Q4_K_M` is a good 4-bit default (~2 GB). Ollama stores blobs in a
+content-addressed store: `%USERPROFILE%\.ollama\models` (Windows) or
+`~/.ollama/models` (macOS/Linux). Override with `OLLAMA_MODELS`. Inspect with
+`ollama list` / `ollama show <tag>`.
 
 ---
 
@@ -79,18 +98,28 @@ npm install
 npm start
 ```
 
-This launches the Electron window. Type a coding task at the `›` prompt and press Enter. Streamed output appears in the terminal; any fenced files the model emits with a `path=` attribute are written under `project-output/`.
+This launches the Electron window. Spawn an agent or shell worker, type a task,
+and watch streamed output. Fenced files the model emits with a `path=` attribute
+are written under `project-output/`. The memory index, settings, and logs live
+under `.myagent/sessions/` (gitignored, per-install).
 
-The status badge at the top-left shows whether Ollama is reachable on `http://127.0.0.1:11434`. If it says `ollama down`, make sure the Ollama service is running (`ollama serve`, or just open the desktop app once on Windows/macOS).
+For development with hot reload:
+
+```bash
+npm run dev
+```
 
 ### Configuration
 
-Environment variables read by the runner (`src/core/runners/ollama.js`):
+Environment variables (read by the runners / `electron/main.js`):
 
 | Var | Default | Purpose |
 |---|---|---|
 | `OLLAMA_HOST` | `http://127.0.0.1:11434` | Ollama API endpoint |
-| `MYAGENT_MODEL` | `hf.co/ggml-org/SmolLM3-3B-GGUF:Q4_K_M` | Model tag passed to Ollama |
+| `MYAGENT_MODEL` | `hf.co/ggml-org/SmolLM3-3B-GGUF:Q4_K_M` | Default Ollama model tag |
+| `OLLAMA_API_KEY` | — | Auth for the `ollama-cloud` backend |
+| `OPENROUTER_API_KEY` | — | Auth for the `openrouter` backend |
+| `MYAGENT_SESSIONS_DIR` | `.myagent/sessions` | Override where all local state lives |
 
 ---
 
@@ -227,29 +256,52 @@ The full design and rationale (granularity, schema, storage, script split, canon
 
 ## Relevant links
 
-**Model:**
-- SmolLM3-3B (original PyTorch release): <https://huggingface.co/HuggingFaceTB/SmolLM3-3B>
-- SmolLM3-3B GGUF (what we use, by the llama.cpp maintainers): <https://huggingface.co/ggml-org/SmolLM3-3B-GGUF>
-- Bartowski's GGUF set (alternative quants): <https://huggingface.co/bartowski/HuggingFaceTB_SmolLM3-3B-GGUF>
-- Unsloth's GGUF set, incl. 128k context variant: <https://huggingface.co/unsloth/SmolLM3-3B-GGUF>
+**Models:**
+- SmolLM3-3B GGUF (Ollama default, by the llama.cpp maintainers): <https://huggingface.co/ggml-org/SmolLM3-3B-GGUF>
+- MiniLM-L6-v2 embedder (Xenova ONNX port): <https://huggingface.co/Xenova/all-MiniLM-L6-v2>
+- Qwen2.5 / Qwen3 ONNX builds (local generative): <https://huggingface.co/onnx-community>
 
-**Runtime:**
-- Ollama: <https://ollama.com>
-- Ollama model library: <https://ollama.com/library>
-- Ollama HuggingFace passthrough docs: <https://huggingface.co/docs/hub/en/ollama>
+**Backends / runtime:**
+- Ollama: <https://ollama.com> · model library: <https://ollama.com/library>
+- OpenRouter: <https://openrouter.ai>
+- transformers.js (in-process ONNX): <https://huggingface.co/docs/transformers.js>
 - llama.cpp: <https://github.com/ggml-org/llama.cpp>
-- ggml: <https://github.com/ggml-org/ggml>
 
-**UI:**
-- xterm.js: <https://xtermjs.org>
+**Core libraries:**
 - Electron: <https://www.electronjs.org>
+- xterm.js: <https://xtermjs.org>
+- CodeMirror: <https://codemirror.net>
+- lit: <https://lit.dev>
+- better-sqlite3: <https://github.com/WiseLibs/better-sqlite3>
 
 ---
 
 ## Roadmap
 
-- [ ] Multi-turn conversation history (currently each prompt is one-shot)
-- [ ] Switch model runners at runtime (Ollama / Transformers.js — see `research/inference-runtime-comparison.md`)
+Already shipped: multi-turn history, multiple runtime-switchable backends
+(`local` / `ollama` / `ollama-cloud` / `openrouter`), PTY-backed shells, hybrid
+memory search, a file explorer + CodeMirror editor, and two-phase hooks +
+Agent Skills.
+
+Still planned:
+
+- [ ] Extract the memory engine into a standalone, split-ready `memory/` package
+      (library + CLI + HTTP API + MCP) — see `docs/memory-api-design.md`
 - [ ] Choose output directory at runtime
 - [ ] Web app deployment via `web/server.js` and `renderer/transports/web.js`
-- [ ] Optional real PTY (`node-pty`) so the terminal can also run shell commands
+- [ ] Model picker UI across all backends
+
+---
+
+## License
+
+MyAgent is **dual-licensed**:
+
+- **Open source:** [AGPL-3.0-only](./LICENSE). Free to use, modify, and
+  self-host. Note the AGPL network clause — running a modified version as a
+  network service requires publishing your source.
+- **Commercial:** for proprietary/closed-source use, or hosting a modified
+  version without releasing source, a commercial license is available.
+
+See [LICENSING.md](./LICENSING.md) for details and contact, and
+[CONTRIBUTING.md](./CONTRIBUTING.md) for the contributor terms (CLA).

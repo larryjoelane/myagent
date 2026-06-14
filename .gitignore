@@ -35,6 +35,10 @@ pnpm-debug.log*
 .env.*
 !.env.example
 
+# private/local-only notes (business strategy, monetization roadmap, etc.)
+# — never published to the public repo.
+private/
+
 # editor / OS
 .vscode/
 !.vscode/settings.json.example
