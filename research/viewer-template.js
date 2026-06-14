@@ -40,6 +40,9 @@ function renderHtml(snapshot, { embed = true, apiPath = '/api/graph' } = {}) {
 <meta charset="UTF-8" />
 <title>Memory Plasticity Graph</title>
 <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/layout-base@2.0.1/layout-base.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/cose-base@2.2.0/cose-base.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
 <style>
   :root { color-scheme: dark; }
   body { margin: 0; font: 13px/1.5 ui-monospace, Menlo, Consolas, monospace;
@@ -48,6 +51,16 @@ function renderHtml(snapshot, { embed = true, apiPath = '/api/graph' } = {}) {
          gap: 18px; align-items: center; flex-wrap: wrap; }
   #bar b { color: #7fd4ff; }
   #cy { width: 100vw; height: calc(100vh - 46px); display: block; }
+
+  /* Toolbar: layout buttons + energy filter (setupToolbar) */
+  #tools { display: flex; gap: 10px; align-items: center; }
+  #tools button { font: inherit; font-size: 12px; color: #cfe3f2; cursor: pointer;
+            background: #11202e; border: 1px solid #2a3a4a; border-radius: 6px;
+            padding: 4px 10px; }
+  #tools button:hover { border-color: #7fd4ff; color: #7fd4ff; }
+  #filter-wrap { display: flex; gap: 7px; align-items: center; color: #8aa3b6; font-size: 12px; }
+  #filter-wrap input[type=range] { width: 120px; accent-color: #7fd4ff; cursor: pointer; }
+  #filter-val { color: #7fd4ff; min-width: 30px; }
 
   /* Search box + autocomplete dropdown (setupSearch) */
   #search-wrap { position: relative; margin-left: auto; }
@@ -96,6 +109,15 @@ function renderHtml(snapshot, { embed = true, apiPath = '/api/graph' } = {}) {
   <div id="bar">
     <span>Memory Plasticity Graph</span>
     <span><b id="nc"></b> memories · <b id="ec"></b> synapses</span>
+    <div id="tools">
+      <button id="btn-relayout" title="Re-run the layout">Re-layout</button>
+      <button id="btn-fit" title="Fit the whole graph in view">Fit</button>
+      <button id="btn-reset" title="Reset filter, selection, and zoom">Reset</button>
+      <span id="filter-wrap" title="Hide memories below this energy (recency × frequency)">
+        min energy <input id="filter" type="range" min="0" max="100" value="0" />
+        <span id="filter-val">all</span>
+      </span>
+    </div>
     <div id="search-wrap">
       <input id="search" type="text" placeholder="Search memories…" autocomplete="off" />
       <div id="search-results"></div>
@@ -106,6 +128,19 @@ function renderHtml(snapshot, { embed = true, apiPath = '/api/graph' } = {}) {
   <div id="tip"></div>
 <script>${embeddedData}
   const API_PATH = ${JSON.stringify(apiPath)};
+
+  // cytoscape-fcose auto-registers with cytoscape when its UMD script loads,
+  // exposing window.cytoscapeFcose. If the CDN failed to load it, fall back to
+  // the built-in cose layout so the graph still renders (just more crossings).
+  const LAYOUT_NAME = (typeof cytoscapeFcose !== 'undefined') ? 'fcose' : 'cose';
+  // Shared layout config, used by the initial render AND the Re-layout button.
+  // fcose clusters tightly with far fewer edge crossings than cose.
+  const LAYOUT_OPTS = (LAYOUT_NAME === 'fcose')
+    ? { name: 'fcose', animate: true, animationDuration: 600, randomize: true,
+        idealEdgeLength: 130, nodeRepulsion: 9000, nodeSeparation: 90,
+        gravity: 0.25, numIter: 2500, padding: 50 }
+    : { name: 'cose', animate: true, idealEdgeLength: 140, nodeRepulsion: 24000,
+        componentSpacing: 140, padding: 50, randomize: true };
 
   // Short on-canvas label (full text stays in the hover tooltip).
   const NODE_LABEL_MAX = ${NODE_LABEL_MAX};
@@ -152,11 +187,12 @@ function renderHtml(snapshot, { embed = true, apiPath = '/api/graph' } = {}) {
     elements: toElements(snapshot),
     style: [
       { selector: 'node', style: {
-          'label': 'data(label)',
+          // Labels are hidden by default to cut clutter; the .show-label class
+          // (added on hover, selection, neighbour-of-selection, or when zoomed
+          // in past LABEL_ZOOM) reveals them. Full text stays in the tooltip.
+          'label': '',
           'color': '#cfe3f2',
           'font-size': 10,
-          // Single short line, ellipsized — no multi-line wrap that collides
-          // with neighbours. Full text is in the hover tooltip.
           'text-wrap': 'ellipsis',
           'text-max-width': 130,
           'text-valign': 'bottom',
@@ -171,25 +207,48 @@ function renderHtml(snapshot, { embed = true, apiPath = '/api/graph' } = {}) {
           // Colour scales with energy: cold blue -> hot orange.
           'background-color': 'mapData(energy, 0.5, ' + eMax + ', #1f5f8b, #ff7a45)',
           'border-width': 1, 'border-color': '#0b0f14',
+          'transition-property': 'opacity', 'transition-duration': '160ms',
       } },
+      { selector: 'node.show-label', style: { 'label': 'data(label)' } },
       { selector: 'edge', style: {
           'curve-style': 'bezier',
           'line-color': '#3a5a72',
           'opacity': 0.7,
           // Thickness scales with Hebbian weight.
           'width': 'mapData(weight, 1, ' + wMax + ', 1, 9)',
+          'transition-property': 'opacity', 'transition-duration': '160ms',
       } },
       { selector: 'node:selected', style: { 'border-width': 3, 'border-color': '#7fd4ff' } },
+      // Focus mode: everything not in the spotlight set fades back.
+      { selector: '.faded', style: { 'opacity': 0.12 } },
+      // Filtered out by the energy slider — removed from layout + hit-testing.
+      { selector: '.hidden', style: { 'display': 'none' } },
     ],
-    // More repulsion + longer edges so nodes (and their labels) don't crowd.
-    layout: { name: 'cose', animate: true, idealEdgeLength: 140, nodeRepulsion: 24000,
-              componentSpacing: 140, padding: 50, randomize: true },
+    layout: LAYOUT_OPTS,
   });
 
-  // Hover tooltip with the full Q + A and plasticity stats.
+  // ── Label visibility ────────────────────────────────────────────────────
+  // One source of truth: a node shows its label when zoomed in past
+  // LABEL_ZOOM, OR while hovered, OR while in the focused spotlight set. Each
+  // of those sets a marker class; recomputeLabels() ORs them into show-label.
+  // Centralizing it avoids the three-flag tug-of-war between zoom/hover/focus.
+  const LABEL_ZOOM = 1.3;
+  function recomputeLabels() {
+    const zoomedIn = cy.zoom() >= LABEL_ZOOM;
+    cy.batch(() => {
+      cy.nodes().forEach((n) => {
+        const show = zoomedIn || n.hasClass('hover') || n.hasClass('focus');
+        n[show ? 'addClass' : 'removeClass']('show-label');
+      });
+    });
+  }
+  cy.on('zoom', recomputeLabels);
+
+  // Hover: tooltip (full Q+A + stats) + reveal this node's label.
   const tip = document.getElementById('tip');
   cy.on('mouseover', 'node', (ev) => {
-    const d = ev.target.data();
+    const n = ev.target; const d = n.data();
+    n.addClass('hover'); recomputeLabels();
     tip.innerHTML = '<div class="q">Q: ' + esc(d.prompt) + '</div>'
       + '<div class="a">A: ' + esc(d.answer) + '</div>'
       + '<div class="meta">energy ' + d.energy.toFixed(2) + ' · recalls ' + d.retrievalCount + '</div>';
@@ -200,22 +259,103 @@ function renderHtml(snapshot, { embed = true, apiPath = '/api/graph' } = {}) {
     tip.style.left = (e.clientX + 14) + 'px';
     tip.style.top = (e.clientY + 14) + 'px';
   });
-  cy.on('mouseout', 'node', () => { tip.style.display = 'none'; });
+  cy.on('mouseout', 'node', (ev) => {
+    ev.target.removeClass('hover'); recomputeLabels();
+    tip.style.display = 'none';
+  });
 
-    // Wire the two UI features once the graph is on screen.
-    setupSearch(cy);
+    // Wire interactions once the graph is on screen.
+    setupSearch(cy, recomputeLabels);
     setupLegend();
+    setupFocus(cy, recomputeLabels);
+    setupToolbar(cy, snapshot, recomputeLabels);
+    // Initial label pass (e.g. if the graph loads already zoomed in).
+    recomputeLabels();
     return cy;
+  }
+
+  // ── Focus mode ──────────────────────────────────────────────────────────
+  // Click a node: spotlight it + its direct synapses, fade everything else,
+  // and label the spotlight set. Click empty canvas to clear.
+  function setupFocus(cy, recomputeLabels) {
+    function clear() {
+      cy.elements().removeClass('faded focus');
+      recomputeLabels();
+    }
+    cy.on('tap', 'node', (ev) => {
+      const node = ev.target;
+      const neighborhood = node.closedNeighborhood();   // node + edges + adj nodes
+      cy.elements().addClass('faded');
+      neighborhood.removeClass('faded');
+      cy.nodes().removeClass('focus');
+      neighborhood.nodes().addClass('focus');
+      recomputeLabels();
+    });
+    cy.on('tap', (ev) => { if (ev.target === cy) clear(); });
   }
 
   // Shared HTML-escape (used by the tooltip + the search dropdown).
   function esc(s) { return String(s).replace(/[&<>]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 
+  // ── Toolbar: Re-layout / Fit / Reset + energy filter ───────────────────
+  // The energy slider hides low-energy memories (stale / never-recalled) so the
+  // canvas only shows what's "warm". Hidden nodes drop out of layout + counts.
+  function setupToolbar(cy, snapshot, recomputeLabels) {
+    const btnRelayout = document.getElementById('btn-relayout');
+    const btnFit = document.getElementById('btn-fit');
+    const btnReset = document.getElementById('btn-reset');
+    const slider = document.getElementById('filter');
+    const valEl = document.getElementById('filter-val');
+    const nc = document.getElementById('nc');
+    const ec = document.getElementById('ec');
+
+    // Map the 0..100 slider onto the actual energy range. Energy floor is 0.5
+    // (neutral / never-recalled); max comes from the snapshot.
+    const eMin = 0.5;
+    const eMax = Math.max(snapshot.meta.energyMax || eMin, eMin + 0.001);
+
+    function applyFilter() {
+      const pct = Number(slider.value) / 100;
+      const threshold = eMin + pct * (eMax - eMin);
+      valEl.textContent = pct === 0 ? 'all' : threshold.toFixed(2);
+      cy.batch(() => {
+        cy.nodes().forEach((n) => {
+          n[(n.data('energy') < threshold) ? 'addClass' : 'removeClass']('hidden');
+        });
+        // Drop edges touching a hidden node so no synapse dangles into nothing.
+        cy.edges().forEach((e) => {
+          const hide = e.source().hasClass('hidden') || e.target().hasClass('hidden');
+          e[hide ? 'addClass' : 'removeClass']('hidden');
+        });
+      });
+      nc.textContent = cy.nodes(':visible').length;
+      ec.textContent = cy.edges(':visible').length;
+      recomputeLabels();
+    }
+
+    function relayout() {
+      cy.layout(Object.assign({}, LAYOUT_OPTS, { eles: cy.elements(':visible') })).run();
+    }
+
+    slider.addEventListener('input', applyFilter);
+    btnRelayout.addEventListener('click', relayout);
+    btnFit.addEventListener('click', () => cy.animate({ fit: { padding: 50 } }, { duration: 350 }));
+    btnReset.addEventListener('click', () => {
+      slider.value = 0; applyFilter();
+      cy.elements().removeClass('faded focus hidden');
+      cy.elements().unselect();
+      nc.textContent = cy.nodes().length;
+      ec.textContent = cy.edges().length;
+      recomputeLabels();
+      cy.animate({ fit: { padding: 50 } }, { duration: 350 });
+    });
+  }
+
   // ── Autocomplete search ────────────────────────────────────────────────
   // Live-filters nodes by prompt/answer text, shows a ranked dropdown, and on
   // pick centers + selects the node (and visually dims the rest briefly).
   // Keyboard: ↑/↓ to move, Enter to pick, Esc to close.
-  function setupSearch(cy) {
+  function setupSearch(cy, recomputeLabels) {
     const input = document.getElementById('search');
     const panel = document.getElementById('search-results');
     // Build a lightweight index once: id, label, searchable haystack, color.
@@ -237,8 +377,16 @@ function renderHtml(snapshot, { embed = true, apiPath = '/api/graph' } = {}) {
     function focusNode(id) {
       const node = cy.getElementById(id);
       if (!node || node.empty()) return;
+      // Picking from search spotlights the node + its synapses (same as a
+      // click), and un-hides it if the energy filter had dropped it.
+      const hood = node.closedNeighborhood();
       cy.elements().unselect();
+      hood.removeClass('hidden faded');
+      cy.elements().not(hood).addClass('faded');
+      cy.nodes().removeClass('focus');
+      hood.nodes().addClass('focus');
       node.select();
+      recomputeLabels();
       cy.animate({ center: { eles: node }, zoom: 1.4 }, { duration: 350 });
       close();
       input.blur();
