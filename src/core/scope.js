@@ -88,14 +88,18 @@ class Scope extends EventEmitter {
    */
   async contains(target) {
     if (this._roots.size === 0) return false;
+    const absolute = path.resolve(target);
     let resolved;
     try {
-      resolved = await fsp.realpath(path.resolve(target));
+      resolved = await fsp.realpath(absolute);
     } catch {
-      // Target doesn't exist — fall back to the lexical resolution. This
-      // matters for fs:write-file when creating a new file: the file
-      // doesn't exist yet, but its parent should be in scope.
-      resolved = path.resolve(target);
+      // Target doesn't exist yet (e.g. fs:write-file creating a new file).
+      // We still must follow symlinks in the EXISTING portion of the path —
+      // otherwise a symlink like inside/trap -> /outside lets a not-yet-
+      // existing inside/trap/sneaky.txt resolve lexically under the scope
+      // and escape. Resolve the nearest existing ancestor, then re-append
+      // the non-existent tail.
+      resolved = await realpathNearest(absolute);
     }
     for (const root of this._roots) {
       if (isPathWithin(resolved, root)) return true;
@@ -114,11 +118,14 @@ class Scope extends EventEmitter {
    */
   containsSync(target) {
     if (this._roots.size === 0) return false;
+    const absolute = path.resolve(target);
     let resolved;
     try {
-      resolved = fs.realpathSync(path.resolve(target));
+      resolved = fs.realpathSync(absolute);
     } catch {
-      resolved = path.resolve(target);
+      // See contains(): follow symlinks in the existing prefix so a
+      // not-yet-existing target can't escape via a symlinked ancestor.
+      resolved = realpathNearestSync(absolute);
     }
     for (const root of this._roots) {
       if (isPathWithin(resolved, root)) return true;
@@ -147,6 +154,48 @@ class Scope extends EventEmitter {
     try { resolved = fs.realpathSync(absolute); }
     catch { resolved = absolute; }
     this._roots.add(resolved);
+  }
+}
+
+/**
+ * Resolve the realpath of the nearest EXISTING ancestor of an
+ * (absolute) path, then re-append the trailing non-existent segments.
+ * This follows symlinks in the part of the path that exists — closing
+ * the escape where a symlinked directory contains a not-yet-created
+ * target. Pure-lexical fallback only if even the root can't be resolved.
+ * @param {string} absolute already path.resolve()'d
+ * @returns {Promise<string>}
+ */
+async function realpathNearest(absolute) {
+  const tail = [];
+  let dir = absolute;
+  while (true) {
+    try {
+      const real = await fsp.realpath(dir);
+      return tail.length ? path.join(real, ...tail) : real;
+    } catch {
+      const parent = path.dirname(dir);
+      if (parent === dir) return absolute; // reached the root; give up
+      tail.unshift(path.basename(dir));
+      dir = parent;
+    }
+  }
+}
+
+/** Synchronous twin of realpathNearest(). */
+function realpathNearestSync(absolute) {
+  const tail = [];
+  let dir = absolute;
+  while (true) {
+    try {
+      const real = fs.realpathSync(dir);
+      return tail.length ? path.join(real, ...tail) : real;
+    } catch {
+      const parent = path.dirname(dir);
+      if (parent === dir) return absolute;
+      tail.unshift(path.basename(dir));
+      dir = parent;
+    }
   }
 }
 

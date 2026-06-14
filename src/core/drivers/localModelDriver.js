@@ -35,6 +35,15 @@ const HISTORY_FILE_MAX_CHARS = 2000;
 // the 0.5B, and fits an 8GB GPU at q4f16 on WebGPU (int8 fallback on CPU).
 const DEFAULT_MODEL = 'qwen2.5-coder-3b';
 
+// Diagnostic logging that's useful when running the real app but pure noise
+// in the test suite (where empty/failed generation is deliberately simulated).
+// MYAGENT_QUIET is set by tests/run.js and CI, so these stay silent there.
+function diag(...args) {
+  if (process.env.MYAGENT_QUIET) return;
+  // eslint-disable-next-line no-console
+  console.error(...args);
+}
+
 // Instruction prepended to every request. Small models follow ONE concrete
 // example far better than an abstract command list — so we lead with an
 // example of the exact output we want and keep the rules terse. The
@@ -192,8 +201,7 @@ class LocalModelDriver {
           this._finalize(userText, '(cancelled)', false);
           return;
         }
-        // eslint-disable-next-line no-console
-        console.error(`[local-model:${this.agentId}] generate failed:`, err);
+        diag(`[local-model:${this.agentId}] generate failed:`, err);
         this._finalize(userText, `Local model failed: ${msg}`, false);
         return;
       }
@@ -202,8 +210,7 @@ class LocalModelDriver {
       // (load issue, immediate EOS, degenerate stop). Surface it clearly on
       // the FIRST step instead of ending with a silent "(no response)".
       if (!out.trim() && iter === 1 && !assistantText) {
-        // eslint-disable-next-line no-console
-        console.error(`[local-model:${this.agentId}] model returned empty output (model=${this.model})`);
+        diag(`[local-model:${this.agentId}] model returned empty output (model=${this.model})`);
         this._finalize(userText,
           `The local model (${this.model}) returned no output. It may have failed to load, run out of memory, or stopped immediately. Check the DevTools console for the model-worker error.`,
           false);

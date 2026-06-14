@@ -257,7 +257,6 @@ The full design and rationale (granularity, schema, storage, script split, canon
 ## Relevant links
 
 **Models:**
-- SmolLM3-3B GGUF (Ollama default, by the llama.cpp maintainers): <https://huggingface.co/ggml-org/SmolLM3-3B-GGUF>
 - MiniLM-L6-v2 embedder (Xenova ONNX port): <https://huggingface.co/Xenova/all-MiniLM-L6-v2>
 - Qwen2.5 / Qwen3 ONNX builds (local generative): <https://huggingface.co/onnx-community>
 
