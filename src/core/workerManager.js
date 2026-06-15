@@ -3,10 +3,10 @@
 // and memory-mirror toggling.
 //
 // Designed for dependency injection so tests don't have to spin up
-// real claude/shell/SQLite:
+// real model/shell/SQLite:
 //
-//   factories.claude    : driver factory for headless claude workers
 //   factories.shell     : driver factory for shell workers
+//   factories.openrouter / 'ollama-cloud' / local : model worker factories
 //   memoryStore         : { store({text, source, tags, ts}) }
 //   memoryMirrorDefault : boolean, applies when worker has no override
 //
@@ -37,11 +37,11 @@ function shortModelHint(model) {
 
 class WorkerManager {
   constructor({ factories, onEvent, memoryStore, memoryMirrorDefault, contextProvider, editorScope } = {}) {
-    if (!factories || typeof factories.claude !== 'function' || typeof factories.shell !== 'function') {
-      throw new Error('WorkerManager: factories.claude and factories.shell are required');
+    if (!factories || typeof factories.shell !== 'function') {
+      throw new Error('WorkerManager: factories.shell is required');
     }
-    // Other factories (ollama-cloud, openrouter, future agent types) are
-    // optional — spawnX() methods check before calling and return a clean
+    // Other factories (ollama-cloud, openrouter, local, future agent types)
+    // are optional — spawnX() methods check before calling and return a clean
     // error if the kind isn't registered.
     if (typeof onEvent !== 'function') throw new Error('WorkerManager: onEvent is required');
     this.factories = factories;
@@ -91,12 +91,11 @@ class WorkerManager {
     }));
   }
 
-  async spawnWorker({ name, cwd, permissionMode } = {}) {
-    return this._spawn({
-      kind: 'claude',
-      name: name || this._nextWorkerName(),
-      driverOpts: { cwd, permissionMode },
-    });
+  // Generic "spawn the default worker". Defaults to openrouter now that the
+  // claude (Claude Code CLI) driver has been removed. `permissionMode` is
+  // accepted for backward compatibility but ignored (it was claude-specific).
+  async spawnWorker({ name, cwd, model, maxIterations, envContext, parallelDispatch } = {}) {
+    return this.spawnOpenRouter({ name, cwd, model, maxIterations, envContext, parallelDispatch });
   }
 
   async spawnShell({ name, cwd } = {}) {

@@ -6,6 +6,26 @@ This product is licensed under the GNU Affero General Public License v3.0
 LICENSING.md.
 
 ================================================================================
+Trademarks
+================================================================================
+
+All product names, logos, and brands referenced in this project are the
+property of their respective owners and are used for identification and
+interoperability purposes only. Such use does not imply any affiliation with,
+sponsorship by, or endorsement by the trademark holders.
+
+In particular:
+
+  - "Claude" and "Anthropic" are trademarks of Anthropic, PBC.
+  - "Ollama" is a trademark of its respective owner.
+  - "OpenRouter" is a trademark of its respective owner.
+  - "Hugging Face" is a trademark of Hugging Face, Inc.
+
+MyAgent is an independent project and is not affiliated with, endorsed by, or
+sponsored by Anthropic, Ollama, OpenRouter, Hugging Face, or any other named
+provider. Names are used solely to describe interoperability.
+
+================================================================================
 Third-party software
 ================================================================================
 

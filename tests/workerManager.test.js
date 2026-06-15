@@ -27,7 +27,7 @@ function fakeFactories() {
   // reference so tests can drive it. The driver also captures the
   // full opts object so tests can assert kind-specific args (model,
   // cwd, etc.) flow through.
-  const created = { claude: [], shell: [], 'ollama-cloud': [] };
+  const created = { shell: [], 'ollama-cloud': [], openrouter: [] };
   function track(kind) {
     return (opts) => {
       const d = new FakeDriver({ ...opts, kind });
@@ -38,9 +38,10 @@ function fakeFactories() {
   }
   return {
     factories: {
-      claude: track('claude'),
       shell: track('shell'),
       'ollama-cloud': track('ollama-cloud'),
+      // openrouter is the default kind spawnWorker() delegates to.
+      openrouter: track('openrouter'),
     },
     created,
   };
@@ -72,27 +73,27 @@ function fakeMemoryStore() {
 
 function run(t) {
 
-  t.test('spawnWorker creates a claude-driven channel and returns id+name', async () => {
+  t.test('spawnWorker creates a default (openrouter) channel and returns id+name', async () => {
     const r = recorder();
     const { factories, created } = fakeFactories();
     const mgr = new WorkerManager({ factories, onEvent: r.onEvent });
     const result = await mgr.spawnWorker({ name: 'first' });
     ok(result.id, 'returned id');
     eq(result.name, 'first', 'returned name');
-    eq(result.kind, 'claude', 'kind=claude');
-    eq(created.claude.length, 1, 'one claude driver created');
+    eq(result.kind, 'openrouter', 'kind=openrouter (the default)');
+    eq(created.openrouter.length, 1, 'one openrouter driver created');
     eq(created.shell.length, 0, 'no shell drivers');
-    eq(created.claude[0].started, true, 'driver started');
+    eq(created.openrouter[0].started, true, 'driver started');
   });
 
-  t.test('spawnWorker auto-generates Worker N name when not provided', async () => {
+  t.test('spawnWorker auto-generates a provider name when not provided', async () => {
     const r = recorder();
     const { factories } = fakeFactories();
     const mgr = new WorkerManager({ factories, onEvent: r.onEvent });
     const a = await mgr.spawnWorker({});
     const b = await mgr.spawnWorker({});
-    eq(a.name, 'Worker 1');
-    eq(b.name, 'Worker 2');
+    eq(a.name, 'OpenRouter 1');
+    eq(b.name, 'OpenRouter 2');
   });
 
   t.test('spawnShell creates a shell-driven channel', async () => {
@@ -103,7 +104,7 @@ function run(t) {
     eq(result.kind, 'shell');
     eq(result.name, 'shell', 'shell defaults to "shell" name');
     eq(created.shell.length, 1);
-    eq(created.claude.length, 0);
+    eq(created.openrouter.length, 0);
   });
 
   t.test('list() reports active workers with id, name, kind', async () => {
@@ -115,7 +116,7 @@ function run(t) {
     eq(list.length, 2, 'two workers listed');
     const alpha = list.find((w) => w.name === 'alpha');
     ok(alpha, 'alpha listed');
-    eq(alpha.kind, 'claude');
+    eq(alpha.kind, 'openrouter');
     const shell = list.find((w) => w.kind === 'shell');
     ok(shell);
     eq(shell.name, 'shell');
@@ -128,8 +129,8 @@ function run(t) {
     const b = await mgr.spawnWorker({ name: 'b' });
     mgr.send({ to: a.id, text: 'msg-a' });
     mgr.send({ to: b.id, text: 'msg-b' });
-    eq(created.claude[0].sent[0], 'msg-a', 'first driver got msg-a');
-    eq(created.claude[1].sent[0], 'msg-b', 'second driver got msg-b');
+    eq(created.openrouter[0].sent[0], 'msg-a', 'first driver got msg-a');
+    eq(created.openrouter[1].sent[0], 'msg-b', 'second driver got msg-b');
   });
 
   t.test('send by name resolves to id', async () => {
@@ -137,7 +138,7 @@ function run(t) {
     const mgr = new WorkerManager({ factories, onEvent: () => {} });
     await mgr.spawnWorker({ name: 'frontend' });
     mgr.send({ to: 'frontend', text: 'do things' });
-    eq(created.claude[0].sent[0], 'do things');
+    eq(created.openrouter[0].sent[0], 'do things');
   });
 
   t.test('send to "shell" routes to the shell worker', async () => {
@@ -165,7 +166,7 @@ function run(t) {
     const mgr = new WorkerManager({ factories, onEvent: () => {} });
     const a = await mgr.spawnWorker({ name: 'gone' });
     await mgr.close(a.id);
-    eq(created.claude[0].closed, true, 'driver closed');
+    eq(created.openrouter[0].closed, true, 'driver closed');
     eq(mgr.list().length, 0, 'removed from list');
   });
 
@@ -176,7 +177,7 @@ function run(t) {
     await mgr.spawnWorker({});
     await mgr.spawnShell({});
     await mgr.closeAll();
-    ok(created.claude.every((d) => d.closed), 'all claude drivers closed');
+    ok(created.openrouter.every((d) => d.closed), 'all openrouter drivers closed');
     ok(created.shell.every((d) => d.closed), 'all shell drivers closed');
     eq(mgr.list().length, 0);
   });
@@ -186,7 +187,7 @@ function run(t) {
     const { factories, created } = fakeFactories();
     const mgr = new WorkerManager({ factories, onEvent: r.onEvent });
     await mgr.spawnWorker({ name: 'evt' });
-    created.claude[0].emit('chat:turn-end', {
+    created.openrouter[0].emit('chat:turn-end', {
       userText: 'hi', assistantText: 'reply', ok: true,
     });
     eq(r.countOf('chat:turn-end'), 1);
@@ -203,7 +204,7 @@ function run(t) {
       memoryMirrorDefault: true,
     });
     const a = await mgr.spawnWorker({ name: 'mem' });
-    created.claude[0].emit('chat:turn-end', {
+    created.openrouter[0].emit('chat:turn-end', {
       userText: 'remember this', assistantText: 'noted', ok: true,
       provider: 'openrouter', totals: { model: 'openai/gpt-5-nano' },
     });
@@ -231,7 +232,7 @@ function run(t) {
       memoryMirrorDefault: false,
     });
     await mgr.spawnWorker({});
-    created.claude[0].emit('chat:turn-end', {
+    created.openrouter[0].emit('chat:turn-end', {
       userText: 'a', assistantText: 'b', ok: true,
     });
     await new Promise((res) => setImmediate(res));
@@ -249,7 +250,7 @@ function run(t) {
     });
     const w = await mgr.spawnWorker({});
     mgr.setMirror({ id: w.id, on: true });
-    created.claude[0].emit('chat:turn-end', {
+    created.openrouter[0].emit('chat:turn-end', {
       userText: 'a', assistantText: 'b', ok: true,
     });
     await new Promise((res) => setImmediate(res));
@@ -272,7 +273,7 @@ function run(t) {
   t.test('cwd is threaded through to driver factory and exposed on list()', async () => {
     let receivedCwd = null;
     const factories = {
-      claude: (opts) => { receivedCwd = opts.cwd; return new FakeDriver(opts); },
+      openrouter: (opts) => { receivedCwd = opts.cwd; return new FakeDriver(opts); },
       shell: (opts) => new FakeDriver(opts),
     };
     const mgr = new WorkerManager({ factories, onEvent: () => {} });
@@ -285,7 +286,7 @@ function run(t) {
   t.test('cwd defaults to undefined when not provided', async () => {
     let receivedCwd = 'unset';
     const factories = {
-      claude: (opts) => { receivedCwd = opts.cwd; return new FakeDriver(opts); },
+      openrouter: (opts) => { receivedCwd = opts.cwd; return new FakeDriver(opts); },
       shell: (opts) => new FakeDriver(opts),
     };
     const mgr = new WorkerManager({ factories, onEvent: () => {} });
@@ -313,9 +314,9 @@ function run(t) {
     await new Promise((r) => setImmediate(r));
     eq(calls.length, 1, 'provider called once');
     eq(calls[0].text, 'set up the db', 'provider got the original text');
-    eq(created.claude[0].sent.length, 1);
-    contains(created.claude[0].sent[0], 'team prefers postgres');
-    contains(created.claude[0].sent[0], 'set up the db');
+    eq(created.openrouter[0].sent.length, 1);
+    contains(created.openrouter[0].sent[0], 'team prefers postgres');
+    contains(created.openrouter[0].sent[0], 'set up the db');
   });
 
   t.test('contextProvider returning empty preamble = original text sent unchanged', async () => {
@@ -327,7 +328,7 @@ function run(t) {
     const a = await mgr.spawnWorker({});
     mgr.send({ to: a.id, text: 'plain prompt' });
     await new Promise((r) => setImmediate(r));
-    eq(created.claude[0].sent[0], 'plain prompt', 'no preamble = unchanged');
+    eq(created.openrouter[0].sent[0], 'plain prompt', 'no preamble = unchanged');
   });
 
   t.test('contextProvider not provided = no injection (backwards-compatible)', async () => {
@@ -336,7 +337,7 @@ function run(t) {
     const a = await mgr.spawnWorker({});
     mgr.send({ to: a.id, text: 'plain prompt' });
     await new Promise((r) => setImmediate(r));
-    eq(created.claude[0].sent[0], 'plain prompt', 'no provider = unchanged');
+    eq(created.openrouter[0].sent[0], 'plain prompt', 'no provider = unchanged');
   });
 
   t.test('slash commands bypass auto-context (preamble would break parseSlash)', async () => {
@@ -351,7 +352,7 @@ function run(t) {
     mgr.send({ to: a.id, text: '/help' });
     await new Promise((r) => setImmediate(r));
     eq(providerCalled, 0, 'provider must not run for slash commands');
-    eq(created.claude[0].sent[0], '/help', 'slash text reaches driver verbatim');
+    eq(created.openrouter[0].sent[0], '/help', 'slash text reaches driver verbatim');
   });
 
   t.test('listTools returns the toolkit for workers whose driver exposes one', async () => {
@@ -371,7 +372,7 @@ function run(t) {
     };
     const { factories: base } = fakeFactories();
     const mgr = new WorkerManager({
-      factories: { ...base, claude: toolFactory },
+      factories: { ...base, openrouter: toolFactory },
       onEvent: () => {},
     });
     const w = await mgr.spawnWorker({});
@@ -405,7 +406,7 @@ function run(t) {
     mgr.send({ to: a.id, text: 'plain prompt' });
     await new Promise((r) => setImmediate(r));
     eq(providerCalled, 1, 'provider must still run for claude workers');
-    eq(created.claude[0].sent[0], '[ctx]\n\nplain prompt');
+    eq(created.openrouter[0].sent[0], '[ctx]\n\nplain prompt');
   });
 
   t.test('contextProvider failure does not block the send', async () => {
@@ -418,7 +419,7 @@ function run(t) {
     const a = await mgr.spawnWorker({});
     mgr.send({ to: a.id, text: 'plain prompt' });
     await new Promise((r) => setImmediate(r));
-    eq(created.claude[0].sent[0], 'plain prompt', 'fall through on provider error');
+    eq(created.openrouter[0].sent[0], 'plain prompt', 'fall through on provider error');
   });
 
   t.test('chat:user event reflects the ORIGINAL text (not the augmented one)', async () => {
@@ -448,10 +449,10 @@ function run(t) {
     eq(used.payload.usedHits[0].id, 7);
     // Driver received the AUGMENTED prompt (preamble + text) — that's
     // the input the model needs.
-    eq(created.claude[0].sent[0], '[ctx]\n\nreal prompt', 'driver got augmented');
+    eq(created.openrouter[0].sent[0], '[ctx]\n\nreal prompt', 'driver got augmented');
     // Now have the driver emit chat:user back upward (real drivers do
     // this; FakeDriver needs an explicit nudge).
-    created.claude[0].emit('chat:user', { text: '[ctx]\n\nreal prompt' });
+    created.openrouter[0].emit('chat:user', { text: '[ctx]\n\nreal prompt' });
     const userEv = r.last('chat:user');
     ok(userEv, 'chat:user emitted');
     eq(userEv.payload.text, 'real prompt', 'manager rewrote text to original');
@@ -476,7 +477,7 @@ function run(t) {
     await new Promise((r) => setImmediate(r));
     // Driver emits turn-end with the augmented userText (real drivers
     // echo whatever they received).
-    created.claude[0].emit('chat:turn-end', {
+    created.openrouter[0].emit('chat:turn-end', {
       userText: '[ctx]\n\nremember this',
       assistantText: 'sure',
       ok: true,
@@ -498,7 +499,7 @@ function run(t) {
     const a = await mgr.spawnWorker({});
     mgr.send({ to: a.id, text: 'plain' });
     await new Promise((r) => setImmediate(r));
-    created.claude[0].emit('chat:user', { text: 'plain' });
+    created.openrouter[0].emit('chat:user', { text: 'plain' });
     eq(r.last('chat:user').payload.text, 'plain');
   });
 
@@ -522,10 +523,10 @@ function run(t) {
     // skip the auto-context wrapper.
     eq(providerCalled, 0, 'caller augmentation bypasses contextProvider');
     // Driver received the augmented (full) text.
-    eq(created.claude[0].sent[0], '[Attached: a.js]\n```\nx\n```\n\nfix this');
+    eq(created.openrouter[0].sent[0], '[Attached: a.js]\n```\nx\n```\n\nfix this');
     // Now simulate the driver echoing chat:user with the augmented
     // text — manager rewrites it back to the user's original.
-    created.claude[0].emit('chat:user', { text: '[Attached: a.js]\n```\nx\n```\n\nfix this' });
+    created.openrouter[0].emit('chat:user', { text: '[Attached: a.js]\n```\nx\n```\n\nfix this' });
     eq(r.last('chat:user').payload.text, 'fix this');
   });
 
@@ -540,7 +541,7 @@ function run(t) {
       originalText: 'original',
     });
     await new Promise((r) => setImmediate(r));
-    created.claude[0].emit('chat:turn-end', {
+    created.openrouter[0].emit('chat:turn-end', {
       userText: '[Attached: x.go]\nbody\n\noriginal',
       assistantText: 'reply',
     });
@@ -554,8 +555,8 @@ function run(t) {
     const a = await mgr.spawnWorker({});
     mgr.send({ to: a.id, text: 'hello', originalText: 'hello' });
     await new Promise((r) => setImmediate(r));
-    eq(created.claude[0].sent[0], 'hello');
-    created.claude[0].emit('chat:user', { text: 'hello' });
+    eq(created.openrouter[0].sent[0], 'hello');
+    created.openrouter[0].emit('chat:user', { text: 'hello' });
     eq(r.last('chat:user').payload.text, 'hello');
   });
 
@@ -600,7 +601,7 @@ function run(t) {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'wm-scope-'));
     try {
       const a = await mgr.spawnWorker({ cwd });
-      const opts = created.claude[0].opts || {};
+      const opts = created.openrouter[0].opts || {};
       ok(opts.scope, 'factory received scope');
       const roots = opts.scope.list();
       ok(opts.scope.containsSync(cwd), 'cwd in scope');
@@ -632,7 +633,7 @@ function run(t) {
     const otherDir = fs.mkdtempSync(path.join(isoParent, 'other-'));
     try {
       await mgr.spawnWorker({ cwd });
-      const workerScope = created.claude[0].opts.scope;
+      const workerScope = created.openrouter[0].opts.scope;
       // Sanity: before mutation, otherDir is NOT in the worker's scope.
       ok(!workerScope.containsSync(otherDir), 'precondition: otherDir not in scope');
       // Add to editor scope AFTER spawn.
@@ -771,7 +772,7 @@ function run(t) {
     const mgr = new WorkerManager({ factories, onEvent: () => {} });
     const a = await mgr.spawnWorker({});
     eq(mgr.list().length, 1);
-    created.claude[0].emit('chat:driver-exit', { code: 1 });
+    created.openrouter[0].emit('chat:driver-exit', { code: 1 });
     // Auto-cleanup may be deferred; allow microtasks to flush.
     await new Promise((res) => setImmediate(res));
     eq(mgr.list().length, 0, 'worker removed after driver exits');

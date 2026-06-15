@@ -22,12 +22,12 @@ const csp = require('./csp');
 const { SessionLog } = require('../src/core/sessionLog');
 const { snapshotBefore, summarizeWindow } = require('../src/core/claudeSessionScan');
 const { mirrorAll, groupSessionsByProject } = require('../src/core/memoryMirror');
+const { resolveMinConfidence, DEFAULT_MIN_CONFIDENCE } = require('../src/core/autoContextConfig');
 const sessionServer = require('../src/core/sessionServer');
 const { WorkerHost } = require('../src/core/sessionWorkerHost');
 const { createAgentRegistry } = require('../src/core/agentRegistry');
 const { WorkerManager } = require('../src/core/workerManager');
 const { Scope } = require('../src/core/scope');
-const { ClaudeDriver } = require('../src/core/drivers/claudeDriver');
 const { ShellDriver } = require('../src/core/drivers/shellDriver');
 const { LocalModelDriver } = require('../src/core/drivers/localModelDriver');
 const {
@@ -207,8 +207,9 @@ const tokenLedger = new TokenLedger({
 // scale rationale.
 
 const AUTO_CONTEXT_DEFAULTS = {
-  minConfidence: 0.6,    // tighter than the chat search default (0.35) —
-                         // auto-injected context must be high-precision
+  // User-adjustable via the settings drawer ("Memory match threshold").
+  // Clamping + default live in src/core/autoContextConfig.js.
+  minConfidence: DEFAULT_MIN_CONFIDENCE,
   maxHits: 3,            // top-k injected
   maxChars: 1500,        // hard cap on preamble size (~500 tokens)
 };
@@ -220,7 +221,9 @@ async function memoryContextProvider({ text }) {
     const hits = await indexHost.searchTurns({
       query: text,
       limit: AUTO_CONTEXT_DEFAULTS.maxHits,
-      minConfidence: AUTO_CONTEXT_DEFAULTS.minConfidence,
+      minConfidence: resolveMinConfidence(
+        appSettings.get('autoContextMinConfidence', DEFAULT_MIN_CONFIDENCE),
+      ),
     });
     if (!hits || hits.length === 0) return { preamble: '', usedHits: [] };
     // Build the preamble. Each line is a memory snippet; we trim
@@ -454,7 +457,6 @@ function buildLocalWorker(opts) {
 
 const workerManager = new WorkerManager({
   factories: {
-    claude: (opts) => new ClaudeDriver({ ...opts, cwd: opts.cwd || PROJECT_ROOT }),
     shell:  (opts) => new ShellDriver({ ...opts, cwd: opts.cwd || PROJECT_ROOT }),
     // Hosted Ollama Cloud. Reads OLLAMA_API_KEY / OLLAMA_MODEL /
     // OLLAMA_HOST from process.env (loaded via dotenv at the top of

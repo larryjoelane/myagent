@@ -22,15 +22,15 @@
 /** @param {WorkerHandlerDeps} deps */
 function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, projectRoot }) {
   // --- Worker management --------------------------------------------------
-  // Workers are headless agents (claude / shell / ollama-cloud / openrouter)
-  // the chat drives.
+  // Workers are headless agents (shell / local / ollama-cloud / openrouter)
+  // the chat drives. openrouter is the default kind.
   ipcMain.handle('worker:spawn', async (_e, body = {}) => {
     try {
       const kind = body.kind === 'shell'         ? 'shell'
                  : body.kind === 'ollama-cloud'  ? 'ollama-cloud'
-                 : body.kind === 'openrouter'    ? 'openrouter'
                  : body.kind === 'local'         ? 'local'
-                                                 : 'claude';
+                 : body.kind === 'openrouter'    ? 'openrouter'
+                                                 : 'openrouter';
       const cwd = body.cwd || appSettings.get('lastCwd') || projectRoot;
       let result;
       if (kind === 'shell') {
@@ -44,16 +44,13 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
           envContext: body.envContext,
           parallelDispatch: body.parallelDispatch,
         });
-      } else if (kind === 'openrouter') {
+      } else {
+        // openrouter — the default kind.
         result = await workerManager.spawnOpenRouter({
           name: body.name, cwd, model: body.model,
           maxIterations: body.maxIterations,
           envContext: body.envContext,
           parallelDispatch: body.parallelDispatch,
-        });
-      } else {
-        result = await workerManager.spawnWorker({
-          name: body.name, cwd, permissionMode: body.permissionMode,
         });
       }
       // Remember this cwd as the new default for the next spawn.

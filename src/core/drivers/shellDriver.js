@@ -1,5 +1,5 @@
 // Shell driver — runs commands in a persistent PTY and emits chat
-// events per command. Same external contract as ClaudeDriver, so the
+// events per command. Same external contract as the model drivers, so the
 // channel layer doesn't care which backend a worker uses.
 //
 // Command boundary detection: we append a sentinel echo after each

@@ -42,8 +42,8 @@ export class SettingsDrawer extends LitElement {
     _ollamaModels: { state: true },
     /** Currently-selected Ollama Cloud model in the spawn dropdown. */
     _ollamaModel: { state: true },
-    /** Whether the Claude (Claude Code) worker is exposed in the UI. */
-    _showClaudeWorker: { state: true },
+    /** Auto-context memory match threshold (0-1). Higher = stricter. */
+    _autoContextMinConfidence: { state: true },
   };
 
   static styles = [
@@ -78,6 +78,16 @@ export class SettingsDrawer extends LitElement {
         user-select: none;
       }
       .row input { margin: 0; }
+      .row--slider { gap: 8px; }
+      .row--slider input[type="range"] { flex: 1 1 auto; min-width: 0; cursor: pointer; }
+      .row--slider input[type="range"]:disabled { opacity: 0.4; cursor: not-allowed; }
+      .row--slider .slider-value {
+        flex: 0 0 auto;
+        min-width: 2.5em;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+        color: var(--text-dim, var(--text));
+      }
       .row--header {
         margin-top: 8px;
         padding-top: 8px;
@@ -311,16 +321,14 @@ export class SettingsDrawer extends LitElement {
     this._chatSide = 'left';
     /** @type {boolean} */
     this._autoContext = true;
+    /** @type {number} */
+    this._autoContextMinConfidence = 0.35;
     /** @type {boolean} */
     this._autoFileContext = true;
     /** @type {string[]} */
     this._ollamaModels = [];
     /** @type {string} */
     this._ollamaModel = '';
-    // Claude (Claude Code) worker is hidden by default — opt in via the
-    // "Show Claude Code worker" toggle below. Persisted as showClaudeWorker.
-    /** @type {boolean} */
-    this._showClaudeWorker = false;
   }
 
   connectedCallback() {
@@ -349,9 +357,11 @@ export class SettingsDrawer extends LitElement {
     const row = document.getElementById('app-row');
     if (row) row.classList.toggle('app-row--chat-right', this._chatSide === 'right');
     this._autoContext = (await getSetting('autoContext', true)) !== false;
+    {
+      const mc = Number(await getSetting('autoContextMinConfidence', 0.35));
+      this._autoContextMinConfidence = (Number.isFinite(mc) && mc >= 0 && mc <= 1) ? mc : 0.35;
+    }
     this._autoFileContext = (await getSetting('autoFileContext', true)) !== false;
-    // Claude worker is opt-in; default off so it's hidden until enabled.
-    this._showClaudeWorker = (await getSetting('showClaudeWorker', false)) === true;
     // Hydrate the persisted toolDetails into the store so chat-bubble
     // and tool-card render with the right default mode.
     const td = await getSetting('toolDetails', 'collapsed');
@@ -401,6 +411,20 @@ export class SettingsDrawer extends LitElement {
                }} />
         <span>Auto-include relevant memories</span>
       </label>
+      <label class="row row--slider"
+             title="Minimum match score (0–1) a past memory must reach to be auto-included. Lower = recall more loosely related memories (more context, more noise). Higher = only near-identical past chats. Typical: 0.35. Unrelated text scores ~0.1–0.2; strong matches ~0.7–0.9. Only applies when 'Auto-include relevant memories' is on.">
+        <span>Memory match threshold</span>
+        <input id="am-auto-context-min-confidence" type="range"
+               min="0" max="1" step="0.05"
+               ?disabled=${!this._autoContext}
+               .value=${String(this._autoContextMinConfidence)}
+               @input=${async (/** @type {any} */ e) => {
+                 const v = Number(e.target.value);
+                 this._autoContextMinConfidence = v;
+                 await setSetting('autoContextMinConfidence', v);
+               }} />
+        <span class="slider-value">${this._autoContextMinConfidence.toFixed(2)}</span>
+      </label>
       <label class="row" title="Prepend the editor's active tab (path + content) to chat-worker prompts so the model sees the file you're looking at.">
         <input id="am-auto-file-context" type="checkbox"
                .checked=${this._autoFileContext}
@@ -409,16 +433,6 @@ export class SettingsDrawer extends LitElement {
                  await setSetting('autoFileContext', this._autoFileContext);
                }} />
         <span>Auto-include active editor file</span>
-      </label>
-      <label class="row" title="Expose the Claude Code worker spawn buttons. Off by default.">
-        <input id="am-show-claude-worker" type="checkbox"
-               .checked=${this._showClaudeWorker}
-               @change=${async (/** @type {any} */ e) => {
-                 this._showClaudeWorker = !!e.target.checked;
-                 await setSetting('showClaudeWorker', this._showClaudeWorker);
-                 this.requestUpdate();
-               }} />
-        <span>Show Claude Code worker</span>
       </label>
     `;
   }
@@ -475,7 +489,7 @@ export class SettingsDrawer extends LitElement {
   }
 
   /**
-   * @param {'claude'|'shell'|'local'|'ollama-cloud'} kind
+   * @param {'shell'|'local'|'ollama-cloud'|'openrouter'} kind
    * @param {{ model?: string }} [opts]
    */
   _emitSpawn(kind, opts = {}) {
@@ -490,11 +504,6 @@ export class SettingsDrawer extends LitElement {
       <div class="row row--header">
         <span>Workers</span>
         <span class="spawn-buttons">
-          ${this._showClaudeWorker ? html`
-            <button id="am-spawn-claude" class="cmd-btn cmd-btn--small cmd-btn--primary" type="button"
-                    title="Spawn another Claude worker"
-                    @click=${() => this._emitSpawn('claude')}>+ Claude</button>
-          ` : ''}
           <button id="am-spawn-shell" class="cmd-btn cmd-btn--small" type="button"
                   title="Spawn another shell"
                   @click=${() => this._emitSpawn('shell')}>+ Shell</button>

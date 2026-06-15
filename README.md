@@ -304,3 +304,10 @@ MyAgent is **dual-licensed**:
 
 See [LICENSING.md](./LICENSING.md) for details and contact, and
 [CONTRIBUTING.md](./CONTRIBUTING.md) for the contributor terms (CLA).
+
+### Trademarks
+
+Product names referenced here (Claude, Anthropic, Ollama, OpenRouter, Hugging
+Face, etc.) are trademarks of their respective owners, used only for
+identification and interoperability. MyAgent is an independent project and is
+not affiliated with or endorsed by any of them. See [NOTICE](./NOTICE).

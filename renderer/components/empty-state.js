@@ -38,8 +38,6 @@ export class EmptyState extends LitElement {
     _openrouterModels: { state: true },
     /** Currently-selected OpenRouter model in the dropdown. */
     _openrouterModel: { state: true },
-    /** Whether the Claude (Claude Code) worker spawn button is shown. */
-    _showClaudeWorker: { state: true },
   };
 
   static styles = [
@@ -153,10 +151,6 @@ export class EmptyState extends LitElement {
     /** @type {string[]} */
     this._openrouterModels = [];
     this._openrouterModel = '';
-    // Claude worker is opt-in (settings-drawer "Show Claude Code worker").
-    // Hidden by default until the persisted showClaudeWorker setting loads.
-    /** @type {boolean} */
-    this._showClaudeWorker = false;
   }
 
   connectedCallback() {
@@ -171,13 +165,6 @@ export class EmptyState extends LitElement {
     // the env default at spawn.
     this._loadOllamaModels();
     this._loadOpenRouterModels();
-    this._loadShowClaudeWorker();
-  }
-
-  async _loadShowClaudeWorker() {
-    try {
-      this._showClaudeWorker = (await getSetting('showClaudeWorker', false)) === true;
-    } catch { /* ignore — leave the Claude button hidden */ }
   }
 
   async _loadOllamaModels() {
@@ -215,10 +202,6 @@ export class EmptyState extends LitElement {
   _refreshVisibility() {
     const hasWorkers = store.get().workers.length > 0;
     const showEmpty = !hasWorkers;
-    // Re-read the opt-in Claude setting whenever we transition into view,
-    // so a toggle made in the settings drawer (while empty-state was
-    // hidden) is reflected the moment the panel reappears.
-    if (showEmpty && this.hidden) this._loadShowClaudeWorker();
     this.hidden = !showEmpty;
     this.classList.toggle('agent-manager__empty--hidden', !showEmpty);
     const chat = document.getElementById('am-chat');
@@ -226,7 +209,7 @@ export class EmptyState extends LitElement {
   }
 
   /**
-   * @param {'claude'|'shell'|'local'|'ollama-cloud'|'openrouter'} kind
+   * @param {'shell'|'local'|'ollama-cloud'|'openrouter'} kind
    * @param {{ model?: string }} [opts]
    */
   _emitSpawn(kind, opts = {}) {
@@ -250,21 +233,15 @@ export class EmptyState extends LitElement {
     const cwd = store.get().pendingCwd;
     const cwdLabel = shortenCwd(cwd);
     const cwdTooltip = cwd || '(repo root)';
-    // IDs preserved (am-empty-spawn-claude, etc.) so existing Playwright
+    // IDs preserved (am-empty-spawn-shell, etc.) so existing Playwright
     // tests can locate them via shadow-piercing selectors:
-    //   win.locator('empty-state').locator('#am-empty-spawn-claude')
+    //   win.locator('empty-state').locator('#am-empty-spawn-shell')
     return html`
       <h2 class="title">Drive Agentic workers from here</h2>
       <p class="body">
         Spawn a worker and send prompts from this pane. Responses stream back here automatically.
       </p>
       <div class="actions">
-        ${this._showClaudeWorker ? html`
-          <button id="am-empty-spawn-claude" class="cmd-btn cmd-btn--primary" type="button"
-                  @click=${() => this._emitSpawn('claude')}>
-            + Spawn Claude worker
-          </button>
-        ` : ''}
         <button id="am-empty-spawn-shell" class="cmd-btn" type="button"
                 @click=${() => this._emitSpawn('shell')}>
           + Open shell
