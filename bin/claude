@@ -1,4 +1,0 @@
-#!/usr/bin/env bash
-# MyAgent shim for `claude` — routes through the pre-input hook wrapper.
-# Used on macOS/Linux. On Windows the .cmd sibling wins via PATHEXT.
-exec node "$(dirname "$0")/claude-wrapped.js" "$@"
