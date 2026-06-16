@@ -16,8 +16,34 @@
 // keeps no UI state — it just translates.
 
 const { spawn } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 
 const DEFAULT_PERMISSION_MODE = 'bypassPermissions';
+
+// Resolve a bare command name to an absolute path by walking PATH, honoring
+// PATHEXT on Windows (.cmd/.bat shims). Returns the name unchanged if no match
+// is found, letting spawn() surface a clean ENOENT. We resolve explicitly so we
+// can spawn with shell:false — passing a bare name to a shell (shell:true) would
+// re-parse argv through cmd/sh and is the command-injection surface CodeQL flags.
+function resolveOnPath(name) {
+  if (path.isAbsolute(name)) return name;
+  const isWin = process.platform === 'win32';
+  const sep = isWin ? ';' : ':';
+  const exts = isWin
+    ? (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').map((s) => s.toLowerCase())
+    : [''];
+  const dirs = (process.env.PATH || process.env.Path || '').split(sep).filter(Boolean);
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const candidate = path.join(dir, name + ext);
+      try {
+        if (fs.statSync(candidate).isFile()) return candidate;
+      } catch { /* keep scanning */ }
+    }
+  }
+  return name;
+}
 
 class ClaudeDriver {
   constructor({ agentId, cwd, permissionMode, onEvent, spawnFn } = {}) {
@@ -33,12 +59,15 @@ class ClaudeDriver {
     //   MYAGENT_TEST_CLAUDE_BIN  — substitute the binary (e.g. `node`)
     //   MYAGENT_TEST_CLAUDE_ARGS — prepended to argv (e.g. fake-claude.js path)
     // Both undefined = real claude.
-    const bin = process.env.MYAGENT_TEST_CLAUDE_BIN || 'claude';
-    const useShell = !process.env.MYAGENT_TEST_CLAUDE_BIN;
+    // Resolve the binary to an absolute path up front so we can spawn with
+    // shell:false (no shell re-parsing of argv => no command-line injection).
+    // In the test path MYAGENT_TEST_CLAUDE_BIN is typically `node`, which
+    // resolveOnPath finds on PATH; the fake-claude script comes in via prefixArgs.
+    const bin = resolveOnPath(process.env.MYAGENT_TEST_CLAUDE_BIN || 'claude');
     const prefixArgs = process.env.MYAGENT_TEST_CLAUDE_ARGS
       ? process.env.MYAGENT_TEST_CLAUDE_ARGS.split('|').filter(Boolean)
       : [];
-    this.spawnFn = spawnFn || ((args, opts) => spawn(bin, [...prefixArgs, ...args], { ...opts, shell: useShell }));
+    this.spawnFn = spawnFn || ((args, opts) => spawn(bin, [...prefixArgs, ...args], { ...opts, shell: false }));
     this.proc = null;
     this.buffer = '';
     this.closed = false;

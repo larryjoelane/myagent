@@ -16,6 +16,40 @@
 
 const DEFAULT_CHAT_PATH = '/api/chat';
 
+// Hosts that must never be the target of an outbound request: cloud metadata
+// endpoints and link-local space. Reaching these is the hallmark of SSRF — a
+// provider baseUrl pointed here would exfiltrate the request (and its bearer
+// token) to an internal service.
+const BLOCKED_HOSTS = new Set([
+  'metadata.google.internal',
+  '169.254.169.254',     // AWS/GCP/Azure IMDS
+  '[fd00:ec2::254]',     // AWS IMDS over IPv6
+]);
+
+function isLoopbackHost(host) {
+  return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
+}
+
+// Validate a provider base URL before any request is built from it. Throws on
+// anything unsafe. Local providers (Ollama) legitimately use loopback, so the
+// caller opts in via { allowLoopback: true } — loopback is otherwise refused.
+function validateBaseUrl(raw, { allowLoopback = false } = {}) {
+  let u;
+  try { u = new URL(raw); }
+  catch { throw new Error(`OpenAIChat: baseUrl is not a valid URL: ${raw}`); }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    throw new Error(`OpenAIChat: baseUrl scheme not allowed: ${u.protocol}`);
+  }
+  const host = u.hostname.toLowerCase();
+  if (BLOCKED_HOSTS.has(host) || host.startsWith('169.254.')) {
+    throw new Error(`OpenAIChat: baseUrl host is blocked (link-local/metadata): ${host}`);
+  }
+  if (isLoopbackHost(host) && !allowLoopback) {
+    throw new Error(`OpenAIChat: loopback baseUrl not allowed for this provider: ${host}`);
+  }
+  return u;
+}
+
 class OpenAIChat {
   constructor({
     baseUrl,
@@ -23,9 +57,13 @@ class OpenAIChat {
     headers = {},
     model,
     extraBody = {},
+    allowLoopback = false,
   } = {}) {
     if (!baseUrl) throw new Error('OpenAIChat: baseUrl is required');
     if (!model) throw new Error('OpenAIChat: model is required');
+    // Single chokepoint: both health() and stream() build their URLs from
+    // this.baseUrl, so validating once here covers every outbound request.
+    validateBaseUrl(baseUrl, { allowLoopback });
     this.baseUrl = baseUrl.replace(/\/$/, '');
     this.chatPath = chatPath;
     this.headers = headers;
@@ -225,4 +263,4 @@ function extractTotals(json) {
   return totals;
 }
 
-module.exports = { OpenAIChat, parseStream };
+module.exports = { OpenAIChat, parseStream, validateBaseUrl };

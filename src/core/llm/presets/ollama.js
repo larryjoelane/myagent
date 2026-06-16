@@ -75,7 +75,9 @@ function createOllamaPreset({ host, model = DEFAULT_MODEL, apiKey, think } = {})
   const profile = profileFor(model);
   let thinkOn = think !== undefined ? !!think : profile.defaultThink;
 
-  const chat = new OpenAIChat({ baseUrl, headers, model, chatPath: '/api/chat' });
+  // Local Ollama legitimately runs on loopback (127.0.0.1:11434), so this
+  // preset opts into loopback. Remote presets (openrouter) do not.
+  const chat = new OpenAIChat({ baseUrl, headers, model, chatPath: '/api/chat', allowLoopback: true });
 
   return {
     get model() { return model; },

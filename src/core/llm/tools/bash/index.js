@@ -132,6 +132,15 @@ module.exports = {
       ? Math.floor(args.max_output_bytes)
       : DEFAULT_MAX_OUTPUT_BYTES;
 
+    // SECURITY (js/command-line-injection): running an arbitrary shell command
+    // IS this tool's purpose, so the boundary is not "avoid the spawn" — it is
+    // the gate above:
+    //   1. ctx.scope.containsSync(cwd) — refuses to run outside an allowed scope
+    //      (no scope on context => hard refusal at line ~115).
+    //   2. the preTool hook phase (e.g. no-secrets) runs BEFORE this tool is
+    //      dispatched and can block the call (see src/hooks, hooks_two_phase).
+    // Both spawn sites below are reached only after those checks pass. The
+    // command is handed to the shell intentionally; do not "sanitize" it.
     const shell = detectShell();
     const spawnArgs = shellArgs(shell, command);
 

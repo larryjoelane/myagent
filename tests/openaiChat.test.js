@@ -2,7 +2,7 @@
 // Exercises the streaming parser against both Ollama-shape NDJSON and
 // OpenAI-shape SSE bodies.
 
-const { OpenAIChat, parseStream } = require('../src/core/llm/openaiChat');
+const { OpenAIChat, parseStream, validateBaseUrl } = require('../src/core/llm/openaiChat');
 const { eq, ok, deepEq } = require('./assert');
 
 function bodyFrom(chunks) {
@@ -36,6 +36,37 @@ function run(ctx) {
     threw = false;
     try { new OpenAIChat({ baseUrl: 'http://x' }); } catch { threw = true; }
     ok(threw, 'should reject missing model');
+  });
+
+  ctx.test('validateBaseUrl: blocks SSRF-prone hosts', () => {
+    const throws = (url, opts) => {
+      let threw = false;
+      try { validateBaseUrl(url, opts); } catch { threw = true; }
+      return threw;
+    };
+    // link-local / cloud metadata always blocked
+    ok(throws('http://169.254.169.254/latest/meta-data'), 'IMDS blocked');
+    ok(throws('http://metadata.google.internal/'), 'GCP metadata blocked');
+    ok(throws('http://169.254.1.2/'), 'link-local range blocked');
+    // bad schemes
+    ok(throws('file:///etc/passwd'), 'file scheme blocked');
+    ok(throws('not a url'), 'garbage rejected');
+    // loopback refused unless opted in
+    ok(throws('http://127.0.0.1:11434'), 'loopback blocked by default');
+    ok(throws('http://localhost:11434'), 'localhost blocked by default');
+    ok(!throws('http://127.0.0.1:11434', { allowLoopback: true }), 'loopback ok when allowed');
+    // legitimate remote provider passes
+    ok(!throws('https://openrouter.ai/api/v1'), 'remote https ok');
+    ok(!throws('https://ollama.com'), 'ollama cloud ok');
+  });
+
+  ctx.test('OpenAIChat constructor enforces baseUrl validation', () => {
+    let threw = false;
+    try { new OpenAIChat({ baseUrl: 'http://169.254.169.254', model: 'm' }); } catch { threw = true; }
+    ok(threw, 'IMDS baseUrl rejected at construction');
+    threw = false;
+    try { new OpenAIChat({ baseUrl: 'http://127.0.0.1:11434', model: 'm', allowLoopback: true }); } catch { threw = true; }
+    ok(!threw, 'loopback allowed when allowLoopback set');
   });
 
   ctx.test('parseStream: ollama NDJSON content + done', async () => {

@@ -14,8 +14,16 @@
 
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '..', '.env') });
+const { validateBaseUrl } = require('../src/core/llm/openaiChat');
 
 const HOST = (process.env.OLLAMA_HOST || 'https://ollama.com').replace(/\/$/, '');
+// Reject SSRF-prone hosts (link-local/metadata) before issuing the request,
+// even for this dev probe. Loopback is allowed — probing a local Ollama is valid.
+try {
+  validateBaseUrl(HOST, { allowLoopback: true });
+} catch (err) {
+  console.error(`[probe] refusing unsafe OLLAMA_HOST: ${err.message}`); process.exit(1);
+}
 const KEY = process.env.OLLAMA_API_KEY;
 if (!KEY) {
   console.error('OLLAMA_API_KEY not set in .env'); process.exit(1);
