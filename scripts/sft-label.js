@@ -22,6 +22,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { safeJoin, safeComponent } = require('../src/core/safePath');
 
 const LABELS_FILE = path.join(__dirname, '..', '.myagent', 'sft', 'labels.ndjson');
 const CONV_DIR = path.join(__dirname, '..', '.myagent', 'sft', 'conversations');
@@ -73,7 +74,9 @@ function appendLabel(row) {
 }
 
 function loadConversation(conversationId) {
-  const file = path.join(CONV_DIR, `${conversationId}.jsonl`);
+  // conversationId is a CLI-provided id used as a filename — validate it as a
+  // single component and contain it under CONV_DIR (js/path-injection).
+  const file = safeJoin(CONV_DIR, `${safeComponent(conversationId)}.jsonl`);
   if (!fs.existsSync(file)) return null;
   const line = fs.readFileSync(file, 'utf8').trim().split('\n')[0];
   if (!line) return null;

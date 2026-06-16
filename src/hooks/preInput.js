@@ -15,10 +15,14 @@
 const fs = require('fs');
 const path = require('path');
 
-const HOOK_LOG = process.env.MYAGENT_HOOK_LOG
+// Resolve to an absolute path once. The log location comes from env config
+// (operator-controlled), not from prompt content; pinning it absolute gives the
+// fs ops below a single fixed sink (js/path-injection) instead of a value
+// re-derived per call.
+const HOOK_LOG = path.resolve(process.env.MYAGENT_HOOK_LOG
   || path.join(process.env.MYAGENT_SESSIONS_DIR
     || path.join(__dirname, '..', '..', '.myagent', 'sessions'),
-    'pre-input.log');
+    'pre-input.log'));
 
 function logRan(meta) {
   try {

@@ -131,7 +131,12 @@ async function bundle() {
             'fs', 'path', 'url', 'stream', 'crypto', 'os',
             'sharp', 'onnxruntime-node',
           ];
-          const filter = new RegExp('^(' + builtins.map((b) => b.replace(/[/]/g, '\\/')).join('|') + ')$');
+          // Escape ALL regex metacharacters in each builtin name before
+          // splicing into the alternation — escaping only '/' left '.', etc.
+          // unescaped (js/incomplete-sanitization). These names are static, but
+          // a partial escape is a latent bug if the list grows.
+          const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+          const filter = new RegExp('^(' + builtins.map(escapeRe).join('|') + ')$');
           build.onResolve({ filter }, (args) => ({ path: args.path, namespace: 'stub-empty' }));
           // Proxy-based stub: any named import resolves to a no-op
           // function/object. This dodges the "no matching export"

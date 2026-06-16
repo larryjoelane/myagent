@@ -17,7 +17,15 @@ const path = require('path');
 class AppSettings {
   constructor({ file }) {
     if (!file) throw new Error('AppSettings: file is required');
-    this.file = file;
+    // The settings file must be an absolute, caller-controlled path (an
+    // app-data location), never a value derived from untrusted input. Pin it to
+    // an absolute resolved path so every fs op below operates on a fixed target
+    // and CodeQL (js/path-injection) sees a single non-tainted sink. A relative
+    // path here is a programming error.
+    if (!path.isAbsolute(file)) {
+      throw new Error(`AppSettings: file must be an absolute path, got: ${file}`);
+    }
+    this.file = path.resolve(file);
     this.values = this._load();
   }
 

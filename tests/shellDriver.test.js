@@ -70,11 +70,14 @@ function run(t) {
         const pwd = r.turns()[1].payload.assistantText;
         // PowerShell prints `Path` header + `----` separator + path,
         // bash just prints the path. Either way the path string
-        // should appear in the output.
-        const expected = tmp.replace(/\\/g, '\\').toLowerCase();
+        // should appear in the output. Check both the native (backslash)
+        // form and the forward-slash form.
+        // (was `tmp.replace(/\\/g, '\\')` — a no-op self-replacement;
+        // the native form is just tmp itself.)
+        const expected = tmp.toLowerCase();
         ok(
           pwd.toLowerCase().includes(tmp.replace(/\\/g, '/').toLowerCase()) ||
-          pwd.toLowerCase().includes(expected.toLowerCase()),
+          pwd.toLowerCase().includes(expected),
           `pwd output should include "${tmp}", got: ${JSON.stringify(pwd)}`,
         );
       });

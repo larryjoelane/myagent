@@ -38,14 +38,17 @@
 
 const fs = require('fs');
 const path = require('path');
+const { safeJoin, safeComponent } = require('./safePath');
 
 class SessionLog {
   constructor({ dir }) {
     fs.mkdirSync(dir, { recursive: true });
-    this.dir = dir;
+    this.dir = path.resolve(dir);
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     this.stamp = stamp;
-    this.path = path.join(dir, `session-${stamp}.ndjson`);
+    // safeJoin keeps the file inside this.dir (the stamp is generated, but the
+    // join is the js/path-injection sink CodeQL flags).
+    this.path = safeJoin(this.dir, `session-${stamp}.ndjson`);
     // Append mode so a crash mid-write keeps prior entries on disk.
     this.stream = fs.createWriteStream(this.path, { flags: 'a' });
     // Swallow stream errors — late writes during shutdown can otherwise
@@ -63,14 +66,16 @@ class SessionLog {
   // already open for this pane (e.g. a previous shell exited and a new one
   // started), it's closed first so each PTY session gets its own file.
   openRaw(paneId) {
-    const pane = paneId || 'main';
+    // Pane id becomes part of the filename — validate it as a single safe
+    // component so a crafted id can't traverse out of this.dir.
+    const pane = safeComponent(paneId || 'main');
     const existing = this.rawStreams.get(pane);
     if (existing) {
       try { existing.end(); } catch { /* ignore */ }
       this.rawStreams.delete(pane);
     }
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const file = path.join(this.dir, `pty-${pane}-${stamp}.raw`);
+    const file = safeJoin(this.dir, `pty-${pane}-${stamp}.raw`);
     const stream = fs.createWriteStream(file, { flags: 'a' });
     stream.on('error', () => { /* ignore late writes during shutdown */ });
     this.rawStreams.set(pane, stream);

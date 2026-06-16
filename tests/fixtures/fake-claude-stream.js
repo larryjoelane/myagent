@@ -47,7 +47,10 @@ function handleLine(line) {
   // Brief delay so timing feels real. Configurable via env so the
   // screenshot capture script (scripts/screenshots.js) can slow it
   // down enough to catch a mid-response frame.
-  const latencyMs = parseInt(process.env.FAKE_CLAUDE_LATENCY_MS || '100', 10);
+  // Clamp the env-provided latency so it can't create an unbounded timer
+  // (js/resource-exhaustion).
+  const rawLatency = parseInt(process.env.FAKE_CLAUDE_LATENCY_MS || '100', 10);
+  const latencyMs = Math.min(Math.max(0, Number.isFinite(rawLatency) ? rawLatency : 100), 30_000);
   setTimeout(() => {
     emit({
       type: 'assistant',

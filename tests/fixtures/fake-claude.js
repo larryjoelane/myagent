@@ -88,7 +88,13 @@ async function handleLine(line) {
   moveTo(rows() - 3, 1); write('❯ ');
 }
 
-function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+// Clamp the delay so an env-provided latency (FAKE_CLAUDE_LATENCY_MS) can't
+// create an unbounded timer that wedges the test (js/resource-exhaustion).
+const MAX_SLEEP_MS = 30_000;
+function sleep(ms) {
+  const d = Math.min(Math.max(0, Number(ms) || 0), MAX_SLEEP_MS);
+  return new Promise((r) => setTimeout(r, d));
+}
 
 async function main() {
   // Hide cursor to look more app-y.

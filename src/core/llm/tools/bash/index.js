@@ -45,6 +45,10 @@ function detectShell() {
         : null,
     ].filter(Boolean);
     for (const c of candidates) {
+      // Fixed candidate set (hardcoded paths + SystemRoot-derived). Probe only
+      // absolute paths; existence check for shell discovery, never a write.
+      // (js/path-injection: bounded to this candidate list.)
+      if (!path.isAbsolute(c)) continue;
       try { if (fs.existsSync(c)) return { bin: c, kind: 'powershell' }; } catch { /* ignore */ }
     }
     return { bin: process.env.COMSPEC || 'cmd.exe', kind: 'cmd' };

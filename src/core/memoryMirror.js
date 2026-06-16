@@ -23,6 +23,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { safeJoin, safeComponent } = require('./safePath');
 
 const PROJECTS_ROOT = path.join(os.homedir(), '.claude', 'projects');
 
@@ -266,10 +267,15 @@ function pathToFileUri(p) {
 // full history (not just sessions captured in the current PTY window).
 function mirrorProject({ projectName, projectFull, outRoot, sessions }) {
   const { files } = listMemoryMd(projectFull);
-  const dstProjectDir = path.join(outRoot, projectName);
+  // projectName is an encoded-cwd dir name; validate it as a single component
+  // and contain everything under outRoot so a crafted name can't escape the
+  // mirror tree (js/path-injection).
+  const dstProjectDir = safeJoin(outRoot, safeComponent(projectName));
   let copied = 0;
   for (const src of files) {
-    const dst = path.join(dstProjectDir, 'memory', path.basename(src));
+    // path.basename strips any dir part from the source file name before it's
+    // rejoined under the contained project dir.
+    const dst = safeJoin(dstProjectDir, 'memory', path.basename(src));
     if (copyIfChanged(src, dst)) copied += 1;
   }
 
@@ -288,7 +294,7 @@ function mirrorProject({ projectName, projectFull, outRoot, sessions }) {
     sessions: finalSessions,
   });
   fs.mkdirSync(dstProjectDir, { recursive: true });
-  fs.writeFileSync(path.join(dstProjectDir, '_index.md'), indexBody, 'utf8');
+  fs.writeFileSync(safeJoin(dstProjectDir, '_index.md'), indexBody, 'utf8');
 
   return { project: projectName, copied, indexed: true, memoryCount: files.length };
 }
@@ -301,7 +307,10 @@ function mirrorProject({ projectName, projectFull, outRoot, sessions }) {
 // We always run mirrorProject for every project that has *either* memory
 // files OR any JSONLs, so the final-sweep call (with sessionsByProject={})
 // produces a complete index for everything ever seen.
-function mirrorAll({ outRoot, sessionsByProject = {} }) {
+function mirrorAll({ outRoot: outRootRaw, sessionsByProject = {} }) {
+  // Pin the mirror root to an absolute path; per-project dirs are contained
+  // under it via safeJoin in mirrorProject.
+  const outRoot = path.resolve(outRootRaw);
   fs.mkdirSync(outRoot, { recursive: true });
   const results = [];
   for (const { name, full } of listProjectDirs()) {

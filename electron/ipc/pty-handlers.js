@@ -32,6 +32,11 @@ function defaultWindowsShell() {
     process.env.COMSPEC || 'C:\\Windows\\System32\\cmd.exe',
   ].filter(Boolean);
   for (const c of candidates) {
+    // Candidates are a fixed all-list of known shell locations (some built from
+    // SystemRoot/COMSPEC). Only probe absolute paths — this is an existence
+    // check for shell discovery, never a write, and we return the matched path
+    // verbatim. (js/path-injection: bounded to this hardcoded candidate set.)
+    if (!path.isAbsolute(c)) continue;
     try { if (fs.existsSync(c)) return c; } catch { /* ignore */ }
   }
   return 'powershell.exe';

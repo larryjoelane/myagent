@@ -10,13 +10,15 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const { safeJoin } = require('./safePath');
 
 const DISCOVERY_FILE = 'server.json';
 const PROBE_TIMEOUT_MS = 250;
 const REQUEST_TIMEOUT_MS = 30_000;
 
 function readDiscovery(sessionsDir) {
-  const file = path.join(sessionsDir, DISCOVERY_FILE);
+  // Fixed discovery filename contained under the (caller-provided) dir.
+  const file = safeJoin(sessionsDir, DISCOVERY_FILE);
   let raw;
   try { raw = fs.readFileSync(file, 'utf8'); } catch { return null; }
   try { return JSON.parse(raw); } catch { return null; }

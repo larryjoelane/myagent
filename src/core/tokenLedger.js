@@ -25,7 +25,13 @@ class TokenLedger {
    *   When omitted the ledger is memory-only (used by tests).
    */
   constructor({ persistPath } = {}) {
-    this.persistPath = persistPath || null;
+    // Pin to an absolute path so the fs ops below operate on a fixed, contained
+    // target rather than a value re-derived from input (js/path-injection). A
+    // relative persistPath is a caller error.
+    if (persistPath && !path.isAbsolute(persistPath)) {
+      throw new Error(`TokenLedger: persistPath must be absolute, got: ${persistPath}`);
+    }
+    this.persistPath = persistPath ? path.resolve(persistPath) : null;
     /** @type {Map<string, AgentTotals>} */
     this.byAgent = new Map();
     /** @type {Array<TurnRecord>} */

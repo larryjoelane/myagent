@@ -18,6 +18,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const { safeJoin } = require('./safePath');
 
 const DEFAULT_PORT = 37777;
 const HOST = '127.0.0.1';
@@ -230,14 +231,17 @@ function makeHandler({ search, ingest, stats, storeMemory, agents }) {
 // Start the server. Returns { server, port, stop } where stop() closes
 // the listener and removes the discovery file. `sessionsDir` is where
 // server.json lands so the CLI can find us.
-async function start({ sessionsDir, search, ingest, stats, storeMemory, agents, port = DEFAULT_PORT }) {
+async function start({ sessionsDir: sessionsDirRaw, search, ingest, stats, storeMemory, agents, port = DEFAULT_PORT }) {
+  // Pin the discovery dir to an absolute path; the discovery file is a fixed
+  // name joined under it via safeJoin (js/path-injection containment).
+  const sessionsDir = path.resolve(sessionsDirRaw);
   fs.mkdirSync(sessionsDir, { recursive: true });
   const server = http.createServer(makeHandler({ search, ingest, stats, storeMemory, agents }));
   await listenWithFallback(server, port);
   const addr = server.address();
   const boundPort = addr && typeof addr === 'object' ? addr.port : port;
 
-  const discoveryPath = path.join(sessionsDir, DISCOVERY_FILE);
+  const discoveryPath = safeJoin(sessionsDir, DISCOVERY_FILE);
   const payload = {
     port: boundPort,
     host: HOST,
