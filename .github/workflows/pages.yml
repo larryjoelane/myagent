@@ -1,0 +1,49 @@
+name: Deploy Pages
+
+# Publishes the static showcase site in docs-site/ to GitHub Pages.
+# The interactive memory graph (docs-site/plasticity-graph.html) is committed
+# pre-generated from synthetic demo data — regenerate locally with
+# `npm run showcase:graph` and commit the result to refresh it. This workflow
+# just uploads the folder as-is, so it stays fast and needs no native build.
+
+on:
+  # Deploy on pushes to main that touch the site.
+  push:
+    branches: [main]
+    paths:
+      - 'docs-site/**'
+      - '.github/workflows/pages.yml'
+  # Allow manual runs from the Actions tab.
+  workflow_dispatch:
+
+# Least-privilege token scoped for Pages deploys.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one Pages deploy at a time; don't cancel an in-progress publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload site artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs-site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

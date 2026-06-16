@@ -6,6 +6,10 @@ sessions, a **file explorer + CodeMirror editor**, and **gated hooks + Agent
 Skills** — all in an Electron window structured so the same renderer can be
 served as a web app later.
 
+> 🧠 **[Live showcase →](https://larryjoelane.github.io/myagent/)** — see the
+> Hebbian memory feature (an interactive synapse graph: memories that are
+> recalled together wire together).
+
 **Model backends (worker "kinds"):**
 
 | Kind | What it is | Auth |

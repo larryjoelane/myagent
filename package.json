@@ -19,6 +19,7 @@
     "recall:save": "node .claude/skills/recall/recall-store.js",
     "graph": "node research/plasticity-graph-viewer.js .myagent/sessions/index.db",
     "graph:demo": "node research/plasticity-graph-viewer.js",
+    "showcase:graph": "node scripts/build-showcase-graph.js",
     "export:d1": "node scripts/export-memories-d1.js",
     "sft:export": "node scripts/sft-export.js",
     "sft:label": "node scripts/sft-label.js",
