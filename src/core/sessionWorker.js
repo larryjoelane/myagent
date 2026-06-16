@@ -48,10 +48,11 @@ const OPS = {
   async storeTurn(payload = {}) {
     return sessionIndex.storeTurn(ensureDb(), payload);
   },
-  async searchTurns({ query, limit, minConfidence } = {}) {
+  async searchTurns({ query, limit, minConfidence, spreadFactor } = {}) {
     const opts = {};
     if (typeof limit === 'number') opts.limit = limit;
     if (typeof minConfidence === 'number') opts.minConfidence = minConfidence;
+    if (typeof spreadFactor === 'number') opts.spreadFactor = spreadFactor;
     return sessionIndex.searchTurns(ensureDb(), query, opts);
   },
   stats() {

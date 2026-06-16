@@ -809,7 +809,7 @@ function loadNeurons(db, turnIds) {
 // hits receive a boost (direct hits already have their own relevance). This
 // is what lets a query surface an associatively-linked turn the vector search
 // alone would miss.
-function spreadingBoost(db, directScoreById) {
+function spreadingBoost(db, directScoreById, spreadFactor) {
   const ids = [...directScoreById.keys()];
   if (ids.length === 0) return new Map();
   const ph = ids.map(() => '?').join(',');
@@ -818,7 +818,7 @@ function spreadingBoost(db, directScoreById) {
     SELECT turn_a, turn_b, weight FROM msb_edge
     WHERE turn_a IN (${ph}) OR turn_b IN (${ph})
   `).all(...ids, ...ids);
-  return plasticity.computeSpread(edges, directScoreById);
+  return plasticity.computeSpread(edges, directScoreById, spreadFactor);
 }
 
 // Export the plasticity graph as a renderer-agnostic snapshot for
@@ -866,6 +866,9 @@ async function searchTurns(db, query, opts = {}) {
   const minFiringConfidence = typeof opts.minFiringConfidence === 'number'
     ? opts.minFiringConfidence
     : DEFAULT_MIN_FIRING_CONFIDENCE;
+  // "Spread strength" — how much an associatively-wired neighbour is boosted.
+  // Undefined → plasticityCore's SPREAD_FACTOR default. UI slider overrides.
+  const spreadFactor = typeof opts.spreadFactor === 'number' ? opts.spreadFactor : undefined;
   const limitProvided = typeof opts.limit === 'number';
   const limit = limitProvided ? opts.limit : 10;
   const N = (minConfidence > 0 && !limitProvided)
@@ -941,7 +944,7 @@ async function searchTurns(db, query, opts = {}) {
   if (plasticityOn) {
     const nowMs = Date.now();
     const directScoreById = new Map(annotated.map((a) => [a.id, a.score]));
-    const boost = spreadingBoost(db, directScoreById);
+    const boost = spreadingBoost(db, directScoreById, spreadFactor);
     // Neighbours surfaced purely by spreading (not in the fused set) join the
     // candidate pool with zero base relevance + their boost. They still must
     // clear minConfidence (confidence 0) so they only appear when no threshold

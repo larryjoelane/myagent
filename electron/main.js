@@ -22,7 +22,10 @@ const csp = require('./csp');
 const { SessionLog } = require('../src/core/sessionLog');
 const { snapshotBefore, summarizeWindow } = require('../src/core/claudeSessionScan');
 const { mirrorAll, groupSessionsByProject } = require('../src/core/memoryMirror');
-const { resolveMinConfidence, DEFAULT_MIN_CONFIDENCE } = require('../src/core/autoContextConfig');
+const {
+  resolveMinConfidence, DEFAULT_MIN_CONFIDENCE,
+  resolveSpreadStrength, DEFAULT_SPREAD_STRENGTH,
+} = require('../src/core/autoContextConfig');
 const sessionServer = require('../src/core/sessionServer');
 const { WorkerHost } = require('../src/core/sessionWorkerHost');
 const { createAgentRegistry } = require('../src/core/agentRegistry');
@@ -224,25 +227,36 @@ async function memoryContextProvider({ text }) {
       minConfidence: resolveMinConfidence(
         appSettings.get('autoContextMinConfidence', DEFAULT_MIN_CONFIDENCE),
       ),
+      // "Spread strength" — how strongly associatively-wired memories are
+      // boosted in the synapse ranking. User-adjustable via the settings drawer.
+      spreadFactor: resolveSpreadStrength(
+        appSettings.get('autoContextSpreadStrength', DEFAULT_SPREAD_STRENGTH),
+      ),
     });
     if (!hits || hits.length === 0) return { preamble: '', usedHits: [] };
-    // Build the preamble. Each line is a memory snippet; we trim
-    // each to a reasonable size and stop adding when total chars
-    // exceed maxChars so we don't blow up the context window.
-    const lines = ['[Relevant past context — use if helpful]'];
+    // searchTurns already orders hits by synapse score (relevance + associative
+    // spread, modulated by energy) descending — highest first. We surface that
+    // score AND the energy (recency×frequency) on each line so the model can
+    // weight stronger/hotter memories. Trim each body and stop adding once we
+    // hit the char cap so the preamble can't blow up the context window.
+    const lines = ['[Relevant past context — ordered by synapse score (strongest first); use if helpful]'];
     const used = [];
     let total = lines[0].length;
     for (const h of hits) {
       const body = (h.text || h.snippet || '').trim();
       if (!body) continue;
       const trimmed = body.length > 500 ? body.slice(0, 500) + '…' : body;
-      const line = `- ${trimmed}`;
+      const score = Number.isFinite(h.score) ? h.score.toFixed(2) : '—';
+      const energy = Number.isFinite(h.energy) ? h.energy.toFixed(2) : '—';
+      const line = `- [score ${score} · energy ${energy}] ${trimmed}`;
       if (total + line.length + 1 > AUTO_CONTEXT_DEFAULTS.maxChars) break;
       lines.push(line);
       total += line.length + 1;
       used.push({
         id: h.id,
         confidence: h.confidence,
+        score: h.score,
+        energy: h.energy,
         source: h.file,
         snippet: h.snippet,
         text: h.text,

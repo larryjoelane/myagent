@@ -19,4 +19,21 @@ function resolveMinConfidence(raw, fallback = DEFAULT_MIN_CONFIDENCE) {
   return n;
 }
 
-module.exports = { resolveMinConfidence, DEFAULT_MIN_CONFIDENCE };
+// Default "spread strength" — fraction of a matched memory's score that
+// cascades to an associatively-wired neighbour (plasticityCore.SPREAD_FACTOR).
+// Mirrored here so the value the UI slider shows by default matches the engine.
+const DEFAULT_SPREAD_STRENGTH = 0.25;
+
+// Clamp the spread-strength setting to [0, 1]. 0 = no associative spread
+// (pure relevance + energy); higher = related-but-not-directly-matching
+// memories surface more aggressively. Returns the default when unset/invalid.
+function resolveSpreadStrength(raw, fallback = DEFAULT_SPREAD_STRENGTH) {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0 || n > 1) return fallback;
+  return n;
+}
+
+module.exports = {
+  resolveMinConfidence, DEFAULT_MIN_CONFIDENCE,
+  resolveSpreadStrength, DEFAULT_SPREAD_STRENGTH,
+};

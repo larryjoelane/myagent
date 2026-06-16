@@ -404,8 +404,16 @@ export class ChatLog extends HTMLElement {
       item.className = 'context-badge__hit';
       const meta = document.createElement('div');
       meta.className = 'context-badge__meta';
-      const conf = (typeof h.confidence === 'number') ? h.confidence.toFixed(2) : '?';
-      meta.textContent = `conf ${conf}`;
+      // Surface the synapse stats that drove ranking/injection: the final
+      // score (relevance + associative spread × energy) and the raw energy
+      // (recency×frequency). Fall back to confidence for older/file hits.
+      const parts = [];
+      if (typeof h.score === 'number') parts.push(`score ${h.score.toFixed(2)}`);
+      if (typeof h.energy === 'number') parts.push(`energy ${h.energy.toFixed(2)}`);
+      if (parts.length === 0 && typeof h.confidence === 'number') {
+        parts.push(`conf ${h.confidence.toFixed(2)}`);
+      }
+      meta.textContent = parts.length ? parts.join(' · ') : '?';
       item.appendChild(meta);
       const body = document.createElement('div');
       body.className = 'context-badge__snippet';

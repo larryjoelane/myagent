@@ -88,8 +88,12 @@ function firingTargets(hits, minFiringConfidence = DEFAULT_MIN_FIRING_CONFIDENCE
 // Cascade a fraction of each direct hit's score to its wired neighbours.
 //   edges            : array of { turn_a, turn_b, weight } touching the hits
 //   directScoreById  : Map(id -> relevance score) of the direct hits
+//   spreadFactor     : fraction of a hit's score that cascades to a wired
+//                      neighbour. Defaults to SPREAD_FACTOR; the UI's
+//                      "Spread strength" slider overrides it per-search.
 // Returns Map(neighbourId -> boost) for neighbours NOT among the direct hits.
-function computeSpread(edges, directScoreById) {
+function computeSpread(edges, directScoreById, spreadFactor = SPREAD_FACTOR) {
+  const factor = (Number.isFinite(spreadFactor) && spreadFactor >= 0) ? spreadFactor : SPREAD_FACTOR;
   const boost = new Map();
   const direct = new Set(directScoreById.keys());
   for (const e of edges || []) {
@@ -99,7 +103,7 @@ function computeSpread(edges, directScoreById) {
     else continue;
     const hitScore = directScoreById.get(hit) || 0;
     const w = Math.min(1, (e.weight || 0) / SPREAD_WEIGHT_NORM);
-    boost.set(neighbour, (boost.get(neighbour) || 0) + hitScore * SPREAD_FACTOR * w);
+    boost.set(neighbour, (boost.get(neighbour) || 0) + hitScore * factor * w);
   }
   return boost;
 }

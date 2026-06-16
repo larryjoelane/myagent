@@ -83,8 +83,8 @@ class WorkerHost {
   }
   // MySecondBrain: chat Q+A turns.
   storeTurn(payload = {}) { return this._send('storeTurn', payload); }
-  searchTurns({ query, limit, minConfidence } = {}) {
-    return this._send('searchTurns', { query, limit, minConfidence });
+  searchTurns({ query, limit, minConfidence, spreadFactor } = {}) {
+    return this._send('searchTurns', { query, limit, minConfidence, spreadFactor });
   }
   stats() { return this._send('stats', {}); }
 

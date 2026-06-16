@@ -82,6 +82,16 @@ function run(t) {
     eq(core.computeSpread(null, new Map([[1, 1]])).size, 0);
   });
 
+  t.test('computeSpread: spreadFactor override scales the boost (UI slider)', () => {
+    const edges = [{ turn_a: 1, turn_b: 2, weight: 5 }];
+    const direct = new Map([[1, 1.0]]);
+    const low = core.computeSpread(edges, direct, 0.1).get(2);
+    const high = core.computeSpread(edges, direct, 0.5).get(2);
+    ok(high > low, 'higher spread strength → bigger neighbour boost');
+    // Boost is linear in the factor: 0.5 is 5× of 0.1 here.
+    ok(Math.abs(high - low * 5) < 1e-9, 'boost scales linearly with spreadFactor');
+  });
+
   // ── snapshot assembly (the shape the viewer + Worker both consume) ──
   t.test('buildSnapshot: nodes carry energy, edges carry weight, meta summarizes', () => {
     const nowMs = Date.parse('2026-06-07T00:00:00.000Z');

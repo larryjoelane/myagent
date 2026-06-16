@@ -44,6 +44,8 @@ export class SettingsDrawer extends LitElement {
     _ollamaModel: { state: true },
     /** Auto-context memory match threshold (0-1). Higher = stricter. */
     _autoContextMinConfidence: { state: true },
+    /** Synapse spread strength (0-1). Higher = more associative recall. */
+    _autoContextSpreadStrength: { state: true },
   };
 
   static styles = [
@@ -323,6 +325,8 @@ export class SettingsDrawer extends LitElement {
     this._autoContext = true;
     /** @type {number} */
     this._autoContextMinConfidence = 0.35;
+    /** @type {number} */
+    this._autoContextSpreadStrength = 0.25;
     /** @type {boolean} */
     this._autoFileContext = true;
     /** @type {string[]} */
@@ -360,6 +364,8 @@ export class SettingsDrawer extends LitElement {
     {
       const mc = Number(await getSetting('autoContextMinConfidence', 0.35));
       this._autoContextMinConfidence = (Number.isFinite(mc) && mc >= 0 && mc <= 1) ? mc : 0.35;
+      const ss = Number(await getSetting('autoContextSpreadStrength', 0.25));
+      this._autoContextSpreadStrength = (Number.isFinite(ss) && ss >= 0 && ss <= 1) ? ss : 0.25;
     }
     this._autoFileContext = (await getSetting('autoFileContext', true)) !== false;
     // Hydrate the persisted toolDetails into the store so chat-bubble
@@ -424,6 +430,20 @@ export class SettingsDrawer extends LitElement {
                  await setSetting('autoContextMinConfidence', v);
                }} />
         <span class="slider-value">${this._autoContextMinConfidence.toFixed(2)}</span>
+      </label>
+      <label class="row row--slider"
+             title="Synapse 'spread strength' (0–1). When a memory matches, a fraction of its score cascades to memories it was retrieved alongside before ('neurons that fire together wire together'). Higher = surface more associatively-related memories, even if they don't directly match your prompt. 0 = no spread (pure relevance + recency). Typical: 0.25. Only applies when 'Auto-include relevant memories' is on.">
+        <span>Synapse spread strength</span>
+        <input id="am-auto-context-spread" type="range"
+               min="0" max="1" step="0.05"
+               ?disabled=${!this._autoContext}
+               .value=${String(this._autoContextSpreadStrength)}
+               @input=${async (/** @type {any} */ e) => {
+                 const v = Number(e.target.value);
+                 this._autoContextSpreadStrength = v;
+                 await setSetting('autoContextSpreadStrength', v);
+               }} />
+        <span class="slider-value">${this._autoContextSpreadStrength.toFixed(2)}</span>
       </label>
       <label class="row" title="Prepend the editor's active tab (path + content) to chat-worker prompts so the model sees the file you're looking at.">
         <input id="am-auto-file-context" type="checkbox"
