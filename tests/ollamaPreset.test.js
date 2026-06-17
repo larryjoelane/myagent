@@ -9,7 +9,7 @@ const { eq, ok, deepEq } = require('./assert');
 function fakeFetchOnce(responseLines, capture = {}) {
   const original = global.fetch;
   global.fetch = async (url, opts) => {
-    capture.url = url;
+    capture.url = String(url);
     capture.opts = opts;
     capture.body = opts && opts.body ? JSON.parse(opts.body) : null;
     let i = 0;

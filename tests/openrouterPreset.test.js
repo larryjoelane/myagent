@@ -9,7 +9,8 @@ const { eq, ok, deepEq, contains } = require('./assert');
 function fakeFetchOnce(responseLines, capture = {}) {
   const original = global.fetch;
   global.fetch = async (url, opts) => {
-    capture.url = url;
+    // fetch accepts string | URL; normalize to string for assertions.
+    capture.url = String(url);
     capture.opts = opts;
     capture.body = opts && opts.body ? JSON.parse(opts.body) : null;
     let i = 0;
@@ -103,7 +104,7 @@ function run(ctx) {
   ctx.test('health hits /models', async () => {
     const cap = {};
     const original = global.fetch;
-    global.fetch = async (url) => { cap.url = url; return { ok: true, status: 200, json: async () => ({ data: [] }) }; };
+    global.fetch = async (url) => { cap.url = String(url); return { ok: true, status: 200, json: async () => ({ data: [] }) }; };
     try {
       const p = createOpenRouterPreset({ apiKey: 'k' });
       const r = await p.health();

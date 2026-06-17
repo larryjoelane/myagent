@@ -37,7 +37,10 @@ export default {
       }
       return json({ error: 'not found' }, 404);
     } catch (err) {
-      return json({ error: String(err && err.message || err) }, 500);
+      // Don't leak error details (message/stack) to the client — they expose
+      // internal paths and logic. Log server-side; return a generic message.
+      console.error('worker error', err);
+      return json({ error: 'internal error' }, 500);
     }
   },
 };

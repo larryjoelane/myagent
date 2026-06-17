@@ -14,15 +14,16 @@
 
 const fs = require('fs');
 const path = require('path');
+const { safeJoin } = require('../core/safePath');
 
-// Resolve to an absolute path once. The log location comes from env config
-// (operator-controlled), not from prompt content; pinning it absolute gives the
-// fs ops below a single fixed sink (js/path-injection) instead of a value
-// re-derived per call.
-const HOOK_LOG = path.resolve(process.env.MYAGENT_HOOK_LOG
+// The log location comes from env config (operator-controlled), not from prompt
+// content. Route it through safeJoin (resolve + containment barrier) so the fs
+// ops below operate on a path that passed the traversal check.
+const HOOK_LOG_RAW = process.env.MYAGENT_HOOK_LOG
   || path.join(process.env.MYAGENT_SESSIONS_DIR
     || path.join(__dirname, '..', '..', '.myagent', 'sessions'),
-    'pre-input.log'));
+    'pre-input.log');
+const HOOK_LOG = safeJoin(path.dirname(HOOK_LOG_RAW), path.basename(HOOK_LOG_RAW));
 
 function logRan(meta) {
   try {

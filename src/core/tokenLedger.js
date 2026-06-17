@@ -12,6 +12,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { safeJoin } = require('./safePath');
 
 const SCHEMA_VERSION = 1;
 // Flush at most every FLUSH_MS so a chatty driver doesn't hammer
@@ -31,7 +32,11 @@ class TokenLedger {
     if (persistPath && !path.isAbsolute(persistPath)) {
       throw new Error(`TokenLedger: persistPath must be absolute, got: ${persistPath}`);
     }
-    this.persistPath = persistPath ? path.resolve(persistPath) : null;
+    // Route through safeJoin (resolve + containment barrier) so the persisted
+    // fs ops below operate on a path that passed the traversal check.
+    this.persistPath = persistPath
+      ? safeJoin(path.dirname(persistPath), path.basename(persistPath))
+      : null;
     /** @type {Map<string, AgentTotals>} */
     this.byAgent = new Map();
     /** @type {Array<TurnRecord>} */

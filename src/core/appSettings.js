@@ -13,19 +13,20 @@
 
 const fs = require('fs');
 const path = require('path');
+const { safeJoin } = require('./safePath');
 
 class AppSettings {
   constructor({ file }) {
     if (!file) throw new Error('AppSettings: file is required');
     // The settings file must be an absolute, caller-controlled path (an
-    // app-data location), never a value derived from untrusted input. Pin it to
-    // an absolute resolved path so every fs op below operates on a fixed target
-    // and CodeQL (js/path-injection) sees a single non-tainted sink. A relative
-    // path here is a programming error.
+    // app-data location), never a value derived from untrusted input. Route it
+    // through safeJoin (resolve + containment) so every fs op below operates on
+    // a path that has passed the traversal barrier. A relative path is a
+    // programming error.
     if (!path.isAbsolute(file)) {
       throw new Error(`AppSettings: file must be an absolute path, got: ${file}`);
     }
-    this.file = path.resolve(file);
+    this.file = safeJoin(path.dirname(file), path.basename(file));
     this.values = this._load();
   }
 

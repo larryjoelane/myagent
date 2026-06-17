@@ -131,10 +131,14 @@ async function main() {
 function openInBrowser(file) {
   try {
     const cp = require('child_process');
-    const cmd = process.platform === 'win32' ? 'cmd'
+    // Resolve to an absolute path and pass it as a single, discrete argv
+    // element (never interpolated into a shell string). On Windows we use
+    // `explorer.exe <file>` instead of `cmd /c start …`, which avoids invoking
+    // the cmd shell builtin altogether — so no shell re-parses the path.
+    const target = require('path').resolve(file);
+    const opener = process.platform === 'win32' ? 'explorer.exe'
       : process.platform === 'darwin' ? 'open' : 'xdg-open';
-    const args = process.platform === 'win32' ? ['/c', 'start', '""', file] : [file];
-    cp.spawn(cmd, args, { stdio: 'ignore', detached: true }).unref();
+    cp.spawn(opener, [target], { stdio: 'ignore', detached: true, shell: false }).unref();
   } catch { /* user can open the printed path manually */ }
 }
 

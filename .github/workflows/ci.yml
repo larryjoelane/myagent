@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
 
+# Least privilege: CI only reads the repo (checkout + tests). No write scopes on
+# GITHUB_TOKEN. Grant more per-job only if a future job needs it.
+permissions:
+  contents: read
+
 # Cancel in-progress runs for the same ref when a new commit lands.
 concurrency:
   group: ci-${{ github.ref }}

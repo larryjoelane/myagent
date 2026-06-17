@@ -61,14 +61,32 @@ class OpenAIChat {
   } = {}) {
     if (!baseUrl) throw new Error('OpenAIChat: baseUrl is required');
     if (!model) throw new Error('OpenAIChat: model is required');
-    // Single chokepoint: both health() and stream() build their URLs from
-    // this.baseUrl, so validating once here covers every outbound request.
-    validateBaseUrl(baseUrl, { allowLoopback });
-    this.baseUrl = baseUrl.replace(/\/$/, '');
+    // Single chokepoint: validate once here. We keep the parsed, vetted URL
+    // object and build every request URL from it (see _url), so the value that
+    // reaches fetch() is always derived from the validated origin — never the
+    // raw input string.
+    this._base = validateBaseUrl(baseUrl, { allowLoopback });
+    // String form kept for compatibility (logging, host getters). Requests do
+    // NOT concatenate this — they go through _url().
+    this.baseUrl = this._base.href.replace(/\/$/, '');
     this.chatPath = chatPath;
     this.headers = headers;
     this.model = model;
     this.extraBody = extraBody;
+  }
+
+  // Build a request URL by appending `pathAndQuery` to the validated base.
+  // We append to the FULL base href (preserving any base path like
+  // `/api/v1`) — not URL-relative resolution, which would drop the base path
+  // for a leading-slash path. The result is re-parsed and its origin checked
+  // against the validated origin, so the host/scheme/port can never be changed
+  // by the path. This is the SSRF barrier the request URL passes through.
+  _url(pathAndQuery) {
+    const u = new URL(this.baseUrl + (pathAndQuery || ''));
+    if (u.origin !== this._base.origin) {
+      throw new Error(`OpenAIChat: request URL origin mismatch: ${u.origin}`);
+    }
+    return u;
   }
 
   _headers() {
@@ -79,7 +97,7 @@ class OpenAIChat {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
-      const res = await fetch(`${this.baseUrl}${healthPath}`, {
+      const res = await fetch(this._url(healthPath), {
         signal: ctrl.signal,
         headers: this._headers(),
       });
@@ -108,7 +126,7 @@ class OpenAIChat {
     if (tools && tools.length) body.tools = tools;
     if (toolChoice) body.tool_choice = toolChoice;
 
-    const res = await fetch(`${this.baseUrl}${this.chatPath}`, {
+    const res = await fetch(this._url(this.chatPath), {
       method: 'POST',
       headers: this._headers(),
       body: JSON.stringify(body),

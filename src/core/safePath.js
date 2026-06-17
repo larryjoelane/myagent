@@ -23,10 +23,12 @@ const path = require('path');
 function safeJoin(baseDir, ...segments) {
   const base = path.resolve(baseDir);
   const target = path.resolve(base, ...segments.map((s) => String(s)));
-  const rel = path.relative(base, target);
-  // rel === '' means target === base (allowed). Otherwise any leading '..' or
-  // an absolute rel means the target climbed out of base.
-  if (rel !== '' && (rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel))) {
+  // Canonical containment check: the resolved target must equal base or sit
+  // beneath `base + separator`. This `path.resolve(...).startsWith(base + sep)`
+  // idiom is the standard path-traversal barrier — anything with `..` or an
+  // absolute segment resolves outside `base` and is rejected here.
+  const prefix = base.endsWith(path.sep) ? base : base + path.sep;
+  if (target !== base && !target.startsWith(prefix)) {
     throw new Error(`safeJoin: path escapes base dir: ${segments.join('/')}`);
   }
   return target;

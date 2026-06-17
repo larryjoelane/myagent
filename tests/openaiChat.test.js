@@ -69,6 +69,17 @@ function run(ctx) {
     ok(!threw, 'loopback allowed when allowLoopback set');
   });
 
+  ctx.test('_url preserves base path and pins origin', () => {
+    // OpenRouter shape: base has a /api/v1 path that must survive appending
+    // a leading-slash chatPath (regression guard for the URL-API refactor).
+    const c = new OpenAIChat({ baseUrl: 'https://openrouter.ai/api/v1', model: 'm', chatPath: '/chat/completions' });
+    eq(c._url('/chat/completions').href, 'https://openrouter.ai/api/v1/chat/completions');
+    // Ollama shape: bare host + /api/chat
+    const o = new OpenAIChat({ baseUrl: 'http://127.0.0.1:11434', model: 'm', allowLoopback: true });
+    eq(o._url('/api/chat').href, 'http://127.0.0.1:11434/api/chat');
+    eq(o._url('/api/version').href, 'http://127.0.0.1:11434/api/version');
+  });
+
   ctx.test('parseStream: ollama NDJSON content + done', async () => {
     const body = bodyFrom([
       JSON.stringify({ message: { content: 'hello ' } }) + '\n',
