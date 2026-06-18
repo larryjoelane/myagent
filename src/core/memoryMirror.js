@@ -23,9 +23,10 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { safeJoin, safeComponent } = require('./safePath');
+const { safeComponent } = require('./safePath');
 
 const PROJECTS_ROOT = path.join(os.homedir(), '.claude', 'projects');
+
 
 function listProjectDirs() {
   let entries;
@@ -267,18 +268,17 @@ function pathToFileUri(p) {
 // full history (not just sessions captured in the current PTY window).
 function mirrorProject({ projectName, projectFull, outRoot, sessions }) {
   const { files } = listMemoryMd(projectFull);
-  // js/path-injection barrier (inlined in the recommended resolve+startsWith
-  // shape so static analysis tracks it to the fs sinks below): contain the
-  // mirror dir under the resolved outRoot. projectName is an encoded-cwd name.
-  const root = path.resolve(outRoot);
-  const dstProjectDir = path.resolve(root, safeComponent(projectName));
-  if (dstProjectDir !== root && !dstProjectDir.startsWith(root + path.sep)) {
-    throw new Error(`mirrorProject: project dir escapes outRoot: ${projectName}`);
+  // Path containment: projectName is validated as a single component
+  // (safeComponent rejects separators/`..`), and each target is resolved under
+  // the mirror root and required to stay beneath it. outRoot is the operator-
+  // configured mirror dir (defaults under the app data dir), not user input.
+  const mirrorRoot = path.resolve(outRoot);
+  const dstProjectDir = path.resolve(mirrorRoot, safeComponent(projectName));
+  if (dstProjectDir !== mirrorRoot && !dstProjectDir.startsWith(mirrorRoot + path.sep)) {
+    throw new Error(`mirrorProject: project dir escapes mirror root: ${projectName}`);
   }
   let copied = 0;
   for (const src of files) {
-    // Contain each copy target under dstProjectDir. path.basename strips any
-    // dir part from the source file name first.
     const dst = path.resolve(dstProjectDir, 'memory', path.basename(src));
     if (!dst.startsWith(dstProjectDir + path.sep)) {
       throw new Error(`mirrorProject: copy target escapes project dir: ${src}`);
@@ -301,9 +301,12 @@ function mirrorProject({ projectName, projectFull, outRoot, sessions }) {
     sessions: finalSessions,
   });
   fs.mkdirSync(dstProjectDir, { recursive: true });
-  // dstProjectDir is the resolved+contained dir from above; '_index.md' is a
-  // constant leaf, so this stays inside it.
-  fs.writeFileSync(path.join(dstProjectDir, '_index.md'), indexBody, 'utf8');
+  // _index.md is a constant leaf under the already-contained project dir.
+  const indexPath = path.resolve(dstProjectDir, '_index.md');
+  if (!indexPath.startsWith(dstProjectDir + path.sep)) {
+    throw new Error('mirrorProject: index path escapes project dir');
+  }
+  fs.writeFileSync(indexPath, indexBody, 'utf8');
 
   return { project: projectName, copied, indexed: true, memoryCount: files.length };
 }
@@ -317,8 +320,8 @@ function mirrorProject({ projectName, projectFull, outRoot, sessions }) {
 // files OR any JSONLs, so the final-sweep call (with sessionsByProject={})
 // produces a complete index for everything ever seen.
 function mirrorAll({ outRoot: outRootRaw, sessionsByProject = {} }) {
-  // Pin the mirror root to an absolute path; per-project dirs are contained
-  // under it via safeJoin in mirrorProject.
+  // outRoot is the operator-configured mirror dir (defaults under the app data
+  // dir), not user input. Resolve it to an absolute path before creating it.
   const outRoot = path.resolve(outRootRaw);
   fs.mkdirSync(outRoot, { recursive: true });
   const results = [];

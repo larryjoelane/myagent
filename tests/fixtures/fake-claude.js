@@ -88,11 +88,17 @@ async function handleLine(line) {
   moveTo(rows() - 3, 1); write('❯ ');
 }
 
-// Clamp the delay so an env-provided latency (FAKE_CLAUDE_LATENCY_MS) can't
+// Bound the delay so an env-provided latency (FAKE_CLAUDE_LATENCY_MS) can't
 // create an unbounded timer that wedges the test (js/resource-exhaustion).
+// Match CodeQL's recognized shape: reject out-of-range values (early return)
+// rather than reassign, so a value exceeding the cap never reaches setTimeout.
 const MAX_SLEEP_MS = 30_000;
 function sleep(ms) {
-  const d = Math.min(Math.max(0, Number(ms) || 0), MAX_SLEEP_MS);
+  const d = Number(ms);
+  if (!Number.isFinite(d) || d < 0 || d > MAX_SLEEP_MS) {
+    // Out of the accepted range — use the safe default instead of the input.
+    return new Promise((r) => setTimeout(r, 0));
+  }
   return new Promise((r) => setTimeout(r, d));
 }
 

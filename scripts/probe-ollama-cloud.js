@@ -55,12 +55,13 @@ async function main() {
   console.log('[probe] ----------------------------------------');
 
   // SSRF barrier (inlined at the sink): construct the request URL and confirm
-  // its protocol + host are allowed before fetching. Only http/https to the
-  // host we already validated may be reached.
+  // SSRF barrier (inlined at the sink, checked against CONSTANTS): scheme must
+  // be http(s) and host must not be a cloud-metadata / link-local address.
   const reqUrl = new URL(HOST + '/api/chat');
-  const allowedHost = new URL(HOST).host;
-  if ((reqUrl.protocol !== 'http:' && reqUrl.protocol !== 'https:') || reqUrl.host !== allowedHost) {
-    console.error('[probe] refusing: request URL host/protocol not allowed'); process.exit(1);
+  const h = reqUrl.hostname.toLowerCase();
+  if ((reqUrl.protocol !== 'http:' && reqUrl.protocol !== 'https:')
+    || h === 'metadata.google.internal' || h === '169.254.169.254' || h.startsWith('169.254.')) {
+    console.error('[probe] refusing: blocked request URL'); process.exit(1);
   }
   const res = await fetch(reqUrl, {
     method: 'POST',

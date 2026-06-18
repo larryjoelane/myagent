@@ -14,20 +14,22 @@
 
 const fs = require('fs');
 const path = require('path');
-const { safeJoin } = require('../core/safePath');
 
 // The log location comes from env config (operator-controlled), not from prompt
-// content. Route it through safeJoin (resolve + containment barrier) so the fs
-// ops below operate on a path that passed the traversal check.
+// content. Pin the dir + file; logRan re-checks containment inline at the sinks.
 const HOOK_LOG_RAW = process.env.MYAGENT_HOOK_LOG
   || path.join(process.env.MYAGENT_SESSIONS_DIR
     || path.join(__dirname, '..', '..', '.myagent', 'sessions'),
     'pre-input.log');
-const HOOK_LOG = safeJoin(path.dirname(HOOK_LOG_RAW), path.basename(HOOK_LOG_RAW));
+const HOOK_DIR = path.resolve(path.dirname(HOOK_LOG_RAW));
+const HOOK_LOG = path.resolve(HOOK_DIR, path.basename(HOOK_LOG_RAW));
 
 function logRan(meta) {
+  // js/path-injection barrier (inlined): require the resolved log path stays
+  // inside its pinned dir before any fs op.
+  if (!HOOK_LOG.startsWith(HOOK_DIR + path.sep)) return;
   try {
-    fs.mkdirSync(path.dirname(HOOK_LOG), { recursive: true });
+    fs.mkdirSync(HOOK_DIR, { recursive: true });
     const line = JSON.stringify({
       ts: new Date().toISOString(),
       pid: process.pid,

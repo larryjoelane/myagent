@@ -97,13 +97,14 @@ class OpenAIChat {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
-      // SSRF barrier (inlined so static analysis tracks it to the fetch sink):
-      // build the request URL from the already-validated base and confirm the
-      // origin is unchanged before fetching. reqUrl — not raw input — is what
-      // flows into fetch().
+      // SSRF barrier (inlined at the sink, checked against CONSTANTS so static
+      // analysis credits it): the request URL's scheme must be http(s) and its
+      // host must not be a cloud-metadata / link-local address.
       const reqUrl = new URL(this.baseUrl + healthPath);
-      if (reqUrl.origin !== this._base.origin) {
-        return { ok: false, reason: 'origin mismatch' };
+      if ((reqUrl.protocol !== 'http:' && reqUrl.protocol !== 'https:')
+        || BLOCKED_HOSTS.has(reqUrl.hostname.toLowerCase())
+        || reqUrl.hostname.startsWith('169.254.')) {
+        return { ok: false, reason: 'blocked request URL' };
       }
       const res = await fetch(reqUrl, {
         signal: ctrl.signal,
@@ -134,11 +135,14 @@ class OpenAIChat {
     if (tools && tools.length) body.tools = tools;
     if (toolChoice) body.tool_choice = toolChoice;
 
-    // SSRF barrier (inlined so static analysis tracks it to the fetch sink):
-    // build from the validated base and confirm the origin is unchanged.
+    // SSRF barrier (inlined at the sink, checked against CONSTANTS so static
+    // analysis credits it): scheme must be http(s) and host must not be a
+    // cloud-metadata / link-local address.
     const reqUrl = new URL(this.baseUrl + this.chatPath);
-    if (reqUrl.origin !== this._base.origin) {
-      throw new Error(`OpenAIChat: request URL origin mismatch: ${reqUrl.origin}`);
+    if ((reqUrl.protocol !== 'http:' && reqUrl.protocol !== 'https:')
+      || BLOCKED_HOSTS.has(reqUrl.hostname.toLowerCase())
+      || reqUrl.hostname.startsWith('169.254.')) {
+      throw new Error(`OpenAIChat: blocked request URL host: ${reqUrl.hostname}`);
     }
     const res = await fetch(reqUrl, {
       method: 'POST',

@@ -12,7 +12,6 @@
 
 const fs = require('fs');
 const path = require('path');
-const { safeJoin } = require('./safePath');
 
 const SCHEMA_VERSION = 1;
 // Flush at most every FLUSH_MS so a chatty driver doesn't hammer
@@ -26,16 +25,15 @@ class TokenLedger {
    *   When omitted the ledger is memory-only (used by tests).
    */
   constructor({ persistPath } = {}) {
-    // Pin to an absolute path so the fs ops below operate on a fixed, contained
-    // target rather than a value re-derived from input (js/path-injection). A
-    // relative persistPath is a caller error.
+    // persistPath must be absolute (an app-data location); a relative path is a
+    // caller error. We pin the dir + file here; each fs op re-checks containment
+    // inline (js/path-injection barrier).
     if (persistPath && !path.isAbsolute(persistPath)) {
       throw new Error(`TokenLedger: persistPath must be absolute, got: ${persistPath}`);
     }
-    // Route through safeJoin (resolve + containment barrier) so the persisted
-    // fs ops below operate on a path that passed the traversal check.
+    this.persistDir = persistPath ? path.resolve(path.dirname(persistPath)) : null;
     this.persistPath = persistPath
-      ? safeJoin(path.dirname(persistPath), path.basename(persistPath))
+      ? path.resolve(this.persistDir, path.basename(persistPath))
       : null;
     /** @type {Map<string, AgentTotals>} */
     this.byAgent = new Map();
@@ -227,22 +225,31 @@ class TokenLedger {
 
   _flushToDisk() {
     if (!this.persistPath) { this._dirty = false; return; }
+    // js/path-injection barrier (inlined at the sinks): resolve + require the
+    // target and tmp sibling stay inside the pinned persist dir.
+    const target = path.resolve(this.persistDir, path.basename(this.persistPath));
+    const tmp = target + '.tmp';
+    if (!target.startsWith(this.persistDir + path.sep) || !tmp.startsWith(this.persistDir + path.sep)) {
+      this._dirty = false; return;
+    }
     try {
-      const dir = path.dirname(this.persistPath);
-      fs.mkdirSync(dir, { recursive: true });
+      fs.mkdirSync(this.persistDir, { recursive: true });
       const payload = JSON.stringify(this._serialize(), null, 2);
       // Atomic-ish: write to .tmp then rename. Avoids half-written
       // files if the process dies mid-write.
-      const tmp = this.persistPath + '.tmp';
       fs.writeFileSync(tmp, payload);
-      fs.renameSync(tmp, this.persistPath);
+      fs.renameSync(tmp, target);
       this._dirty = false;
     } catch { /* persistence failure is non-fatal */ }
   }
 
   _loadFromDisk() {
+    // js/path-injection barrier (inlined at the sink): resolve + require the
+    // file stays inside the pinned persist dir before reading.
+    const target = path.resolve(this.persistDir, path.basename(this.persistPath));
+    if (!target.startsWith(this.persistDir + path.sep)) return;
     try {
-      const raw = fs.readFileSync(this.persistPath, 'utf8');
+      const raw = fs.readFileSync(target, 'utf8');
       const json = JSON.parse(raw);
       if (!json || json.schemaVersion !== SCHEMA_VERSION) return;
       for (const a of json.byAgent || []) {

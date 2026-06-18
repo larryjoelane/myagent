@@ -18,7 +18,6 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { safeJoin } = require('./safePath');
 
 const DEFAULT_PORT = 37777;
 const HOST = '127.0.0.1';
@@ -232,16 +231,21 @@ function makeHandler({ search, ingest, stats, storeMemory, agents }) {
 // the listener and removes the discovery file. `sessionsDir` is where
 // server.json lands so the CLI can find us.
 async function start({ sessionsDir: sessionsDirRaw, search, ingest, stats, storeMemory, agents, port = DEFAULT_PORT }) {
-  // Pin the discovery dir to an absolute path; the discovery file is a fixed
-  // name joined under it via safeJoin (js/path-injection containment).
+  // js/path-injection barrier (inlined): resolve the discovery dir + the fixed
+  // discovery-file path under it, and require containment before any fs op. The
+  // checked values (sessionsDir, discoveryPath, tmp) are what flow to the sinks.
   const sessionsDir = path.resolve(sessionsDirRaw);
+  const discoveryPath = path.resolve(sessionsDir, DISCOVERY_FILE);
+  const tmp = discoveryPath + '.tmp';
+  if (!discoveryPath.startsWith(sessionsDir + path.sep) || !tmp.startsWith(sessionsDir + path.sep)) {
+    throw new Error('sessionServer: discovery path escapes sessions dir');
+  }
   fs.mkdirSync(sessionsDir, { recursive: true });
   const server = http.createServer(makeHandler({ search, ingest, stats, storeMemory, agents }));
   await listenWithFallback(server, port);
   const addr = server.address();
   const boundPort = addr && typeof addr === 'object' ? addr.port : port;
 
-  const discoveryPath = safeJoin(sessionsDir, DISCOVERY_FILE);
   const payload = {
     port: boundPort,
     host: HOST,
@@ -249,7 +253,7 @@ async function start({ sessionsDir: sessionsDirRaw, search, ingest, stats, store
     started: new Date().toISOString(),
   };
   // Write atomically so a CLI reading mid-write never sees a half-file.
-  const tmp = discoveryPath + '.tmp';
+  // (tmp + discoveryPath were resolved + containment-checked above.)
   fs.writeFileSync(tmp, JSON.stringify(payload, null, 2), 'utf8');
   fs.renameSync(tmp, discoveryPath);
 
