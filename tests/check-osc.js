@@ -1,12 +1,24 @@
 // One-shot: scan a raw PTY log for OSC 133 / OSC 633 / other shell-integration sequences.
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
-// Manual diagnostic: the operator names the log file to inspect on the command
-// line, so reading that exact path IS the tool's purpose (not untrusted input).
-// Resolve to an absolute path for clarity. (js/path-injection: CLI-operator tool.)
-const file = path.resolve(process.argv[2] || '');
+// PTY logs live under the app data dir or the working tree. Constrain reads to
+// an allowlist of base dirs (pure constants — the inlined startsWith check is
+// the js/path-injection barrier) so this diagnostic can't be pointed at an
+// arbitrary file outside those roots.
+const ALLOWED_ROOTS = [
+  path.resolve(process.cwd()),
+  path.resolve(os.homedir()),
+  path.resolve(os.tmpdir()),
+];
 if (!process.argv[2]) { console.error('usage: check-osc <pty-log>'); process.exit(2); }
+const file = path.resolve(process.argv[2]);
+let ok = false;
+for (const base of ALLOWED_ROOTS) {
+  if (file === base || file.startsWith(base + path.sep)) { ok = true; break; }
+}
+if (!ok) { console.error(`check-osc: refusing path outside allowed roots: ${file}`); process.exit(2); }
 const buf = fs.readFileSync(file);
 const text = buf.toString('binary');
 
