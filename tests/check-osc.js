@@ -6,8 +6,9 @@ const path = require('path');
 // command line, so reading that path is the tool's purpose. Constrain it to the
 // working tree so it can't wander outside the repo.
 if (!process.argv[2]) { console.error('usage: check-osc <pty-log>'); process.exit(2); }
-const ROOT = path.resolve(process.cwd());
-const file = path.resolve(ROOT, process.argv[2]);
+const ROOT = fs.realpathSync(path.resolve(process.cwd()));
+const candidate = path.resolve(ROOT, process.argv[2]);
+const file = fs.realpathSync(candidate);
 if (file !== ROOT && !file.startsWith(ROOT + path.sep)) {
   console.error(`check-osc: refusing path outside ${ROOT}: ${file}`); process.exit(2);
 }
