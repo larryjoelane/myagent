@@ -27,7 +27,7 @@ export async function refreshWorkers() {
 /**
  * Spawn a worker of the given kind.
  *
- * @param {'claude'|'shell'|'ollama-cloud'|'openrouter'} kind
+ * @param {'shell'|'ollama-cloud'|'openrouter'|'local'} kind
  * @param {{ model?: string }} [opts] - kind-specific overrides; `model`
  *   is honored by `ollama-cloud`/`openrouter` and ignored elsewhere.
  * @returns {Promise<{ ok: boolean, id?: string, name?: string, error?: string }>}

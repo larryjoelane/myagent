@@ -46,9 +46,10 @@ async function main() {
       ...process.env,
       // Isolated sessions dir so we don't pollute .myagent/.
       MYAGENT_SESSIONS_DIR: tmpSessionsDir,
-      // Pin the Claude worker subprocess to fake-claude-stream so output
-      // is deterministic and fast (no real Claude Code, no token spend).
-      // ClaudeDriver picks these up — see src/core/drivers/claudeDriver.js.
+      // NOTE: the Claude worker kind was retired (no `claude` driver in the
+      // registry; this script's #am-spawn-claude step is already stale). These
+      // MYAGENT_TEST_CLAUDE_* vars are now no-ops, kept only until this dev
+      // screenshot script is reworked.
       MYAGENT_TEST_CLAUDE_BIN: process.execPath,
       MYAGENT_TEST_CLAUDE_ARGS: path.join(FIXTURES_DIR, 'fake-claude-stream.js'),
       // Slow the fake's reply enough that we can catch a mid-stream frame.
