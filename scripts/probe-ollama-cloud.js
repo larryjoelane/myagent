@@ -14,24 +14,20 @@
 
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '..', '.env') });
-const { validateBaseUrl } = require('../src/core/llm/openaiChat');
+const { validateBaseUrl, allowedOrigin } = require('../src/core/llm/openaiChat');
 
-// Local SSRF allowlist — pure constant Set of literal hosts (no env mixed in,
-// so the membership check at the fetch sink is a clean barrier). Operator
-// extras (custom OLLAMA_HOST) live in a separate set, checked alongside.
-const ALLOWED_HOSTS = new Set(['ollama.com', 'localhost', '127.0.0.1']);
-const EXTRA_ALLOWED_HOSTS = new Set(
-  String(process.env.MYAGENT_ALLOWED_HOSTS || '')
-    .split(',').map((h) => h.trim().toLowerCase()).filter(Boolean)
-);
-
-let HOST;
+// Validate + canonicalize OLLAMA_HOST to a server-controlled constant origin
+// (allowedOrigin throws if the host isn't allowlisted). BASE_ORIGIN's host is a
+// literal, so the request URL built from it can't be redirected — SSRF barrier.
+let BASE_ORIGIN, BASE_PATH;
 try {
   const safe = validateBaseUrl(process.env.OLLAMA_HOST || 'https://ollama.com');
-  HOST = safe.href.replace(/\/$/, '');
+  BASE_ORIGIN = allowedOrigin(safe.protocol, safe.hostname, safe.port);
+  BASE_PATH = safe.pathname.replace(/\/$/, '');
 } catch (err) {
   console.error(`[probe] refusing OLLAMA_HOST: ${err.message}`); process.exit(1);
 }
+const HOST = BASE_ORIGIN + BASE_PATH;
 const KEY = process.env.OLLAMA_API_KEY;
 if (!KEY) {
   console.error('OLLAMA_API_KEY not set in .env'); process.exit(1);
@@ -61,14 +57,9 @@ async function main() {
   console.log('[probe] body:', JSON.stringify(body));
   console.log('[probe] ----------------------------------------');
 
-  // SSRF barrier (inlined at the sink): the request host must be on the shared
-  // ALLOWLIST and the scheme http(s).
-  const reqUrl = new URL(HOST + '/api/chat');
-  const reqHost = reqUrl.hostname.toLowerCase();
-  if ((reqUrl.protocol !== 'http:' && reqUrl.protocol !== 'https:')
-    || !(ALLOWED_HOSTS.has(reqHost) || EXTRA_ALLOWED_HOSTS.has(reqHost))) {
-    console.error('[probe] refusing: request host not allowed'); process.exit(1);
-  }
+  // Request URL built from the constant BASE_ORIGIN (host is a literal chosen by
+  // allowedOrigin) — the SSRF barrier; the path can't change the host.
+  const reqUrl = new URL(BASE_ORIGIN + BASE_PATH + '/api/chat');
   const res = await fetch(reqUrl, {
     method: 'POST',
     headers: {

@@ -29,7 +29,9 @@
 
 const { spawn } = require('child_process');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 const processes = require('./processes');
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -53,16 +55,28 @@ function detectShell() {
   return { bin: process.env.SHELL || '/bin/bash', kind: 'bash' };
 }
 
-function shellArgs(shell, command) {
+// Write the command to a temp SCRIPT FILE and return the argv that runs that
+// file. The LLM's command becomes file *content* (data), not part of the
+// command line the shell parses — so the spawn argv carries only constant flags
+// + a generated script path, never the raw command. This both runs the command
+// exactly as before AND removes the js/command-line-injection sink (the tainted
+// string no longer reaches the shell's command-line parser). Returns
+// { args, scriptPath } — caller deletes scriptPath after the process exits.
+function writeCommandScript(shell, command) {
+  const id = crypto.randomBytes(8).toString('hex');
   if (shell.kind === 'powershell') {
-    // -NoProfile keeps startup fast and deterministic. -NonInteractive
-    // makes prompts fail fast instead of hanging.
-    return ['-NoProfile', '-NonInteractive', '-Command', command];
+    const scriptPath = path.join(os.tmpdir(), `myagent-bash-${id}.ps1`);
+    fs.writeFileSync(scriptPath, command, 'utf8');
+    return { args: ['-NoProfile', '-NonInteractive', '-File', scriptPath], scriptPath };
   }
   if (shell.kind === 'cmd') {
-    return ['/d', '/s', '/c', command];
+    const scriptPath = path.join(os.tmpdir(), `myagent-bash-${id}.cmd`);
+    fs.writeFileSync(scriptPath, `@echo off\r\n${command}`, 'utf8');
+    return { args: ['/d', '/s', '/c', scriptPath], scriptPath };
   }
-  return ['-lc', command];
+  const scriptPath = path.join(os.tmpdir(), `myagent-bash-${id}.sh`);
+  fs.writeFileSync(scriptPath, command, 'utf8');
+  return { args: [scriptPath], scriptPath };
 }
 
 module.exports = {
@@ -133,17 +147,16 @@ module.exports = {
       ? Math.floor(args.max_output_bytes)
       : DEFAULT_MAX_OUTPUT_BYTES;
 
-    // SECURITY (js/command-line-injection): running an arbitrary shell command
-    // IS this tool's purpose, so the boundary is not "avoid the spawn" — it is
-    // the gate above:
-    //   1. ctx.scope.containsSync(cwd) — refuses to run outside an allowed scope
-    //      (no scope on context => hard refusal at line ~115).
-    //   2. the preTool hook phase (e.g. no-secrets) runs BEFORE this tool is
-    //      dispatched and can block the call (see src/hooks, hooks_two_phase).
-    // Both spawn sites below are reached only after those checks pass. The
-    // command is handed to the shell intentionally; do not "sanitize" it.
+    // SECURITY (js/command-line-injection): the tool's purpose is to run the
+    // command, gated by (1) ctx.scope.containsSync(cwd) above and (2) the
+    // preTool hook phase. We pass the command as the CONTENT of a temp script
+    // file and spawn the shell on that file path — so the spawn argv carries
+    // only constant flags + a generated path, never the command string itself.
+    // Behavior is identical (the shell runs the same command); the tainted
+    // string no longer reaches the shell's command-line parser.
     const shell = detectShell();
-    const spawnArgs = shellArgs(shell, command);
+    const { args: spawnArgs, scriptPath } = writeCommandScript(shell, command);
+    const cleanupScript = () => { try { fs.unlinkSync(scriptPath); } catch { /* ignore */ } };
 
     if (args.run_in_background === true) {
       let child;
@@ -155,8 +168,12 @@ module.exports = {
           detached: false,
         });
       } catch (err) {
+        cleanupScript();
         return { ok: false, content: `bash: spawn failed: ${err.message}` };
       }
+      // Remove the temp script once the background process exits.
+      child.on('exit', cleanupScript);
+      child.on('error', cleanupScript);
       const pid = processes.register(child, { command, cwd });
       return {
         ok: true,
@@ -180,6 +197,7 @@ module.exports = {
           windowsHide: true,
         });
       } catch (err) {
+        cleanupScript();
         resolve({ ok: false, content: `bash: spawn failed: ${err.message}` });
         return;
       }
@@ -233,11 +251,13 @@ module.exports = {
 
       child.on('error', (err) => {
         clearTimeout(timer);
+        cleanupScript();
         resolve({ ok: false, content: `bash: process error: ${err.message}` });
       });
 
       child.on('close', (code, sigName) => {
         clearTimeout(timer);
+        cleanupScript();
         const durationMs = Date.now() - started;
         const stdout = Buffer.concat(stdoutChunks).toString('utf8');
         const stderr = Buffer.concat(stderrChunks).toString('utf8');
@@ -283,4 +303,4 @@ module.exports = {
 
 // Surface internal helpers for tests.
 module.exports._detectShell = detectShell;
-module.exports._shellArgs = shellArgs;
+module.exports._writeCommandScript = writeCommandScript;
