@@ -43,15 +43,16 @@ const { safeComponent } = require('./safePath');
 class SessionLog {
   constructor({ dir }) {
     this.dir = path.resolve(dir);
-    fs.mkdirSync(this.dir, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     this.stamp = stamp;
     // js/path-injection barrier (inlined): resolve the log file under this.dir
-    // and require containment before opening the stream.
+    // and require containment; create the dir from the CONTAINED path's dirname
+    // so the mkdir sink also operates on a checked value.
     this.path = path.resolve(this.dir, `session-${stamp}.ndjson`);
     if (!this.path.startsWith(this.dir + path.sep)) {
       throw new Error('SessionLog: log path escapes dir');
     }
+    fs.mkdirSync(path.dirname(this.path), { recursive: true });
     // Append mode so a crash mid-write keeps prior entries on disk.
     this.stream = fs.createWriteStream(this.path, { flags: 'a' });
     // Swallow stream errors — late writes during shutdown can otherwise
