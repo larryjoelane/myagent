@@ -124,13 +124,14 @@ async function main() {
     }
   }
 
-  // `real` is an absolute path returned by findRealClaude() (a file we stat'd),
-  // and `args` are forwarded as discrete argv elements with shell:false (the
-  // default). No shell re-parses them, so metacharacters in a forwarded arg are
-  // passed verbatim to claude rather than interpreted — not a command-injection
-  // surface. CodeQL flags the data flow (argv is "user-controlled"); that's
-  // expected for a transparent passthrough shim. Do NOT add shell:true here.
-  const child = spawn(real, args, {
+  // `real` is composed from an allowlisted constant basename (see
+  // findRealClaude). Forward each arg as a DISCRETE argv element — coerced to a
+  // plain string and passed as a fresh array — with shell:false (the default).
+  // No shell parses them, so a metacharacter in a forwarded arg goes to claude
+  // verbatim rather than being interpreted: not a command-line. Do NOT add
+  // shell:true here.
+  const argv = args.map((a) => String(a));
+  const child = spawn(real, argv, {
     stdio: [
       promptViaStdin ? 'pipe' : 'inherit',
       'inherit',
