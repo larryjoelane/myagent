@@ -48,9 +48,11 @@ function handleLine(line) {
   // screenshot capture script (scripts/screenshots.js) can slow it
   // down enough to catch a mid-response frame.
   // Clamp the env-provided latency so it can't create an unbounded timer
-  // (js/resource-exhaustion). The clamp is inlined into the setTimeout argument
-  // so the bounded value is the one that reaches the timer sink.
-  const rawLatency = parseInt(process.env.FAKE_CLAUDE_LATENCY_MS || '100', 10);
+  // (js/resource-exhaustion). Explicit bound check (not Math.min) so the value
+  // reaching setTimeout is a constant on the out-of-range path.
+  let latencyMs = parseInt(process.env.FAKE_CLAUDE_LATENCY_MS || '100', 10);
+  if (!Number.isFinite(latencyMs) || latencyMs < 0) latencyMs = 100;
+  if (latencyMs > 30_000) latencyMs = 30_000;
   setTimeout(() => {
     emit({
       type: 'assistant',
@@ -67,5 +69,5 @@ function handleLine(line) {
       stop_reason: 'end_turn',
       permission_denials: [],
     });
-  }, Math.min(Math.max(0, Number.isFinite(rawLatency) ? rawLatency : 100), 30_000));
+  }, latencyMs);
 }

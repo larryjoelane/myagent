@@ -90,11 +90,14 @@ async function handleLine(line) {
 
 // Clamp the delay so an env-provided latency (FAKE_CLAUDE_LATENCY_MS) can't
 // create an unbounded timer that wedges the test (js/resource-exhaustion).
-// The clamp is inlined into the setTimeout argument so the bounded value is
-// the one that reaches the timer sink.
+// Explicit bound check (not Math.min) so the value reaching setTimeout is a
+// constant on the out-of-range path — the shape the analyzer credits.
 const MAX_SLEEP_MS = 30_000;
 function sleep(ms) {
-  return new Promise((r) => setTimeout(r, Math.min(Math.max(0, Number(ms) || 0), MAX_SLEEP_MS)));
+  let d = Number(ms);
+  if (!Number.isFinite(d) || d < 0) d = 0;
+  if (d > MAX_SLEEP_MS) d = MAX_SLEEP_MS;
+  return new Promise((r) => setTimeout(r, d));
 }
 
 async function main() {
