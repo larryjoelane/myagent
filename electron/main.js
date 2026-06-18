@@ -90,11 +90,6 @@ function resolveSessionsDir() {
 // the default per-repo sessions directory. When set, ALL state
 // (memory index, app settings, session logs) lives there.
 const SESSIONS_DIR = resolveSessionsDir();
-// Our bin/ ships shims that intercept agent CLIs (currently `claude`)
-// before they reach the real binary — that's where the pre-input hook
-// runs. Prepending it to PATH for PTYs makes the shim win resolution
-// without the user having to install anything globally.
-const BIN_DIR = path.join(PROJECT_ROOT, 'bin');
 // Obsidian-friendly memory mirror: per-project memory + session index.
 const MEMORIES_DIR = path.join(SESSIONS_DIR, 'memories');
 // Hybrid (FTS5 + vector) search index. Runs entirely in a worker thread —
@@ -672,7 +667,7 @@ function registerIpcHandlers() {
   modelHandlers.register({ ipcMain, getEmbedderBridge });
   ptyHandlers.register({
     ipcMain, sessionLog, agentRegistry,
-    binDir: BIN_DIR, sessionsDir: SESSIONS_DIR, memoriesDir: MEMORIES_DIR,
+    sessionsDir: SESSIONS_DIR, memoriesDir: MEMORIES_DIR,
     snapshotBefore, summarizeWindow, mirrorAll, groupSessionsByProject,
   });
   tokenHandlers.register({
