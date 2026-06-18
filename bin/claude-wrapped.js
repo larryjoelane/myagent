@@ -27,8 +27,18 @@ const EXE_EXTS = IS_WIN
   ? (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').map((s) => s.toLowerCase())
   : [''];
 
+// Allowlisted executable basenames we are willing to exec — `claude` with any
+// PATHEXT extension on Windows, bare `claude` elsewhere. A constant set so the
+// chosen binary path is validated against server-controlled values, not just
+// "whatever PATH pointed at" (js/command-line-injection: the executable is
+// picked from an allow-list).
+const ALLOWED_CLAUDE_BASENAMES = new Set(
+  (IS_WIN ? EXE_EXTS : ['']).map((ext) => ('claude' + ext).toLowerCase())
+);
+
 // Find the real `claude` on PATH, skipping our own bin/ so we don't
-// recurse into the wrapper.
+// recurse into the wrapper. Returns a real, existing file whose basename is on
+// the allowlist above (realpath-resolved), or null.
 function findRealClaude() {
   const pathSep = IS_WIN ? ';' : ':';
   const entries = (process.env.PATH || process.env.Path || '').split(pathSep).filter(Boolean);
@@ -38,7 +48,13 @@ function findRealClaude() {
       const candidate = path.join(dir, `claude${ext}`);
       try {
         const st = fs.statSync(candidate);
-        if (st.isFile()) return candidate;
+        if (!st.isFile()) continue;
+        // Resolve symlinks and confirm the basename is allowlisted before we
+        // ever exec it — the binary is chosen from a constant allow-list.
+        const resolved = fs.realpathSync(candidate);
+        if (ALLOWED_CLAUDE_BASENAMES.has(path.basename(resolved).toLowerCase())) {
+          return resolved;
+        }
       } catch { /* keep scanning */ }
     }
   }

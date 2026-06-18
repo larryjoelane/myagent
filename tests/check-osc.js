@@ -2,16 +2,19 @@
 const fs = require('fs');
 const path = require('path');
 
-// Manual diagnostic: the operator names the PTY-log file to inspect on the
-// command line, so reading that path is the tool's purpose. Constrain it to the
-// working tree so it can't wander outside the repo.
+// Manual diagnostic for PTY logs. The arg is reduced to its BASENAME (which
+// strips any directory/`..` traversal) and validated against the known
+// log-name pattern, then joined under a fixed logs dir. So the path read is
+// always "<logs dir>/<safe basename>" — the operator can't point it outside the
+// logs dir (js/path-injection: sanitized component under a constant root).
 if (!process.argv[2]) { console.error('usage: check-osc <pty-log>'); process.exit(2); }
-const ROOT = fs.realpathSync(path.resolve(process.cwd()));
-const candidate = path.resolve(ROOT, process.argv[2]);
-const file = fs.realpathSync(candidate);
-if (file !== ROOT && !file.startsWith(ROOT + path.sep)) {
-  console.error(`check-osc: refusing path outside ${ROOT}: ${file}`); process.exit(2);
+const LOGS_DIR = path.join(process.cwd(), '.myagent', 'sessions');
+const name = path.basename(process.argv[2]);
+if (!/^[A-Za-z0-9._-]+\.(raw|ndjson|log)$/.test(name)) {
+  console.error(`check-osc: expected a PTY log basename (*.raw/*.ndjson/*.log), got: ${name}`);
+  process.exit(2);
 }
+const file = path.join(LOGS_DIR, name);
 const buf = fs.readFileSync(file);
 const text = buf.toString('binary');
 

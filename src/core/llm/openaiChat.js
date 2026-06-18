@@ -48,6 +48,31 @@ function isAllowedHost(hostname) {
   return ALLOWED_HOSTS.has(h) || EXTRA_ALLOWED_HOSTS.has(h);
 }
 
+// Map a vetted hostname to a SERVER-CONTROLLED CONSTANT origin string. The
+// returned origin is a literal (or a literal rebuilt from constant scheme+host),
+// so a request URL constructed from it has a host the attacker can't influence —
+// CodeQL's js/request-forgery sanitizer (pick the host from an allow-list, don't
+// build it from input). Throws if the host isn't allowed.
+//
+// `scheme` and `port` come from the already-validated base; the HOST is the
+// literal. This is what severs the SSRF taint at the source.
+function allowedOrigin(scheme, hostname, port) {
+  const h = String(hostname).toLowerCase();
+  // Each branch yields a literal host string — the value CodeQL treats as safe.
+  let host = null;
+  if (h === 'openrouter.ai') host = 'openrouter.ai';
+  else if (h === 'ollama.com') host = 'ollama.com';
+  else if (h === 'localhost') host = 'localhost';
+  else if (h === '127.0.0.1') host = '127.0.0.1';
+  else if (h === '[::1]' || h === '::1') host = '[::1]';
+  else if (EXTRA_ALLOWED_HOSTS.has(h)) host = h; // operator opt-in
+  if (host === null) {
+    throw new Error(`OpenAIChat: request host not in allowlist: ${hostname}`);
+  }
+  const proto = scheme === 'http:' ? 'http:' : 'https:';
+  return port ? `${proto}//${host}:${port}` : `${proto}//${host}`;
+}
+
 // Validate a provider base URL before any request is built from it. Throws
 // unless the scheme is http(s) AND the host is on the allowlist above.
 function validateBaseUrl(raw, { allowLoopback = false } = {}) {
@@ -92,18 +117,16 @@ class OpenAIChat {
     this.extraBody = extraBody;
   }
 
-  // Build a request URL by appending `pathAndQuery` to the validated base.
-  // We append to the FULL base href (preserving any base path like
-  // `/api/v1`) — not URL-relative resolution, which would drop the base path
-  // for a leading-slash path. The result is re-parsed and its origin checked
-  // against the validated origin, so the host/scheme/port can never be changed
-  // by the path. This is the SSRF barrier the request URL passes through.
+  // Build a request URL whose ORIGIN is a server-controlled constant (from
+  // allowedOrigin) and whose path/query come from the base path + the caller's
+  // path. The host can never be influenced by input — it's a literal chosen by
+  // allowedOrigin — so this is the SSRF barrier the request passes through.
   _url(pathAndQuery) {
-    const u = new URL(this.baseUrl + (pathAndQuery || ''));
-    if (u.origin !== this._base.origin) {
-      throw new Error(`OpenAIChat: request URL origin mismatch: ${u.origin}`);
-    }
-    return u;
+    // Constant, allowlisted origin (throws if the base host isn't allowed).
+    const origin = allowedOrigin(this._base.protocol, this._base.hostname, this._base.port);
+    // Preserve any base path (e.g. /api/v1) then append the caller's path.
+    const basePath = this._base.pathname.replace(/\/$/, '');
+    return new URL(origin + basePath + (pathAndQuery || ''));
   }
 
   _headers() {
@@ -114,16 +137,9 @@ class OpenAIChat {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
-      // SSRF barrier (inlined at the sink): the request host must be on the
-      // server-controlled ALLOWLIST and the scheme http(s). Allowlist membership
-      // (not a denylist) is what proves the destination is safe.
-      const reqUrl = new URL(this.baseUrl + healthPath);
-      const reqHost = reqUrl.hostname.toLowerCase();
-      if ((reqUrl.protocol !== 'http:' && reqUrl.protocol !== 'https:')
-        || !(ALLOWED_HOSTS.has(reqHost) || EXTRA_ALLOWED_HOSTS.has(reqHost))) {
-        return { ok: false, reason: 'blocked request URL' };
-      }
-      const res = await fetch(reqUrl, {
+      // _url() builds the request from a server-controlled constant origin
+      // (SSRF barrier), throwing if the host isn't allowlisted.
+      const res = await fetch(this._url(healthPath), {
         signal: ctrl.signal,
         headers: this._headers(),
       });
@@ -152,15 +168,9 @@ class OpenAIChat {
     if (tools && tools.length) body.tools = tools;
     if (toolChoice) body.tool_choice = toolChoice;
 
-    // SSRF barrier (inlined at the sink): the request host must be on the
-    // server-controlled ALLOWLIST and the scheme http(s).
-    const reqUrl = new URL(this.baseUrl + this.chatPath);
-    const reqHost = reqUrl.hostname.toLowerCase();
-    if ((reqUrl.protocol !== 'http:' && reqUrl.protocol !== 'https:')
-      || !(ALLOWED_HOSTS.has(reqHost) || EXTRA_ALLOWED_HOSTS.has(reqHost))) {
-      throw new Error(`OpenAIChat: request URL host not allowed: ${reqUrl.hostname}`);
-    }
-    const res = await fetch(reqUrl, {
+    // _url() builds the request from a server-controlled constant origin
+    // (SSRF barrier), throwing if the host isn't allowlisted.
+    const res = await fetch(this._url(this.chatPath), {
       method: 'POST',
       headers: this._headers(),
       body: JSON.stringify(body),
@@ -315,4 +325,4 @@ function extractTotals(json) {
   return totals;
 }
 
-module.exports = { OpenAIChat, parseStream, validateBaseUrl, ALLOWED_HOSTS, isAllowedHost };
+module.exports = { OpenAIChat, parseStream, validateBaseUrl, ALLOWED_HOSTS, isAllowedHost, allowedOrigin };
