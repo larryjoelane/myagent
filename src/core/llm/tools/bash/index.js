@@ -45,14 +45,20 @@ const WINDOWS_SHELL_CANDIDATES = [
   'C:\\Program Files (x86)\\PowerShell\\7\\pwsh.exe',
   'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
 ];
+// Constant fallbacks (standard install paths) so detectShell only ever returns
+// a server-controlled literal — no env value flows into shell.bin, which is the
+// executable passed to spawn() (js/command-line-injection: pick the executable
+// from constants, not from PATH/COMSPEC/SHELL).
+const WINDOWS_CMD = 'C:\\Windows\\System32\\cmd.exe';
+const POSIX_SHELL = '/bin/bash';
 function detectShell() {
   if (process.platform === 'win32') {
     for (const c of WINDOWS_SHELL_CANDIDATES) {
       try { if (fs.existsSync(c)) return { bin: c, kind: 'powershell' }; } catch { /* ignore */ }
     }
-    return { bin: process.env.COMSPEC || 'cmd.exe', kind: 'cmd' };
+    return { bin: WINDOWS_CMD, kind: 'cmd' };
   }
-  return { bin: process.env.SHELL || '/bin/bash', kind: 'bash' };
+  return { bin: POSIX_SHELL, kind: 'bash' };
 }
 
 // Write the command to a temp SCRIPT FILE and return the argv that runs that
