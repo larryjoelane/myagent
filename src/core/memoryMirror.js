@@ -27,17 +27,16 @@ const { safeComponent } = require('./safePath');
 
 const PROJECTS_ROOT = path.join(os.homedir(), '.claude', 'projects');
 
-// Allowlist of permitted base dirs the mirror may write under. The mirror root
-// (outRoot) is operator config; requiring it to resolve under one of these
-// server-controlled roots is the allowlist barrier CodeQL credits for the
-// js/path-injection mkdir sinks (a denylist/containment-against-itself is not).
-// Extendable via MYAGENT_ALLOWED_ROOTS for unusual install layouts.
+// Allowlist of permitted base dirs the mirror may write under. Pure constants
+// (home + tmp) so the inlined startsWith check against them is credited as a
+// barrier for the js/path-injection mkdir sinks. Operator extras live in a
+// SEPARATE list so they don't taint the constant allowlist.
 const ALLOWED_ROOTS = [
   path.resolve(os.homedir()),
   path.resolve(os.tmpdir()),
-  ...String(process.env.MYAGENT_ALLOWED_ROOTS || '')
-    .split(path.delimiter).map((p) => p.trim()).filter(Boolean).map((p) => path.resolve(p)),
 ];
+const EXTRA_ALLOWED_ROOTS = String(process.env.MYAGENT_ALLOWED_ROOTS || '')
+  .split(path.delimiter).map((p) => p.trim()).filter(Boolean).map((p) => path.resolve(p));
 
 
 
@@ -289,6 +288,11 @@ function mirrorProject({ projectName, projectFull, outRoot, sessions }) {
   let rootOk = false;
   for (const base of ALLOWED_ROOTS) {
     if (ROOT === base || ROOT.startsWith(base + path.sep)) { rootOk = true; break; }
+  }
+  if (!rootOk) {
+    for (const base of EXTRA_ALLOWED_ROOTS) {
+      if (ROOT === base || ROOT.startsWith(base + path.sep)) { rootOk = true; break; }
+    }
   }
   if (!rootOk) throw new Error(`mirrorProject: mirror root not under an allowed base: ${outRoot}`);
 

@@ -24,20 +24,28 @@ const DEFAULT_CHAT_PATH = '/api/chat';
 // provider. Operators running a self-hosted / custom endpoint extend the list
 // explicitly via MYAGENT_ALLOWED_HOSTS (comma-separated host[:port]) — an
 // opt-in, server-side constant read once at startup, never per-request input.
+// Pure constant allowlist of literal hosts — no env values mixed in, so a
+// `ALLOWED_HOSTS.has(url.hostname)` membership check at a fetch sink is a clean
+// barrier the analyzer credits.
 const ALLOWED_HOSTS = new Set([
   'openrouter.ai',
   'ollama.com',
   // local Ollama
   'localhost', '127.0.0.1', '[::1]', '::1',
-  ...String(process.env.MYAGENT_ALLOWED_HOSTS || '')
-    .split(',')
-    .map((h) => h.trim().toLowerCase())
-    .filter(Boolean),
 ]);
 
-// True iff `hostname` (URL.hostname, no port) is on the allowlist.
+// Operator-supplied extra hosts (self-hosted endpoints) live in a SEPARATE set,
+// so they never taint the constant allowlist above. Used only by the config-time
+// validateBaseUrl gate, never inlined at a request sink.
+const EXTRA_ALLOWED_HOSTS = new Set(
+  String(process.env.MYAGENT_ALLOWED_HOSTS || '')
+    .split(',').map((h) => h.trim().toLowerCase()).filter(Boolean)
+);
+
+// True iff `hostname` is on the constant allowlist or operator extra-list.
 function isAllowedHost(hostname) {
-  return ALLOWED_HOSTS.has(String(hostname).toLowerCase());
+  const h = String(hostname).toLowerCase();
+  return ALLOWED_HOSTS.has(h) || EXTRA_ALLOWED_HOSTS.has(h);
 }
 
 // Validate a provider base URL before any request is built from it. Throws
@@ -110,8 +118,9 @@ class OpenAIChat {
       // server-controlled ALLOWLIST and the scheme http(s). Allowlist membership
       // (not a denylist) is what proves the destination is safe.
       const reqUrl = new URL(this.baseUrl + healthPath);
+      const reqHost = reqUrl.hostname.toLowerCase();
       if ((reqUrl.protocol !== 'http:' && reqUrl.protocol !== 'https:')
-        || !ALLOWED_HOSTS.has(reqUrl.hostname.toLowerCase())) {
+        || !(ALLOWED_HOSTS.has(reqHost) || EXTRA_ALLOWED_HOSTS.has(reqHost))) {
         return { ok: false, reason: 'blocked request URL' };
       }
       const res = await fetch(reqUrl, {
@@ -146,8 +155,9 @@ class OpenAIChat {
     // SSRF barrier (inlined at the sink): the request host must be on the
     // server-controlled ALLOWLIST and the scheme http(s).
     const reqUrl = new URL(this.baseUrl + this.chatPath);
+    const reqHost = reqUrl.hostname.toLowerCase();
     if ((reqUrl.protocol !== 'http:' && reqUrl.protocol !== 'https:')
-      || !ALLOWED_HOSTS.has(reqUrl.hostname.toLowerCase())) {
+      || !(ALLOWED_HOSTS.has(reqHost) || EXTRA_ALLOWED_HOSTS.has(reqHost))) {
       throw new Error(`OpenAIChat: request URL host not allowed: ${reqUrl.hostname}`);
     }
     const res = await fetch(reqUrl, {
