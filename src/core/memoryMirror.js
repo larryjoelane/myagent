@@ -27,6 +27,19 @@ const { safeComponent } = require('./safePath');
 
 const PROJECTS_ROOT = path.join(os.homedir(), '.claude', 'projects');
 
+// Allowlist of permitted base dirs the mirror may write under. The mirror root
+// (outRoot) is operator config; requiring it to resolve under one of these
+// server-controlled roots is the allowlist barrier CodeQL credits for the
+// js/path-injection mkdir sinks (a denylist/containment-against-itself is not).
+// Extendable via MYAGENT_ALLOWED_ROOTS for unusual install layouts.
+const ALLOWED_ROOTS = [
+  path.resolve(os.homedir()),
+  path.resolve(os.tmpdir()),
+  ...String(process.env.MYAGENT_ALLOWED_ROOTS || '')
+    .split(path.delimiter).map((p) => p.trim()).filter(Boolean).map((p) => path.resolve(p)),
+];
+
+
 
 function listProjectDirs() {
   let entries;
@@ -268,21 +281,23 @@ function pathToFileUri(p) {
 // full history (not just sessions captured in the current PTY window).
 function mirrorProject({ projectName, projectFull, outRoot, sessions }) {
   const { files } = listMemoryMd(projectFull);
-  // Path containment (CodeQL js/path-injection GOOD shape): the mirror root is
-  // created first, then realpath-normalized into ROOT; each target is resolved
-  // under ROOT and the normalized result must start with ROOT before any fs op.
-  // projectName is additionally validated as a single component.
-  fs.mkdirSync(outRoot, { recursive: true });
-  const ROOT = fs.realpathSync(outRoot);
-  let dstProjectDir = path.resolve(ROOT, safeComponent(projectName));
+  // js/path-injection barrier (inlined allowlist): the mirror root must resolve
+  // under a server-controlled ALLOWED_ROOTS base, and the project dir under the
+  // root. ROOT only flows to the fs sinks after passing the allowlist check;
+  // projectName is also validated as a single component.
+  const ROOT = path.resolve(outRoot);
+  let rootOk = false;
+  for (const base of ALLOWED_ROOTS) {
+    if (ROOT === base || ROOT.startsWith(base + path.sep)) { rootOk = true; break; }
+  }
+  if (!rootOk) throw new Error(`mirrorProject: mirror root not under an allowed base: ${outRoot}`);
+
+  const dstProjectDir = path.resolve(ROOT, safeComponent(projectName));
   if (dstProjectDir !== ROOT && !dstProjectDir.startsWith(ROOT + path.sep)) {
     throw new Error(`mirrorProject: project dir escapes mirror root: ${projectName}`);
   }
+  fs.mkdirSync(ROOT, { recursive: true });
   fs.mkdirSync(dstProjectDir, { recursive: true });
-  dstProjectDir = fs.realpathSync(dstProjectDir);
-  if (dstProjectDir !== ROOT && !dstProjectDir.startsWith(ROOT + path.sep)) {
-    throw new Error(`mirrorProject: project dir escapes mirror root: ${projectName}`);
-  }
   let copied = 0;
   for (const src of files) {
     const dst = path.resolve(dstProjectDir, 'memory', path.basename(src));

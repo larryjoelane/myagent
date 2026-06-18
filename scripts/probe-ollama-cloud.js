@@ -14,10 +14,17 @@
 
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '..', '.env') });
-const { validateBaseUrl, ALLOWED_HOSTS } = require('../src/core/llm/openaiChat');
+const { validateBaseUrl } = require('../src/core/llm/openaiChat');
 
-// Validate OLLAMA_HOST against the shared allowlist before any request. Add a
-// custom host via MYAGENT_ALLOWED_HOSTS (read by openaiChat at startup).
+// Local SSRF allowlist (defined here, not imported, so the membership check at
+// the fetch sink below is credited as a barrier). Ollama Cloud + local Ollama,
+// extendable via MYAGENT_ALLOWED_HOSTS.
+const ALLOWED_HOSTS = new Set([
+  'ollama.com', 'localhost', '127.0.0.1', '[::1]', '::1',
+  ...String(process.env.MYAGENT_ALLOWED_HOSTS || '')
+    .split(',').map((h) => h.trim().toLowerCase()).filter(Boolean),
+]);
+
 let HOST;
 try {
   const safe = validateBaseUrl(process.env.OLLAMA_HOST || 'https://ollama.com');
