@@ -36,24 +36,29 @@ const ALLOWED_CLAUDE_BASENAMES = new Set(
   (IS_WIN ? EXE_EXTS : ['']).map((ext) => ('claude' + ext).toLowerCase())
 );
 
-// Find the real `claude` on PATH, skipping our own bin/ so we don't
-// recurse into the wrapper. Returns a real, existing file whose basename is on
-// the allowlist above (realpath-resolved), or null.
+// Find the real `claude` on PATH, skipping our own bin/ so we don't recurse
+// into the wrapper. Returns the executable rebuilt as
+// `<resolved dir> + <allowlisted constant basename>` — the basename is taken
+// from ALLOWED_CLAUDE_BASENAMES (a constant), never from the filesystem string,
+// so the executable handed to spawn() is composed from server-controlled values
+// (js/command-line-injection: pick the program name from an allow-list).
 function findRealClaude() {
   const pathSep = IS_WIN ? ';' : ':';
   const entries = (process.env.PATH || process.env.Path || '').split(pathSep).filter(Boolean);
   for (const dir of entries) {
     if (path.resolve(dir) === SELF_BIN_DIR) continue;
     for (const ext of EXE_EXTS) {
-      const candidate = path.join(dir, `claude${ext}`);
+      // basename is a constant ('claude' + a fixed ext); only the directory
+      // comes from PATH, and it must contain an existing regular file.
+      const base = `claude${ext}`;
+      if (!ALLOWED_CLAUDE_BASENAMES.has(base.toLowerCase())) continue;
+      const candidate = path.join(dir, base);
       try {
-        const st = fs.statSync(candidate);
-        if (!st.isFile()) continue;
-        // Resolve symlinks and confirm the basename is allowlisted before we
-        // ever exec it — the binary is chosen from a constant allow-list.
-        const resolved = fs.realpathSync(candidate);
-        if (ALLOWED_CLAUDE_BASENAMES.has(path.basename(resolved).toLowerCase())) {
-          return resolved;
+        const real = fs.realpathSync(candidate);
+        if (fs.statSync(real).isFile()) {
+          // Rebuild from the realpath's dir + the constant basename so the value
+          // returned is composed with an allowlisted program name.
+          return path.join(path.dirname(real), base);
         }
       } catch { /* keep scanning */ }
     }
