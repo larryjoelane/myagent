@@ -268,13 +268,19 @@ function pathToFileUri(p) {
 // full history (not just sessions captured in the current PTY window).
 function mirrorProject({ projectName, projectFull, outRoot, sessions }) {
   const { files } = listMemoryMd(projectFull);
-  // Path containment: projectName is validated as a single component
-  // (safeComponent rejects separators/`..`), and each target is resolved under
-  // the mirror root and required to stay beneath it. outRoot is the operator-
-  // configured mirror dir (defaults under the app data dir), not user input.
-  const mirrorRoot = path.resolve(outRoot);
-  const dstProjectDir = path.resolve(mirrorRoot, safeComponent(projectName));
-  if (dstProjectDir !== mirrorRoot && !dstProjectDir.startsWith(mirrorRoot + path.sep)) {
+  // Path containment (CodeQL js/path-injection GOOD shape): the mirror root is
+  // created first, then realpath-normalized into ROOT; each target is resolved
+  // under ROOT and the normalized result must start with ROOT before any fs op.
+  // projectName is additionally validated as a single component.
+  fs.mkdirSync(outRoot, { recursive: true });
+  const ROOT = fs.realpathSync(outRoot);
+  let dstProjectDir = path.resolve(ROOT, safeComponent(projectName));
+  if (dstProjectDir !== ROOT && !dstProjectDir.startsWith(ROOT + path.sep)) {
+    throw new Error(`mirrorProject: project dir escapes mirror root: ${projectName}`);
+  }
+  fs.mkdirSync(dstProjectDir, { recursive: true });
+  dstProjectDir = fs.realpathSync(dstProjectDir);
+  if (dstProjectDir !== ROOT && !dstProjectDir.startsWith(ROOT + path.sep)) {
     throw new Error(`mirrorProject: project dir escapes mirror root: ${projectName}`);
   }
   let copied = 0;
@@ -300,8 +306,8 @@ function mirrorProject({ projectName, projectFull, outRoot, sessions }) {
     memoryFiles: files,
     sessions: finalSessions,
   });
-  fs.mkdirSync(dstProjectDir, { recursive: true });
-  // _index.md is a constant leaf under the already-contained project dir.
+  // dstProjectDir already created + realpath-normalized above. _index.md is a
+  // constant leaf; resolve under the normalized dir and re-check containment.
   const indexPath = path.resolve(dstProjectDir, '_index.md');
   if (!indexPath.startsWith(dstProjectDir + path.sep)) {
     throw new Error('mirrorProject: index path escapes project dir');
@@ -320,10 +326,10 @@ function mirrorProject({ projectName, projectFull, outRoot, sessions }) {
 // files OR any JSONLs, so the final-sweep call (with sessionsByProject={})
 // produces a complete index for everything ever seen.
 function mirrorAll({ outRoot: outRootRaw, sessionsByProject = {} }) {
-  // outRoot is the operator-configured mirror dir (defaults under the app data
-  // dir), not user input. Resolve it to an absolute path before creating it.
+  // Resolve the configured mirror dir. Creation + realpath containment happens
+  // per-project inside mirrorProject (so the dir is only made when there's
+  // something to write, and the fs sinks all operate on a normalized path).
   const outRoot = path.resolve(outRootRaw);
-  fs.mkdirSync(outRoot, { recursive: true });
   const results = [];
   for (const { name, full } of listProjectDirs()) {
     const { files } = listMemoryMd(full);

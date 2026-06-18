@@ -38,26 +38,26 @@ function run(ctx) {
     ok(threw, 'should reject missing model');
   });
 
-  ctx.test('validateBaseUrl: blocks SSRF-prone hosts', () => {
+  ctx.test('validateBaseUrl: allowlist — only known hosts pass', () => {
     const throws = (url, opts) => {
       let threw = false;
       try { validateBaseUrl(url, opts); } catch { threw = true; }
       return threw;
     };
-    // link-local / cloud metadata always blocked
+    // Anything not on the allowlist is rejected — incl. metadata/link-local and
+    // arbitrary hosts (allowlist, not denylist).
     ok(throws('http://169.254.169.254/latest/meta-data'), 'IMDS blocked');
     ok(throws('http://metadata.google.internal/'), 'GCP metadata blocked');
-    ok(throws('http://169.254.1.2/'), 'link-local range blocked');
-    // bad schemes
+    ok(throws('http://169.254.1.2/'), 'link-local blocked');
+    ok(throws('http://evil.example.com/'), 'arbitrary host blocked');
+    // bad schemes / garbage
     ok(throws('file:///etc/passwd'), 'file scheme blocked');
     ok(throws('not a url'), 'garbage rejected');
-    // loopback refused unless opted in
-    ok(throws('http://127.0.0.1:11434'), 'loopback blocked by default');
-    ok(throws('http://localhost:11434'), 'localhost blocked by default');
-    ok(!throws('http://127.0.0.1:11434', { allowLoopback: true }), 'loopback ok when allowed');
-    // legitimate remote provider passes
-    ok(!throws('https://openrouter.ai/api/v1'), 'remote https ok');
+    // allowlisted hosts pass: known providers + loopback (local Ollama)
+    ok(!throws('https://openrouter.ai/api/v1'), 'openrouter ok');
     ok(!throws('https://ollama.com'), 'ollama cloud ok');
+    ok(!throws('http://127.0.0.1:11434'), 'loopback ok (local Ollama)');
+    ok(!throws('http://localhost:11434'), 'localhost ok (local Ollama)');
   });
 
   ctx.test('OpenAIChat constructor enforces baseUrl validation', () => {
