@@ -44,11 +44,12 @@ function detectShell() {
         ? path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
         : null,
     ].filter(Boolean);
+    // Constant allowlist of shell basenames — bounds discovery to real shells
+    // and is the constant-comparison barrier for the existsSync below (a
+    // candidate partly derives from SystemRoot).
+    const ALLOWED_SHELLS = new Set(['pwsh.exe', 'powershell.exe', 'cmd.exe']);
     for (const c of candidates) {
-      // Fixed candidate set (hardcoded paths + SystemRoot-derived). Probe only
-      // absolute paths; existence check for shell discovery, never a write.
-      // (js/path-injection: bounded to this candidate list.)
-      if (!path.isAbsolute(c)) continue;
+      if (!path.isAbsolute(c) || !ALLOWED_SHELLS.has(path.basename(c).toLowerCase())) continue;
       try { if (fs.existsSync(c)) return { bin: c, kind: 'powershell' }; } catch { /* ignore */ }
     }
     return { bin: process.env.COMSPEC || 'cmd.exe', kind: 'cmd' };

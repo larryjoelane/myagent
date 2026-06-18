@@ -31,12 +31,13 @@ function defaultWindowsShell() {
       : null,
     process.env.COMSPEC || 'C:\\Windows\\System32\\cmd.exe',
   ].filter(Boolean);
+  // Allowed shell executable basenames — a constant allowlist. We only probe a
+  // candidate whose basename is one of these, which both bounds the discovery to
+  // real shells and is the constant-comparison barrier static analysis credits
+  // for the existsSync below (candidates partly derive from env vars).
+  const ALLOWED_SHELLS = new Set(['pwsh.exe', 'powershell.exe', 'cmd.exe']);
   for (const c of candidates) {
-    // Candidates are a fixed all-list of known shell locations (some built from
-    // SystemRoot/COMSPEC). Only probe absolute paths — this is an existence
-    // check for shell discovery, never a write, and we return the matched path
-    // verbatim. (js/path-injection: bounded to this hardcoded candidate set.)
-    if (!path.isAbsolute(c)) continue;
+    if (!path.isAbsolute(c) || !ALLOWED_SHELLS.has(path.basename(c).toLowerCase())) continue;
     try { if (fs.existsSync(c)) return c; } catch { /* ignore */ }
   }
   return 'powershell.exe';

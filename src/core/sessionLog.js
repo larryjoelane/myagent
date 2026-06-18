@@ -38,17 +38,20 @@
 
 const fs = require('fs');
 const path = require('path');
-const { safeJoin, safeComponent } = require('./safePath');
+const { safeComponent } = require('./safePath');
 
 class SessionLog {
   constructor({ dir }) {
-    fs.mkdirSync(dir, { recursive: true });
     this.dir = path.resolve(dir);
+    fs.mkdirSync(this.dir, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     this.stamp = stamp;
-    // safeJoin keeps the file inside this.dir (the stamp is generated, but the
-    // join is the js/path-injection sink CodeQL flags).
-    this.path = safeJoin(this.dir, `session-${stamp}.ndjson`);
+    // js/path-injection barrier (inlined): resolve the log file under this.dir
+    // and require containment before opening the stream.
+    this.path = path.resolve(this.dir, `session-${stamp}.ndjson`);
+    if (!this.path.startsWith(this.dir + path.sep)) {
+      throw new Error('SessionLog: log path escapes dir');
+    }
     // Append mode so a crash mid-write keeps prior entries on disk.
     this.stream = fs.createWriteStream(this.path, { flags: 'a' });
     // Swallow stream errors — late writes during shutdown can otherwise
@@ -75,7 +78,12 @@ class SessionLog {
       this.rawStreams.delete(pane);
     }
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const file = safeJoin(this.dir, `pty-${pane}-${stamp}.raw`);
+    // js/path-injection barrier (inlined): pane is a safe component; resolve
+    // under this.dir and require containment before opening the stream.
+    const file = path.resolve(this.dir, `pty-${pane}-${stamp}.raw`);
+    if (!file.startsWith(this.dir + path.sep)) {
+      throw new Error('SessionLog: raw path escapes dir');
+    }
     const stream = fs.createWriteStream(file, { flags: 'a' });
     stream.on('error', () => { /* ignore late writes during shutdown */ });
     this.rawStreams.set(pane, stream);
