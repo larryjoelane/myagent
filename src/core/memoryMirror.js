@@ -27,7 +27,6 @@ const { safeComponent } = require('./safePath');
 
 const PROJECTS_ROOT = path.join(os.homedir(), '.claude', 'projects');
 
-
 function listProjectDirs() {
   let entries;
   try {
@@ -269,14 +268,15 @@ function pathToFileUri(p) {
 function mirrorProject({ projectName, projectFull, outRoot, sessions }) {
   const { files } = listMemoryMd(projectFull);
   // Path containment: projectName is validated as a single component
-  // (safeComponent rejects separators/`..`), and each target is resolved under
-  // the mirror root and required to stay beneath it. outRoot is the operator-
-  // configured mirror dir (defaults under the app data dir), not user input.
+  // (safeComponent rejects separators/`..`), then resolved under the mirror
+  // root and required to stay beneath it. outRoot is the operator-configured
+  // mirror dir (defaults under the app data dir), not user input.
   const mirrorRoot = path.resolve(outRoot);
   const dstProjectDir = path.resolve(mirrorRoot, safeComponent(projectName));
   if (dstProjectDir !== mirrorRoot && !dstProjectDir.startsWith(mirrorRoot + path.sep)) {
     throw new Error(`mirrorProject: project dir escapes mirror root: ${projectName}`);
   }
+  fs.mkdirSync(dstProjectDir, { recursive: true });
   let copied = 0;
   for (const src of files) {
     const dst = path.resolve(dstProjectDir, 'memory', path.basename(src));
@@ -300,8 +300,8 @@ function mirrorProject({ projectName, projectFull, outRoot, sessions }) {
     memoryFiles: files,
     sessions: finalSessions,
   });
-  fs.mkdirSync(dstProjectDir, { recursive: true });
-  // _index.md is a constant leaf under the already-contained project dir.
+  // dstProjectDir was created + containment-checked above. _index.md is a
+  // constant leaf; resolve under the contained dir and re-check.
   const indexPath = path.resolve(dstProjectDir, '_index.md');
   if (!indexPath.startsWith(dstProjectDir + path.sep)) {
     throw new Error('mirrorProject: index path escapes project dir');
@@ -320,10 +320,10 @@ function mirrorProject({ projectName, projectFull, outRoot, sessions }) {
 // files OR any JSONLs, so the final-sweep call (with sessionsByProject={})
 // produces a complete index for everything ever seen.
 function mirrorAll({ outRoot: outRootRaw, sessionsByProject = {} }) {
-  // outRoot is the operator-configured mirror dir (defaults under the app data
-  // dir), not user input. Resolve it to an absolute path before creating it.
+  // Resolve the configured mirror dir. Creation + containment happens
+  // per-project inside mirrorProject (so the dir is only made when there's
+  // something to write).
   const outRoot = path.resolve(outRootRaw);
-  fs.mkdirSync(outRoot, { recursive: true });
   const results = [];
   for (const { name, full } of listProjectDirs()) {
     const { files } = listMemoryMd(full);

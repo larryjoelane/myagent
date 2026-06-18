@@ -19,25 +19,19 @@ const pty = require('@lydell/node-pty');
 const ptys = new Map();
 const ptyKey = (contentsId, paneId) => `${contentsId}:${paneId || 'main'}`;
 
-// Picks a sensible interactive shell on Windows.
+// Picks a sensible interactive shell on Windows. We probe a FIXED list of
+// well-known absolute install paths (constants — no env value flows into the fs
+// sink, which is both safer and avoids the js/path-injection taint from
+// COMSPEC/SystemRoot). Windows always installs under C:\Windows, so the
+// system32 paths are stable across machines.
+const WINDOWS_SHELL_CANDIDATES = [
+  'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
+  'C:\\Program Files (x86)\\PowerShell\\7\\pwsh.exe',
+  'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+  'C:\\Windows\\System32\\cmd.exe',
+];
 function defaultWindowsShell() {
-  // Prefer pwsh if installed; otherwise PowerShell 5; otherwise cmd.
-  const candidates = [
-    process.env.COMSPEC && /pwsh/i.test(process.env.COMSPEC) ? process.env.COMSPEC : null,
-    'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
-    'C:\\Program Files (x86)\\PowerShell\\7\\pwsh.exe',
-    process.env.SystemRoot
-      ? path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-      : null,
-    process.env.COMSPEC || 'C:\\Windows\\System32\\cmd.exe',
-  ].filter(Boolean);
-  // Allowed shell executable basenames — a constant allowlist. We only probe a
-  // candidate whose basename is one of these, which both bounds the discovery to
-  // real shells and is the constant-comparison barrier static analysis credits
-  // for the existsSync below (candidates partly derive from env vars).
-  const ALLOWED_SHELLS = new Set(['pwsh.exe', 'powershell.exe', 'cmd.exe']);
-  for (const c of candidates) {
-    if (!path.isAbsolute(c) || !ALLOWED_SHELLS.has(path.basename(c).toLowerCase())) continue;
+  for (const c of WINDOWS_SHELL_CANDIDATES) {
     try { if (fs.existsSync(c)) return c; } catch { /* ignore */ }
   }
   return 'powershell.exe';

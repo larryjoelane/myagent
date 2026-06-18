@@ -11,6 +11,7 @@
 // register({...deps}) — each module closes over the deps it needs.
 
 const path = require('path');
+const os = require('os');
 // Load .env from the project root before any module reads process.env.
 // Keeps secrets like OLLAMA_API_KEY out of settings.json by design.
 require('dotenv').config({ path: path.resolve(__dirname, '..', '.env') });
@@ -66,11 +67,29 @@ const { EditorWindowManager } = require('./editorWindow');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const OUTPUT_DIR = path.join(PROJECT_ROOT, 'project-output');
+
+function resolveSessionsDir() {
+  const defaultDir = path.join(PROJECT_ROOT, '.myagent', 'sessions');
+  const raw = String(process.env.MYAGENT_SESSIONS_DIR || '').trim();
+  if (!raw) return defaultDir;
+
+  const candidate = path.resolve(raw);
+  const trustedBases = [
+    path.resolve(PROJECT_ROOT),
+    path.resolve(os.homedir()),
+    path.resolve(os.tmpdir()),
+  ];
+
+  for (const base of trustedBases) {
+    if (candidate === base || candidate.startsWith(base + path.sep)) return candidate;
+  }
+  return defaultDir;
+}
+
 // Honor MYAGENT_SESSIONS_DIR for tests + advanced users — overrides
 // the default per-repo sessions directory. When set, ALL state
 // (memory index, app settings, session logs) lives there.
-const SESSIONS_DIR = process.env.MYAGENT_SESSIONS_DIR
-  || path.join(PROJECT_ROOT, '.myagent', 'sessions');
+const SESSIONS_DIR = resolveSessionsDir();
 // Our bin/ ships shims that intercept agent CLIs (currently `claude`)
 // before they reach the real binary — that's where the pre-input hook
 // runs. Prepending it to PATH for PTYs makes the shim win resolution

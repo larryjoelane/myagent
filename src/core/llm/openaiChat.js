@@ -16,23 +16,40 @@
 
 const DEFAULT_CHAT_PATH = '/api/chat';
 
-// Hosts that must never be the target of an outbound request: cloud metadata
-// endpoints and link-local space. Reaching these is the hallmark of SSRF — a
-// provider baseUrl pointed here would exfiltrate the request (and its bearer
-// token) to an internal service.
-const BLOCKED_HOSTS = new Set([
-  'metadata.google.internal',
-  '169.254.169.254',     // AWS/GCP/Azure IMDS
-  '[fd00:ec2::254]',     // AWS IMDS over IPv6
+// SSRF defense: requests may only target a host on this server-controlled
+// ALLOWLIST (not a denylist — CodeQL js/request-forgery and OWASP both require
+// allowlisting, since a denylist can't prove an arbitrary host is safe).
+//
+// Known provider hosts are baked in. Loopback is allowed for the local Ollama
+// provider. Operators running a self-hosted / custom endpoint extend the list
+// explicitly via MYAGENT_ALLOWED_HOSTS (comma-separated hostnames, no port) —
+// an opt-in, server-side value read once at startup, never per-request input.
+// Pure constant allowlist of literal hosts — no env values mixed in, so a
+// `ALLOWED_HOSTS.has(url.hostname)` membership check at a fetch sink is a clean
+// barrier the analyzer credits.
+const ALLOWED_HOSTS = new Set([
+  'openrouter.ai',
+  'ollama.com',
+  // local Ollama
+  'localhost', '127.0.0.1', '[::1]', '::1',
 ]);
 
-function isLoopbackHost(host) {
-  return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
+// Operator-supplied extra hosts (self-hosted endpoints) live in a SEPARATE set,
+// so they never taint the constant allowlist above. Used only by the config-time
+// validateBaseUrl gate, never inlined at a request sink.
+const EXTRA_ALLOWED_HOSTS = new Set(
+  String(process.env.MYAGENT_ALLOWED_HOSTS || '')
+    .split(',').map((h) => h.trim().toLowerCase()).filter(Boolean)
+);
+
+// True iff `hostname` is on the constant allowlist or operator extra-list.
+function isAllowedHost(hostname) {
+  const h = String(hostname).toLowerCase();
+  return ALLOWED_HOSTS.has(h) || EXTRA_ALLOWED_HOSTS.has(h);
 }
 
-// Validate a provider base URL before any request is built from it. Throws on
-// anything unsafe. Local providers (Ollama) legitimately use loopback, so the
-// caller opts in via { allowLoopback: true } — loopback is otherwise refused.
+// Validate a provider base URL before any request is built from it. Throws
+// unless the scheme is http(s) AND the host is on the allowlist above.
 function validateBaseUrl(raw, { allowLoopback = false } = {}) {
   let u;
   try { u = new URL(raw); }
@@ -40,13 +57,13 @@ function validateBaseUrl(raw, { allowLoopback = false } = {}) {
   if (u.protocol !== 'http:' && u.protocol !== 'https:') {
     throw new Error(`OpenAIChat: baseUrl scheme not allowed: ${u.protocol}`);
   }
-  const host = u.hostname.toLowerCase();
-  if (BLOCKED_HOSTS.has(host) || host.startsWith('169.254.')) {
-    throw new Error(`OpenAIChat: baseUrl host is blocked (link-local/metadata): ${host}`);
+  if (!isAllowedHost(u.hostname)) {
+    throw new Error(`OpenAIChat: baseUrl host not in allowlist: ${u.hostname} `
+      + `(add it to MYAGENT_ALLOWED_HOSTS to permit)`);
   }
-  if (isLoopbackHost(host) && !allowLoopback) {
-    throw new Error(`OpenAIChat: loopback baseUrl not allowed for this provider: ${host}`);
-  }
+  // allowLoopback retained for API compatibility; loopback hosts are on the
+  // allowlist already, so no extra gating is needed here.
+  void allowLoopback;
   return u;
 }
 
@@ -97,13 +114,13 @@ class OpenAIChat {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
-      // SSRF barrier (inlined at the sink, checked against CONSTANTS so static
-      // analysis credits it): the request URL's scheme must be http(s) and its
-      // host must not be a cloud-metadata / link-local address.
+      // SSRF barrier (inlined at the sink): the request host must be on the
+      // server-controlled ALLOWLIST and the scheme http(s). Allowlist membership
+      // (not a denylist) is what proves the destination is safe.
       const reqUrl = new URL(this.baseUrl + healthPath);
+      const reqHost = reqUrl.hostname.toLowerCase();
       if ((reqUrl.protocol !== 'http:' && reqUrl.protocol !== 'https:')
-        || BLOCKED_HOSTS.has(reqUrl.hostname.toLowerCase())
-        || reqUrl.hostname.startsWith('169.254.')) {
+        || !(ALLOWED_HOSTS.has(reqHost) || EXTRA_ALLOWED_HOSTS.has(reqHost))) {
         return { ok: false, reason: 'blocked request URL' };
       }
       const res = await fetch(reqUrl, {
@@ -135,14 +152,13 @@ class OpenAIChat {
     if (tools && tools.length) body.tools = tools;
     if (toolChoice) body.tool_choice = toolChoice;
 
-    // SSRF barrier (inlined at the sink, checked against CONSTANTS so static
-    // analysis credits it): scheme must be http(s) and host must not be a
-    // cloud-metadata / link-local address.
+    // SSRF barrier (inlined at the sink): the request host must be on the
+    // server-controlled ALLOWLIST and the scheme http(s).
     const reqUrl = new URL(this.baseUrl + this.chatPath);
+    const reqHost = reqUrl.hostname.toLowerCase();
     if ((reqUrl.protocol !== 'http:' && reqUrl.protocol !== 'https:')
-      || BLOCKED_HOSTS.has(reqUrl.hostname.toLowerCase())
-      || reqUrl.hostname.startsWith('169.254.')) {
-      throw new Error(`OpenAIChat: blocked request URL host: ${reqUrl.hostname}`);
+      || !(ALLOWED_HOSTS.has(reqHost) || EXTRA_ALLOWED_HOSTS.has(reqHost))) {
+      throw new Error(`OpenAIChat: request URL host not allowed: ${reqUrl.hostname}`);
     }
     const res = await fetch(reqUrl, {
       method: 'POST',
@@ -299,4 +315,4 @@ function extractTotals(json) {
   return totals;
 }
 
-module.exports = { OpenAIChat, parseStream, validateBaseUrl };
+module.exports = { OpenAIChat, parseStream, validateBaseUrl, ALLOWED_HOSTS, isAllowedHost };

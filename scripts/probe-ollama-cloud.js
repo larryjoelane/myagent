@@ -16,14 +16,21 @@ const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '..', '.env') });
 const { validateBaseUrl } = require('../src/core/llm/openaiChat');
 
-// Reject SSRF-prone hosts (link-local/metadata) before issuing the request,
-// even for this dev probe. Loopback is allowed — probing a local Ollama is valid.
+// Local SSRF allowlist — pure constant Set of literal hosts (no env mixed in,
+// so the membership check at the fetch sink is a clean barrier). Operator
+// extras (custom OLLAMA_HOST) live in a separate set, checked alongside.
+const ALLOWED_HOSTS = new Set(['ollama.com', 'localhost', '127.0.0.1']);
+const EXTRA_ALLOWED_HOSTS = new Set(
+  String(process.env.MYAGENT_ALLOWED_HOSTS || '')
+    .split(',').map((h) => h.trim().toLowerCase()).filter(Boolean)
+);
+
 let HOST;
 try {
-  const safe = validateBaseUrl(process.env.OLLAMA_HOST || 'https://ollama.com', { allowLoopback: true });
+  const safe = validateBaseUrl(process.env.OLLAMA_HOST || 'https://ollama.com');
   HOST = safe.href.replace(/\/$/, '');
 } catch (err) {
-  console.error(`[probe] refusing unsafe OLLAMA_HOST: ${err.message}`); process.exit(1);
+  console.error(`[probe] refusing OLLAMA_HOST: ${err.message}`); process.exit(1);
 }
 const KEY = process.env.OLLAMA_API_KEY;
 if (!KEY) {
@@ -54,14 +61,13 @@ async function main() {
   console.log('[probe] body:', JSON.stringify(body));
   console.log('[probe] ----------------------------------------');
 
-  // SSRF barrier (inlined at the sink): construct the request URL and confirm
-  // SSRF barrier (inlined at the sink, checked against CONSTANTS): scheme must
-  // be http(s) and host must not be a cloud-metadata / link-local address.
+  // SSRF barrier (inlined at the sink): the request host must be on the shared
+  // ALLOWLIST and the scheme http(s).
   const reqUrl = new URL(HOST + '/api/chat');
-  const h = reqUrl.hostname.toLowerCase();
+  const reqHost = reqUrl.hostname.toLowerCase();
   if ((reqUrl.protocol !== 'http:' && reqUrl.protocol !== 'https:')
-    || h === 'metadata.google.internal' || h === '169.254.169.254' || h.startsWith('169.254.')) {
-    console.error('[probe] refusing: blocked request URL'); process.exit(1);
+    || !(ALLOWED_HOSTS.has(reqHost) || EXTRA_ALLOWED_HOSTS.has(reqHost))) {
+    console.error('[probe] refusing: request host not allowed'); process.exit(1);
   }
   const res = await fetch(reqUrl, {
     method: 'POST',

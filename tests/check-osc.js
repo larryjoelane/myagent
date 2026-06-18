@@ -2,11 +2,16 @@
 const fs = require('fs');
 const path = require('path');
 
-// Manual diagnostic: the operator names the log file to inspect on the command
-// line, so reading that exact path IS the tool's purpose (not untrusted input).
-// Resolve to an absolute path for clarity. (js/path-injection: CLI-operator tool.)
-const file = path.resolve(process.argv[2] || '');
+// Manual diagnostic: the operator names the PTY-log file to inspect on the
+// command line, so reading that path is the tool's purpose. Constrain it to the
+// working tree so it can't wander outside the repo.
 if (!process.argv[2]) { console.error('usage: check-osc <pty-log>'); process.exit(2); }
+const ROOT = fs.realpathSync(path.resolve(process.cwd()));
+const candidate = path.resolve(ROOT, process.argv[2]);
+const file = fs.realpathSync(candidate);
+if (file !== ROOT && !file.startsWith(ROOT + path.sep)) {
+  console.error(`check-osc: refusing path outside ${ROOT}: ${file}`); process.exit(2);
+}
 const buf = fs.readFileSync(file);
 const text = buf.toString('binary');
 
