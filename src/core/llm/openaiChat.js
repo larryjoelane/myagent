@@ -22,8 +22,8 @@ const DEFAULT_CHAT_PATH = '/api/chat';
 //
 // Known provider hosts are baked in. Loopback is allowed for the local Ollama
 // provider. Operators running a self-hosted / custom endpoint extend the list
-// explicitly via MYAGENT_ALLOWED_HOSTS (comma-separated host[:port]) — an
-// opt-in, server-side constant read once at startup, never per-request input.
+// explicitly via MYAGENT_ALLOWED_HOSTS (comma-separated hostnames, no port) —
+// an opt-in, server-side value read once at startup, never per-request input.
 // Pure constant allowlist of literal hosts — no env values mixed in, so a
 // `ALLOWED_HOSTS.has(url.hostname)` membership check at a fetch sink is a clean
 // barrier the analyzer credits.

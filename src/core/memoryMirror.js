@@ -27,19 +27,6 @@ const { safeComponent } = require('./safePath');
 
 const PROJECTS_ROOT = path.join(os.homedir(), '.claude', 'projects');
 
-// Allowlist of permitted base dirs the mirror may write under. Pure constants
-// (home + tmp) so the inlined startsWith check against them is credited as a
-// barrier for the js/path-injection mkdir sinks. Operator extras live in a
-// SEPARATE list so they don't taint the constant allowlist.
-const ALLOWED_ROOTS = [
-  path.resolve(os.homedir()),
-  path.resolve(os.tmpdir()),
-];
-const EXTRA_ALLOWED_ROOTS = String(process.env.MYAGENT_ALLOWED_ROOTS || '')
-  .split(path.delimiter).map((p) => p.trim()).filter(Boolean).map((p) => path.resolve(p));
-
-
-
 function listProjectDirs() {
   let entries;
   try {
@@ -280,27 +267,16 @@ function pathToFileUri(p) {
 // full history (not just sessions captured in the current PTY window).
 function mirrorProject({ projectName, projectFull, outRoot, sessions }) {
   const { files } = listMemoryMd(projectFull);
-  // js/path-injection barrier (inlined allowlist): the mirror root must resolve
-  // under a server-controlled ALLOWED_ROOTS base, and the project dir under the
-  // root. ROOT only flows to the fs sinks after passing the allowlist check;
-  // projectName is also validated as a single component.
-  const ROOT = path.resolve(outRoot);
-  let rootOk = false;
-  for (const base of ALLOWED_ROOTS) {
-    if (ROOT === base || ROOT.startsWith(base + path.sep)) { rootOk = true; break; }
-  }
-  if (!rootOk) {
-    for (const base of EXTRA_ALLOWED_ROOTS) {
-      if (ROOT === base || ROOT.startsWith(base + path.sep)) { rootOk = true; break; }
-    }
-  }
-  if (!rootOk) throw new Error(`mirrorProject: mirror root not under an allowed base: ${outRoot}`);
-
-  const dstProjectDir = path.resolve(ROOT, safeComponent(projectName));
-  if (dstProjectDir !== ROOT && !dstProjectDir.startsWith(ROOT + path.sep)) {
+  // Path containment: projectName is validated as a single component
+  // (safeComponent rejects separators/`..`), and the project dir is resolved
+  // under the mirror root and required to stay beneath it. outRoot is the
+  // operator-configured mirror dir (defaults under the app data dir), not user
+  // input.
+  const mirrorRoot = path.resolve(outRoot);
+  const dstProjectDir = path.resolve(mirrorRoot, safeComponent(projectName));
+  if (dstProjectDir !== mirrorRoot && !dstProjectDir.startsWith(mirrorRoot + path.sep)) {
     throw new Error(`mirrorProject: project dir escapes mirror root: ${projectName}`);
   }
-  fs.mkdirSync(ROOT, { recursive: true });
   fs.mkdirSync(dstProjectDir, { recursive: true });
   let copied = 0;
   for (const src of files) {
@@ -325,8 +301,8 @@ function mirrorProject({ projectName, projectFull, outRoot, sessions }) {
     memoryFiles: files,
     sessions: finalSessions,
   });
-  // dstProjectDir already created + realpath-normalized above. _index.md is a
-  // constant leaf; resolve under the normalized dir and re-check containment.
+  // dstProjectDir was created + containment-checked above. _index.md is a
+  // constant leaf; resolve under the contained dir and re-check.
   const indexPath = path.resolve(dstProjectDir, '_index.md');
   if (!indexPath.startsWith(dstProjectDir + path.sep)) {
     throw new Error('mirrorProject: index path escapes project dir');
@@ -345,9 +321,9 @@ function mirrorProject({ projectName, projectFull, outRoot, sessions }) {
 // files OR any JSONLs, so the final-sweep call (with sessionsByProject={})
 // produces a complete index for everything ever seen.
 function mirrorAll({ outRoot: outRootRaw, sessionsByProject = {} }) {
-  // Resolve the configured mirror dir. Creation + realpath containment happens
+  // Resolve the configured mirror dir. Creation + containment happens
   // per-project inside mirrorProject (so the dir is only made when there's
-  // something to write, and the fs sinks all operate on a normalized path).
+  // something to write).
   const outRoot = path.resolve(outRootRaw);
   const results = [];
   for (const { name, full } of listProjectDirs()) {
