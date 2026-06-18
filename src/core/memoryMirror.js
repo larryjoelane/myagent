@@ -267,15 +267,22 @@ function pathToFileUri(p) {
 // full history (not just sessions captured in the current PTY window).
 function mirrorProject({ projectName, projectFull, outRoot, sessions }) {
   const { files } = listMemoryMd(projectFull);
-  // projectName is an encoded-cwd dir name; validate it as a single component
-  // and contain everything under outRoot so a crafted name can't escape the
-  // mirror tree (js/path-injection).
-  const dstProjectDir = safeJoin(outRoot, safeComponent(projectName));
+  // js/path-injection barrier (inlined in the recommended resolve+startsWith
+  // shape so static analysis tracks it to the fs sinks below): contain the
+  // mirror dir under the resolved outRoot. projectName is an encoded-cwd name.
+  const root = path.resolve(outRoot);
+  const dstProjectDir = path.resolve(root, safeComponent(projectName));
+  if (dstProjectDir !== root && !dstProjectDir.startsWith(root + path.sep)) {
+    throw new Error(`mirrorProject: project dir escapes outRoot: ${projectName}`);
+  }
   let copied = 0;
   for (const src of files) {
-    // path.basename strips any dir part from the source file name before it's
-    // rejoined under the contained project dir.
-    const dst = safeJoin(dstProjectDir, 'memory', path.basename(src));
+    // Contain each copy target under dstProjectDir. path.basename strips any
+    // dir part from the source file name first.
+    const dst = path.resolve(dstProjectDir, 'memory', path.basename(src));
+    if (!dst.startsWith(dstProjectDir + path.sep)) {
+      throw new Error(`mirrorProject: copy target escapes project dir: ${src}`);
+    }
     if (copyIfChanged(src, dst)) copied += 1;
   }
 
@@ -294,7 +301,9 @@ function mirrorProject({ projectName, projectFull, outRoot, sessions }) {
     sessions: finalSessions,
   });
   fs.mkdirSync(dstProjectDir, { recursive: true });
-  fs.writeFileSync(safeJoin(dstProjectDir, '_index.md'), indexBody, 'utf8');
+  // dstProjectDir is the resolved+contained dir from above; '_index.md' is a
+  // constant leaf, so this stays inside it.
+  fs.writeFileSync(path.join(dstProjectDir, '_index.md'), indexBody, 'utf8');
 
   return { project: projectName, copied, indexed: true, memoryCount: files.length };
 }

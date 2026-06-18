@@ -18,9 +18,6 @@ const { validateBaseUrl } = require('../src/core/llm/openaiChat');
 
 // Reject SSRF-prone hosts (link-local/metadata) before issuing the request,
 // even for this dev probe. Loopback is allowed — probing a local Ollama is valid.
-// HOST is derived from the validator's RETURN value (a vetted, parsed URL), so
-// the sanitized value is what flows into fetch() below — the SSRF barrier sits
-// on the data-flow path (modeled in the .github/codeql pack).
 let HOST;
 try {
   const safe = validateBaseUrl(process.env.OLLAMA_HOST || 'https://ollama.com', { allowLoopback: true });
@@ -57,11 +54,13 @@ async function main() {
   console.log('[probe] body:', JSON.stringify(body));
   console.log('[probe] ----------------------------------------');
 
-  // Build the request URL from the validated HOST via the URL API and pin the
-  // origin, so the request can't be redirected to another host (SSRF barrier).
+  // SSRF barrier (inlined at the sink): construct the request URL and confirm
+  // its protocol + host are allowed before fetching. Only http/https to the
+  // host we already validated may be reached.
   const reqUrl = new URL(HOST + '/api/chat');
-  if (reqUrl.origin !== new URL(HOST).origin) {
-    console.error('[probe] refusing: request origin mismatch'); process.exit(1);
+  const allowedHost = new URL(HOST).host;
+  if ((reqUrl.protocol !== 'http:' && reqUrl.protocol !== 'https:') || reqUrl.host !== allowedHost) {
+    console.error('[probe] refusing: request URL host/protocol not allowed'); process.exit(1);
   }
   const res = await fetch(reqUrl, {
     method: 'POST',

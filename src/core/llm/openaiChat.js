@@ -97,7 +97,15 @@ class OpenAIChat {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
-      const res = await fetch(this._url(healthPath), {
+      // SSRF barrier (inlined so static analysis tracks it to the fetch sink):
+      // build the request URL from the already-validated base and confirm the
+      // origin is unchanged before fetching. reqUrl — not raw input — is what
+      // flows into fetch().
+      const reqUrl = new URL(this.baseUrl + healthPath);
+      if (reqUrl.origin !== this._base.origin) {
+        return { ok: false, reason: 'origin mismatch' };
+      }
+      const res = await fetch(reqUrl, {
         signal: ctrl.signal,
         headers: this._headers(),
       });
@@ -126,7 +134,13 @@ class OpenAIChat {
     if (tools && tools.length) body.tools = tools;
     if (toolChoice) body.tool_choice = toolChoice;
 
-    const res = await fetch(this._url(this.chatPath), {
+    // SSRF barrier (inlined so static analysis tracks it to the fetch sink):
+    // build from the validated base and confirm the origin is unchanged.
+    const reqUrl = new URL(this.baseUrl + this.chatPath);
+    if (reqUrl.origin !== this._base.origin) {
+      throw new Error(`OpenAIChat: request URL origin mismatch: ${reqUrl.origin}`);
+    }
+    const res = await fetch(reqUrl, {
       method: 'POST',
       headers: this._headers(),
       body: JSON.stringify(body),
