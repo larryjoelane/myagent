@@ -58,7 +58,6 @@ function defaultShellArgs() {
  * @property {import('electron').IpcMain} ipcMain
  * @property {import('../../src/core/sessionLog').SessionLog} sessionLog
  * @property {ReturnType<typeof import('../../src/core/agentRegistry').createAgentRegistry>} agentRegistry
- * @property {string} binDir
  * @property {string} sessionsDir
  * @property {string} memoriesDir
  * @property {(cwd: string) => any} snapshotBefore
@@ -69,7 +68,7 @@ function defaultShellArgs() {
 
 /** @param {PtyHandlerDeps} deps */
 function register({
-  ipcMain, sessionLog, agentRegistry, binDir, sessionsDir, memoriesDir,
+  ipcMain, sessionLog, agentRegistry, sessionsDir, memoriesDir,
   snapshotBefore, summarizeWindow, mirrorAll, groupSessionsByProject,
 }) {
   ipcMain.handle('pty:start', (event, { paneId, cwd, cols, rows } = {}) => {
@@ -85,8 +84,6 @@ function register({
 
     const shell = defaultShell();
     const resolvedCwd = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
-    const pathSep = process.platform === 'win32' ? ';' : ':';
-    const ptyPath = `${binDir}${pathSep}${process.env.PATH || process.env.Path || ''}`;
     const term = pty.spawn(shell, defaultShellArgs(), {
       name: 'xterm-256color',
       cols: cols || 100,
@@ -95,11 +92,7 @@ function register({
       env: {
         ...process.env,
         TERM: 'xterm-256color',
-        PATH: ptyPath,
-        // Windows-style env var name. Setting both avoids a "wrong case wins"
-        // surprise on Windows where Path and PATH can both exist.
-        Path: ptyPath,
-        // Lets the shims find the discovery file without re-deriving
+        // Lets tooling find the session discovery file without re-deriving
         // PROJECT_ROOT every invocation.
         MYAGENT_SESSIONS_DIR: sessionsDir,
       },
