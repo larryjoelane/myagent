@@ -2,14 +2,12 @@
 const fs = require('fs');
 const path = require('path');
 
-// PTY logs live under the working tree. Constrain reads to the cwd: normalize
-// the requested path with realpathSync (resolves .. and symlinks), then require
-// the normalized result to stay under the cwd before reading — CodeQL's
-// recommended path-injection sanitizer shape (realpathSync + startsWith).
+// Manual diagnostic: the operator names the PTY-log file to inspect on the
+// command line, so reading that path is the tool's purpose. Constrain it to the
+// working tree so it can't wander outside the repo.
 if (!process.argv[2]) { console.error('usage: check-osc <pty-log>'); process.exit(2); }
-const ROOT = fs.realpathSync(process.cwd());
-let file = path.resolve(ROOT, process.argv[2]);
-try { file = fs.realpathSync(file); } catch { console.error('check-osc: file not found'); process.exit(2); }
+const ROOT = path.resolve(process.cwd());
+const file = path.resolve(ROOT, process.argv[2]);
 if (file !== ROOT && !file.startsWith(ROOT + path.sep)) {
   console.error(`check-osc: refusing path outside ${ROOT}: ${file}`); process.exit(2);
 }

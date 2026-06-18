@@ -267,18 +267,16 @@ function pathToFileUri(p) {
 // full history (not just sessions captured in the current PTY window).
 function mirrorProject({ projectName, projectFull, outRoot, sessions }) {
   const { files } = listMemoryMd(projectFull);
-  // Path containment (CodeQL's recommended realpathSync + startsWith shape):
-  // create + realpath-normalize the mirror root, resolve the project dir under
-  // it (projectName validated as a single component), realpath-normalize that,
-  // and require it to stay under ROOT before any further fs op. outRoot is the
-  // operator-configured mirror dir, not user input.
-  fs.mkdirSync(path.resolve(outRoot), { recursive: true });
-  const ROOT = fs.realpathSync(path.resolve(outRoot));
-  fs.mkdirSync(path.resolve(ROOT, safeComponent(projectName)), { recursive: true });
-  const dstProjectDir = fs.realpathSync(path.resolve(ROOT, safeComponent(projectName)));
-  if (dstProjectDir !== ROOT && !dstProjectDir.startsWith(ROOT + path.sep)) {
+  // Path containment: projectName is validated as a single component
+  // (safeComponent rejects separators/`..`), then resolved under the mirror
+  // root and required to stay beneath it. outRoot is the operator-configured
+  // mirror dir (defaults under the app data dir), not user input.
+  const mirrorRoot = path.resolve(outRoot);
+  const dstProjectDir = path.resolve(mirrorRoot, safeComponent(projectName));
+  if (dstProjectDir !== mirrorRoot && !dstProjectDir.startsWith(mirrorRoot + path.sep)) {
     throw new Error(`mirrorProject: project dir escapes mirror root: ${projectName}`);
   }
+  fs.mkdirSync(dstProjectDir, { recursive: true });
   let copied = 0;
   for (const src of files) {
     const dst = path.resolve(dstProjectDir, 'memory', path.basename(src));
