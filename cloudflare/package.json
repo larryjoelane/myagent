@@ -14,6 +14,6 @@
     "db:seed:remote": "wrangler d1 execute memories --file=seed.sql --remote"
   },
   "devDependencies": {
-    "wrangler": "^4.0.0"
+    "wrangler": "^4.103.0"
   }
 }
