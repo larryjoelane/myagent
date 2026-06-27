@@ -17,6 +17,26 @@
 // OLLAMA_API_KEY / OPENROUTER_API_KEY).
 
 const DEFAULT_BASE_URL = 'https://api.machines.dev/v1';
+const ALLOWED_FLY_API_HOSTS = new Set(['api.machines.dev']);
+
+function normalizeFlyBaseUrl(rawBaseUrl) {
+  const candidate = rawBaseUrl || DEFAULT_BASE_URL;
+  let parsed;
+  try {
+    parsed = new URL(candidate);
+  } catch (_) {
+    throw new Error('FlyClient: baseUrl must be a valid absolute URL');
+  }
+
+  if (parsed.protocol !== 'https:') {
+    throw new Error('FlyClient: baseUrl must use https');
+  }
+  if (!ALLOWED_FLY_API_HOSTS.has(parsed.hostname)) {
+    throw new Error(`FlyClient: baseUrl host "${parsed.hostname}" is not allowed`);
+  }
+
+  return parsed.toString().replace(/\/+$/, '');
+}
 
 class FlyApiError extends Error {
   constructor(message, { status, body } = {}) {
@@ -34,12 +54,15 @@ class FlyClient {
       throw new Error('FlyClient: apiToken is required (pass it directly or set FLY_API_TOKEN)');
     }
     this.apiToken = token;
-    this.baseUrl = baseUrl || process.env.FLY_API_BASE_URL || DEFAULT_BASE_URL;
+    this.baseUrl = normalizeFlyBaseUrl(baseUrl || process.env.FLY_API_BASE_URL || DEFAULT_BASE_URL);
     // Fly orgs are usually slugs like "personal". Required by app creation.
     this.org = org || process.env.FLY_ORG || 'personal';
   }
 
   async _request(method, path, body) {
+    if (typeof path !== 'string' || !path.startsWith('/')) {
+      throw new Error('FlyClient: request path must start with "/"');
+    }
     const res = await fetch(`${this.baseUrl}${path}`, {
       method,
       headers: {
