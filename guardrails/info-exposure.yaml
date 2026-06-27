@@ -1,0 +1,25 @@
+# Guardrail: prevent js/stack-trace-exposure (CWE-209) regressions.
+# Fixed pattern: an error's message/stack flowing into an HTTP response body.
+# Good shape: log the error server-side; return a generic message to the client.
+rules:
+  - id: error-detail-in-http-response
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >
+      Error stack/message flowing into an HTTP response leaks internal details to
+      clients (info exposure). Log it server-side (console.error/Sentry) and
+      return a generic message. See guardrails/README.md.
+    metadata:
+      cwe: "CWE-209: Generation of Error Message Containing Sensitive Information"
+      codeql: js/stack-trace-exposure
+    pattern-either:
+      - pattern: new Response($E.stack, ...)
+      - pattern: new Response($E.message, ...)
+      - pattern: new Response(String($E), ...)
+      - pattern: 'json({ ..., $K: $E.stack, ... }, ...)'
+      - pattern: 'json({ ..., $K: $E.message, ... }, ...)'
+      - pattern: 'json({ ..., $K: String($E), ... }, ...)'
+      - pattern: res.send($E.stack)
+      - pattern: res.send($E.message)
+      - pattern: 'res.json({ ..., $K: $E.stack, ... })'
+      - pattern: 'res.json({ ..., $K: $E.message, ... })'

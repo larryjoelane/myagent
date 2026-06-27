@@ -27,9 +27,10 @@ export async function refreshWorkers() {
 /**
  * Spawn a worker of the given kind.
  *
- * @param {'shell'|'ollama-cloud'|'openrouter'|'local'} kind
- * @param {{ model?: string }} [opts] - kind-specific overrides; `model`
- *   is honored by `ollama-cloud`/`openrouter` and ignored elsewhere.
+ * @param {'shell'|'ollama-cloud'|'openrouter'|'local'|'fly'} kind
+ * @param {{ model?: string, appName?: string }} [opts] - kind-specific
+ *   overrides; `model` is honored by `ollama-cloud`/`openrouter`, `appName`
+ *   by `fly`, ignored elsewhere.
  * @returns {Promise<{ ok: boolean, id?: string, name?: string, error?: string }>}
  */
 export async function spawnWorker(kind, opts = {}) {
@@ -38,6 +39,7 @@ export async function spawnWorker(kind, opts = {}) {
     kind,
     cwd: s.pendingCwd || undefined,
     ...(opts.model ? { model: opts.model } : {}),
+    ...(opts.appName ? { appName: opts.appName } : {}),
   });
   if (!r.ok) return { ok: false, error: r.error || 'unknown' };
 
@@ -53,8 +55,67 @@ export async function spawnWorker(kind, opts = {}) {
     }
   } catch { /* ignore */ }
 
+  // Fly is one-shot: the deploy only happens on send(), not on spawn.
+  // Auto-send the app name immediately so "+ Fly" actually triggers the
+  // deploy in one click, instead of leaving an idle worker the user has
+  // to separately type into.
+  if (kind === 'fly' && opts.appName) {
+    transport().workers.send({ to: r.id, text: opts.appName });
+  }
+
   await refreshWorkers();
   return { ok: true, id: r.id, name: r.name };
+}
+
+/**
+ * Spawn a fly worker and attach it to an already-existing machine, instead
+ * of creating a new one via spawnWorker's auto-send-on-spawn path. Used by
+ * the settings-drawer's "attach to existing machine" dropdown.
+ *
+ * @param {string} appName
+ * @param {string} machineId
+ * @returns {Promise<{ ok: boolean, id?: string, name?: string, error?: string }>}
+ */
+export async function spawnFlyAttached(appName, machineId) {
+  const s = store.get();
+  const r = await transport().workers.spawn({ kind: 'fly', cwd: s.pendingCwd || undefined, appName });
+  if (!r.ok) return { ok: false, error: r.error || 'unknown' };
+
+  store.update({ currentTarget: r.id });
+  const attachResult = await transport().workers.flyAttach(r.id, machineId);
+  if (!attachResult.ok) return { ok: false, error: attachResult.error || 'attach failed' };
+
+  await refreshWorkers();
+  return { ok: true, id: r.id, name: r.name };
+}
+
+/**
+ * Pure status read for a fly worker's sync agent — no side effects.
+ * @param {string} id
+ * @returns {Promise<{ ok: boolean, running?: boolean, machineState?: string, error?: string }>}
+ */
+export async function checkFlySync(id) {
+  try {
+    return await transport().workers.flyCheckSync(id);
+  } catch (err) {
+    return { ok: false, error: err && err.message ? err.message : String(err) };
+  }
+}
+
+/**
+ * Re-injects the sync agent on a fly worker's already-attached machine.
+ * Same call as the initial attach — attachFly is idempotent (health-checks
+ * before injecting) — so this doubles as "restart sync" with no machineId
+ * needed: workerManager falls back to the worker's own lastDeploy machine.
+ * @param {string} id
+ * @returns {Promise<{ ok: boolean, error?: string }>}
+ */
+export async function restartFlySync(id) {
+  try {
+    return await transport().workers.flyAttach(id);
+  } catch (err) {
+    return { ok: false, error: err && err.message ? err.message : String(err) };
+  }
 }
 
 /** @param {string} id */

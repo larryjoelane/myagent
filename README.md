@@ -65,6 +65,23 @@ and decision records.
    - Linux: `curl -fsSL https://ollama.com/install.sh | sh`
 3. *(Optional)* `OLLAMA_API_KEY` / `OPENROUTER_API_KEY` in a `.env` file for the
    cloud backends (loaded via `dotenv` in `electron/main.js`).
+4. **Python 3.8+ and Semgrep** (for contributors — required by the security
+   guardrails pre-commit hook). Semgrep is a Python tool that runs **natively on
+   Windows, macOS, and Linux** — no Docker and no WSL required (Semgrep now ships
+   a native Windows wheel; the old "use Docker/WSL on Windows" workaround is
+   obsolete for the OSS scan engine these guardrails use):
+   - Install Python from <https://www.python.org/downloads/> (or `winget install
+     Python.Python.3.12` / `brew install python`), then install Semgrep:
+     ```bash
+     pipx install semgrep      # recommended (isolated); then: pipx ensurepath
+     # or: python -m pip install --user semgrep
+     # or (macOS): brew install semgrep
+     ```
+   - Verify: `semgrep --version`. See [Security guardrails](#security-guardrails)
+     below for how the hook uses it.
+   - On Windows, if `semgrep` isn't on PATH after a `pip --user` install, the
+     pre-commit hook still finds it — it probes `py -m semgrep` / `python -m
+     semgrep` and the known `AppData\...\Python*\Scripts\semgrep.exe` locations.
 
 ---
 
@@ -113,6 +130,27 @@ For development with hot reload:
 npm run dev
 ```
 
+### Security guardrails
+
+Local [Semgrep](https://semgrep.dev) rules in [`guardrails/`](./guardrails) catch
+the vulnerability patterns we've already fixed (path injection, SSRF,
+command injection, etc.) **before** they re-enter the codebase. They require
+**Python + Semgrep** (see [Prerequisites](#prerequisites) step 4).
+
+```bash
+# one-time: activate the pre-commit hook (blocks commits that match a rule)
+npm run hooks:install
+
+# run the checks manually any time
+npm run guardrails           # scan the whole repo
+semgrep scan --config guardrails --error path/to/file.js   # scan one file
+```
+
+The pre-commit hook scans staged JS/TS/YAML files and **blocks the commit** on a
+match (or if Semgrep isn't installed). Emergency bypass (discouraged):
+`git commit --no-verify`. See [`guardrails/README.md`](./guardrails/README.md)
+for the rule-to-CodeQL-alert mapping and the "good shapes" to write instead.
+
 ### Configuration
 
 Environment variables (read by the runners / `electron/main.js`):
@@ -124,6 +162,36 @@ Environment variables (read by the runners / `electron/main.js`):
 | `OLLAMA_API_KEY` | — | Auth for the `ollama-cloud` backend |
 | `OPENROUTER_API_KEY` | — | Auth for the `openrouter` backend |
 | `MYAGENT_SESSIONS_DIR` | `.myagent/sessions` | Override where all local state lives |
+
+---
+
+## Fly worker (live sync to a Fly Machine)
+
+The `fly` worker kind deploys to a [Fly Machine](https://fly.io/docs/machines/)
+with no Dockerfile and no image build/push: it launches a stock `node:20-slim`
+image and injects a small zero-dependency sync agent over the Machines exec
+API. Pushing a file (`/fly-push <path>` in chat, or the script below) writes it
+straight onto the running machine and restarts the app process — Replit-style,
+no rebuild/redeploy cycle.
+
+Requires `FLY_API_TOKEN` in `.env` (create one at
+<https://fly.io/user/personal_access_tokens>). Optional: `FLY_ORG` (defaults to
+`personal`), `FLY_API_BASE_URL` (defaults to the public Machines API).
+
+### Testing a push outside the app
+
+`scripts/fly-push-test.js` exercises the same attach/push path as `/fly-push`,
+standalone — useful for debugging a machine/app that isn't loading:
+
+```bash
+node scripts/fly-push-test.js myexampleapp1 ./path/to/your/site
+```
+
+It will: find (or accept as a 3rd arg) the app's machine, start it if stopped,
+inject the sync agent if missing, patch in a public service mapping on port
+8080 if that's why `<app>.fly.dev` 404s, print the machine's current service
+config, then push every file under the given path. Re-run any time — it
+reuses the same machine and reports its current state on each run.
 
 ---
 

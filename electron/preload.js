@@ -123,6 +123,10 @@ function buildTransport({ ipcRenderer, clipboard, listeners }) {
       listScope: (id) => ipcRenderer.invoke('worker:list-scope', { id }),
       addScope: (id, path) => ipcRenderer.invoke('worker:add-scope', { id, path }),
       removeScope: (id, path) => ipcRenderer.invoke('worker:remove-scope', { id, path }),
+      flyPush: (id, path, cwd) => ipcRenderer.invoke('worker:fly-push', { id, path, cwd }),
+      flyListMachines: (appName) => ipcRenderer.invoke('worker:fly-list-machines', { appName }),
+      flyAttach: (id, machineId) => ipcRenderer.invoke('worker:fly-attach', { id, machineId }),
+      flyCheckSync: (id) => ipcRenderer.invoke('worker:fly-check-sync', { id }),
     },
     models: {
       embedderStatus: () => ipcRenderer.invoke('models:embedder-status'),

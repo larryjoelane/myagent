@@ -1,0 +1,57 @@
+# Guardrail: prevent js/command-line-injection &
+# js/shell-command-injection-from-environment (CWE-78) regressions.
+# Fixed patterns:
+#  - spawn/exec with shell:true (a shell re-parses argv -> injection)
+#  - exec()/execSync() of a string built from a variable/env
+#  - the spawn EXECUTABLE coming from env (COMSPEC/SHELL/PATH) rather than a const
+# Good shape: shell:false + constant executable; pass user data as argv elements
+# or as temp-script CONTENT, never as part of a parsed command line.
+rules:
+  - id: no-shell-true
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >
+      child_process spawned with `shell: true` re-parses argv through a shell —
+      command injection. Use shell:false (default) and pass args as discrete
+      array elements; resolve the executable to a constant path.
+      See guardrails/README.md.
+    metadata:
+      cwe: "CWE-78: OS Command Injection"
+      codeql: js/command-line-injection
+    pattern-either:
+      - pattern: '$CP.spawn(..., { ..., shell: true, ... })'
+      - pattern: '$CP.spawnSync(..., { ..., shell: true, ... })'
+      - pattern: '$CP.execFile(..., { ..., shell: true, ... })'
+      - pattern: '$CP.execFileSync(..., { ..., shell: true, ... })'
+
+  - id: no-exec-string-with-variable
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >
+      exec()/execSync() runs a shell string; building it from a variable or env
+      value is command injection. Use spawn(constExe, [args], { shell:false }),
+      or write the command to a temp script and run the file. See guardrails/README.md.
+    metadata:
+      cwe: "CWE-78: OS Command Injection"
+      codeql: js/command-line-injection
+    pattern-either:
+      - pattern: $CP.exec(`...${$X}...`, ...)
+      - pattern: $CP.execSync(`...${$X}...`, ...)
+      - pattern: $CP.exec($A + $B, ...)
+      - pattern: $CP.execSync($A + $B, ...)
+
+  - id: spawn-executable-from-env
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >
+      The executable passed to spawn() comes from process.env (COMSPEC/SHELL/PATH)
+      — js/command-line-injection. Pick the program from a constant path or a
+      constant basename allowlist. See guardrails/README.md.
+    metadata:
+      cwe: "CWE-78: OS Command Injection"
+      codeql: js/shell-command-injection-from-environment
+    pattern-either:
+      - pattern: $CP.spawn(process.env.$E, ...)
+      - pattern: $CP.spawn(process.env.$E || $D, ...)
+      - pattern: $CP.spawnSync(process.env.$E, ...)
+      - pattern: $CP.exec(`...${process.env.$E}...`, ...)
