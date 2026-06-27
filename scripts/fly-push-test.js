@@ -19,6 +19,7 @@
 
 require('dotenv').config();
 
+const fs = require('fs');
 const path = require('path');
 const { FlyClient } = require('../src/core/fly/flyClient');
 const { attachToSyncMachine, SYNC_AGENT_PORT, APP_INTERNAL_PORT } = require('../src/core/fly/flyBootstrap');
@@ -33,7 +34,18 @@ async function main() {
   const [appName, localPathArg, machineIdArg] = process.argv.slice(2);
   if (!appName || !localPathArg) usageAndExit();
 
-  const localPath = path.resolve(process.cwd(), localPathArg);
+  const workspaceRoot = fs.realpathSync(process.cwd());
+  const requestedPath = path.resolve(workspaceRoot, localPathArg);
+  const localPath = fs.realpathSync(requestedPath);
+  const insideWorkspace = localPath === workspaceRoot || localPath.startsWith(workspaceRoot + path.sep);
+  if (!insideWorkspace) {
+    throw new Error(`localPath must be inside the current working directory: ${workspaceRoot}`);
+  }
+  const localStat = fs.statSync(localPath);
+  if (!localStat.isFile() && !localStat.isDirectory()) {
+    throw new Error(`localPath must point to a file or directory: ${localPath}`);
+  }
+
   console.log(`[1/5] Connecting to Fly app "${appName}"...`);
 
   const flyClient = new FlyClient();
