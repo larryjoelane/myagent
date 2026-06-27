@@ -40,18 +40,14 @@ class FlySyncSession {
     this.localRoot = fs.realpathSync(resolvedLocalRoot);
     this.isDir = fs.statSync(this.localRoot).isDirectory();
     this.baseDir = this.isDir ? this.localRoot : path.dirname(this.localRoot);
-    const resolvedAllowedRoot = path.resolve(allowedRoot || this.baseDir);
+    this.allowedRoot = fs.realpathSync(this.baseDir);
     this.allowedRoot = fs.realpathSync(resolvedAllowedRoot);
     if (this.localRoot !== this.allowedRoot && !this.localRoot.startsWith(this.allowedRoot + path.sep)) {
       throw new Error(`Path escapes allowed root: ${this.localRoot}`);
     }
     this.watchers = [];
     this.closed = false;
-  }
-
-  _normalizeCandidatePath(absPath) {
-    const resolved = path.resolve(absPath);
-    try {
+    return fs.realpathSync(resolved);
       return fs.realpathSync(resolved);
     } catch {
       return resolved;
