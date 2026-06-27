@@ -9,6 +9,7 @@
 const { OpenAIChat, parseStream } = require('./openaiChat');
 const { createOllamaPreset, MODEL_PROFILES, profileFor } = require('./presets/ollama');
 const { createOpenRouterPreset } = require('./presets/openrouter');
+const { createHuggingFacePreset } = require('./presets/huggingface');
 const { ToolUseLoop, DEFAULT_MAX_ITERATIONS } = require('./toolUseLoop');
 const {
   ToolRegistry,
@@ -31,6 +32,7 @@ module.exports = {
   parseStream,
   createOllamaPreset,
   createOpenRouterPreset,
+  createHuggingFacePreset,
   MODEL_PROFILES,
   profileFor,
   ToolUseLoop,

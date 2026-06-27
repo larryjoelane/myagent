@@ -128,6 +128,17 @@ class WorkerManager {
     });
   }
 
+  async spawnHuggingFace({ name, cwd, model, maxIterations, envContext, parallelDispatch } = {}) {
+    if (typeof this.factories.huggingface !== 'function') {
+      throw new Error('huggingface agent type is not available (no factories.huggingface)');
+    }
+    return this._spawn({
+      kind: 'huggingface',
+      name: name || this._nextProviderName('HuggingFace', model),
+      driverOpts: { cwd, model, maxIterations, envContext, parallelDispatch },
+    });
+  }
+
   // Local in-process text model (ONNX via the model worker) that drives tools
   // by parsed text commands — for no/low-GPU users. model is optional
   // (defaults to the smallest registered generate model in the driver).
