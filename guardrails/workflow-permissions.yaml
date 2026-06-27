@@ -1,0 +1,26 @@
+# Guardrail: prevent actions/missing-workflow-permissions (CWE-275) regressions.
+# Fixed pattern: a GitHub Actions workflow that defines jobs without a top-level
+# `permissions:` block, so GITHUB_TOKEN defaults to broad scopes.
+# Good shape: a top-level `permissions:` block (e.g. `contents: read`).
+rules:
+  - id: workflow-missing-permissions
+    languages: [yaml]
+    severity: WARNING
+    message: >
+      GitHub Actions workflow defines `jobs:` but no `permissions:` block, so
+      GITHUB_TOKEN defaults to broad scopes. Add a top-level
+      `permissions: { contents: read }` and grant more per-job as needed.
+      See guardrails/README.md.
+    metadata:
+      cwe: "CWE-275: Permission Issues"
+      codeql: actions/missing-workflow-permissions
+    paths:
+      include:
+        - ".github/workflows/*.yml"
+        - ".github/workflows/*.yaml"
+    patterns:
+      - pattern: |
+          jobs: ...
+      - pattern-not-inside: |
+          permissions: ...
+          ...

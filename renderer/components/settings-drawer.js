@@ -19,7 +19,7 @@
 import { LitElement, html, css } from 'lit';
 import { store } from '../state/store.js';
 import {
-  pickCwd, closeWorker, renameWorker, refreshWorkers,
+  pickCwd, closeWorker, renameWorker, refreshWorkers, spawnFlyAttached,
   setWorkerMirror, setDefaultMirror,
   getSetting, setSetting, hydrateLastCwd,
 } from '../state/actions.js';
@@ -46,6 +46,12 @@ export class SettingsDrawer extends LitElement {
     _autoContextMinConfidence: { state: true },
     /** Synapse spread strength (0-1). Higher = more associative recall. */
     _autoContextSpreadStrength: { state: true },
+    /** Fly.io app name for the next Fly deploy worker spawn. Persisted. */
+    _flyAppName: { state: true },
+    /** Existing machines for _flyAppName, fetched on demand for the attach dropdown. */
+    _flyMachines: { state: true },
+    /** Currently-selected machine id in the attach dropdown. */
+    _flyMachineId: { state: true },
   };
 
   static styles = [
@@ -333,6 +339,12 @@ export class SettingsDrawer extends LitElement {
     this._ollamaModels = [];
     /** @type {string} */
     this._ollamaModel = '';
+    /** @type {string} */
+    this._flyAppName = '';
+    /** @type {Array<{id: string, name: string, state: string, region: string}>} */
+    this._flyMachines = [];
+    /** @type {string} */
+    this._flyMachineId = '';
   }
 
   connectedCallback() {
@@ -389,6 +401,7 @@ export class SettingsDrawer extends LitElement {
         this._ollamaModel = r.default || r.models[0];
       }
     } catch { /* ignore */ }
+    this._flyAppName = await getSetting('flyAppName', '');
     this.requestUpdate();
   }
 
@@ -509,14 +522,46 @@ export class SettingsDrawer extends LitElement {
   }
 
   /**
-   * @param {'shell'|'local'|'ollama-cloud'|'openrouter'} kind
-   * @param {{ model?: string }} [opts]
+   * @param {'shell'|'local'|'ollama-cloud'|'openrouter'|'fly'} kind
+   * @param {{ model?: string, appName?: string }} [opts]
    */
   _emitSpawn(kind, opts = {}) {
     this.dispatchEvent(new CustomEvent('spawn', {
-      detail: { kind, ...(opts.model ? { model: opts.model } : {}) },
+      detail: {
+        kind,
+        ...(opts.model ? { model: opts.model } : {}),
+        ...(opts.appName ? { appName: opts.appName } : {}),
+      },
       bubbles: true, composed: true,
     }));
+  }
+
+  async _onFlyAppNameInput(/** @type {Event} */ ev) {
+    const target = /** @type {HTMLInputElement} */ (ev.target);
+    this._flyAppName = target.value.trim();
+    await setSetting('flyAppName', this._flyAppName);
+    // App name changed — the previous machine list/selection no longer
+    // applies. Don't auto-refetch on every keystroke; the user clicks
+    // "List machines" explicitly once they're done typing.
+    this._flyMachines = [];
+    this._flyMachineId = '';
+  }
+
+  async _onFlyListMachines() {
+    if (!this._flyAppName) return;
+    const r = await transport().workers.flyListMachines(this._flyAppName);
+    this._flyMachines = (r && r.ok && Array.isArray(r.machines)) ? r.machines : [];
+    this._flyMachineId = this._flyMachines[0]?.id || '';
+  }
+
+  _onFlyMachineChange(/** @type {Event} */ ev) {
+    const target = /** @type {HTMLSelectElement} */ (ev.target);
+    this._flyMachineId = target.value;
+  }
+
+  async _onFlyAttach() {
+    if (!this._flyAppName || !this._flyMachineId) return;
+    await spawnFlyAttached(this._flyAppName, this._flyMachineId);
   }
 
   _renderWorkersHeader() {
@@ -543,6 +588,34 @@ export class SettingsDrawer extends LitElement {
                 <option value=${m} ?selected=${m === this._ollamaModel}>${m}</option>
               `)}
             </select>
+          ` : ''}
+          <input id="am-fly-app-name" class="am-select--inline" type="text"
+                 placeholder="fly app name"
+                 title="Fly.io app name — deployed by the Fly worker (uses FLY_API_TOKEN from .env)"
+                 .value=${this._flyAppName}
+                 @input=${this._onFlyAppNameInput} />
+          <button id="am-spawn-fly" class="cmd-btn cmd-btn--small" type="button"
+                  title="Spawn a Fly.io deploy worker (uses FLY_API_TOKEN from .env)"
+                  @click=${() => this._emitSpawn('fly', this._flyAppName ? { appName: this._flyAppName } : {})}>+ Fly</button>
+          <button id="am-fly-list-machines" class="cmd-btn cmd-btn--small" type="button"
+                  title="List existing machines for this Fly app name, to attach instead of creating a new one"
+                  ?disabled=${!this._flyAppName}
+                  @click=${() => this._onFlyListMachines()}>List machines</button>
+          ${this._flyMachines.length > 0 ? html`
+            <select id="am-fly-machine" class="am-select am-select--inline"
+                    title="Existing machine to attach to"
+                    .value=${this._flyMachineId}
+                    @change=${this._onFlyMachineChange}>
+              ${this._flyMachines.map((m) => html`
+                <option value=${m.id} ?selected=${m.id === this._flyMachineId}>
+                  ${m.name || m.id} (${m.state}${m.region ? ', ' + m.region : ''})
+                </option>
+              `)}
+            </select>
+            <button id="am-fly-attach" class="cmd-btn cmd-btn--small" type="button"
+                    title="Attach a Fly worker to the selected machine (injects the sync agent if not already running)"
+                    ?disabled=${!this._flyMachineId}
+                    @click=${() => this._onFlyAttach()}>Attach</button>
           ` : ''}
         </span>
       </div>

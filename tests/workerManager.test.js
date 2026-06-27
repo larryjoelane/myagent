@@ -27,7 +27,7 @@ function fakeFactories() {
   // reference so tests can drive it. The driver also captures the
   // full opts object so tests can assert kind-specific args (model,
   // cwd, etc.) flow through.
-  const created = { shell: [], 'ollama-cloud': [], openrouter: [] };
+  const created = { shell: [], 'ollama-cloud': [], openrouter: [], fly: [] };
   function track(kind) {
     return (opts) => {
       const d = new FakeDriver({ ...opts, kind });
@@ -42,6 +42,7 @@ function fakeFactories() {
       'ollama-cloud': track('ollama-cloud'),
       // openrouter is the default kind spawnWorker() delegates to.
       openrouter: track('openrouter'),
+      fly: track('fly'),
     },
     created,
   };
@@ -353,6 +354,21 @@ function run(t) {
     await new Promise((r) => setImmediate(r));
     eq(providerCalled, 0, 'provider must not run for slash commands');
     eq(created.openrouter[0].sent[0], '/help', 'slash text reaches driver verbatim');
+  });
+
+  t.test('fly workers bypass auto-context (text is an app/machine id, not a prompt)', async () => {
+    const { factories, created } = fakeFactories();
+    let providerCalled = 0;
+    const contextProvider = async () => {
+      providerCalled++;
+      return { preamble: '[Relevant past context — use if helpful]\n\n', usedHits: [{ id: 1 }] };
+    };
+    const mgr = new WorkerManager({ factories, onEvent: () => {}, contextProvider });
+    const f = await mgr.spawnFly({ appName: 'my-app' });
+    mgr.send({ to: f.id, text: 'my-app' });
+    await new Promise((r) => setImmediate(r));
+    eq(providerCalled, 0, 'provider must not run for fly workers');
+    eq(created.fly[0].sent[0], 'my-app', 'app name reaches driver verbatim, no preamble');
   });
 
   t.test('listTools returns the toolkit for workers whose driver exposes one', async () => {
@@ -765,6 +781,167 @@ function run(t) {
     try { await mgr.spawnOllamaCloud({}); } catch (e) { err = e; }
     ok(err, 'expected throw');
     contains(err.message, 'ollama-cloud');
+  });
+
+  t.test('spawnFly threads appName into the factory', async () => {
+    const { factories, created } = fakeFactories();
+    const mgr = new WorkerManager({ factories, onEvent: () => {} });
+    const result = await mgr.spawnFly({ appName: 'my-fly-app' });
+    eq(result.kind, 'fly');
+    eq(created.fly.length, 1);
+    eq(created.fly[0].opts.appName, 'my-fly-app');
+  });
+
+  t.test('spawnFly falls back to plain "Fly N" naming when no name given', async () => {
+    const { factories } = fakeFactories();
+    const mgr = new WorkerManager({ factories, onEvent: () => {} });
+    const a = await mgr.spawnFly({});
+    const b = await mgr.spawnFly({});
+    eq(a.name, 'Fly 1');
+    eq(b.name, 'Fly 2');
+  });
+
+  t.test('spawnFly throws when factory not registered', async () => {
+    const { factories } = fakeFactories();
+    delete factories.fly;
+    const mgr = new WorkerManager({ factories, onEvent: () => {} });
+    let err = null;
+    try { await mgr.spawnFly({}); } catch (e) { err = e; }
+    ok(err, 'expected throw');
+    contains(err.message, 'fly');
+  });
+
+  t.test('getFlyDeployInfo returns the driver\'s lastDeploy for a fly worker', async () => {
+    const { factories, created } = fakeFactories();
+    const mgr = new WorkerManager({ factories, onEvent: () => {} });
+    const result = await mgr.spawnFly({ appName: 'my-fly-app' });
+    eq(mgr.getFlyDeployInfo(result.id), null, 'null before any deploy');
+    created.fly[0].lastDeploy = { appName: 'my-fly-app', machineId: 'm1', syncAgentAddr: 'my-fly-app.fly.dev:39201' };
+    deepEq(mgr.getFlyDeployInfo(result.id), created.fly[0].lastDeploy, 'returns the driver lastDeploy once set');
+  });
+
+  t.test('getFlyDeployInfo returns null for non-fly workers and unknown ids', async () => {
+    const { factories } = fakeFactories();
+    const mgr = new WorkerManager({ factories, onEvent: () => {} });
+    const result = await mgr.spawnWorker({});
+    eq(mgr.getFlyDeployInfo(result.id), null, 'null for an openrouter worker');
+    eq(mgr.getFlyDeployInfo('nope'), null, 'null for an unknown id');
+  });
+
+  t.test('attachFly calls driver.attach with defaultAppName and the given machineId', async () => {
+    const { factories, created } = fakeFactories();
+    const mgr = new WorkerManager({ factories, onEvent: () => {} });
+    const result = await mgr.spawnFly({ appName: 'my-fly-app' });
+    const driver = created.fly[0];
+    driver.defaultAppName = 'my-fly-app';
+    const attachCalls = [];
+    driver.attach = async (appName, machineId) => { attachCalls.push([appName, machineId]); };
+
+    const r = await mgr.attachFly(result.id, 'm1');
+    eq(r.ok, true, 'attach succeeds');
+    eq(attachCalls.length, 1, 'one attach call');
+    deepEq(attachCalls[0], ['my-fly-app', 'm1'], 'forwards appName and machineId');
+  });
+
+  t.test('attachFly fails for a non-fly worker', async () => {
+    const { factories } = fakeFactories();
+    const mgr = new WorkerManager({ factories, onEvent: () => {} });
+    const result = await mgr.spawnWorker({});
+    const r = await mgr.attachFly(result.id, 'm1');
+    eq(r.ok, false, 'fails');
+    contains(r.error, 'fly', 'error mentions fly');
+  });
+
+  t.test('attachFly fails for an unknown worker id', async () => {
+    const { factories } = fakeFactories();
+    const mgr = new WorkerManager({ factories, onEvent: () => {} });
+    const r = await mgr.attachFly('nope', 'm1');
+    eq(r.ok, false, 'fails');
+  });
+
+  t.test('attachFly fails when the driver has no attach support', async () => {
+    const { factories, created } = fakeFactories();
+    const mgr = new WorkerManager({ factories, onEvent: () => {} });
+    const result = await mgr.spawnFly({ appName: 'my-fly-app' });
+    created.fly[0].defaultAppName = 'my-fly-app';
+    const r = await mgr.attachFly(result.id, 'm1');
+    eq(r.ok, false, 'fails');
+    contains(r.error, 'attach', 'error mentions attach support');
+  });
+
+  t.test('attachFly fails when the driver has no app name set', async () => {
+    const { factories, created } = fakeFactories();
+    const mgr = new WorkerManager({ factories, onEvent: () => {} });
+    const result = await mgr.spawnFly({});
+    created.fly[0].attach = async () => {};
+    const r = await mgr.attachFly(result.id, 'm1');
+    eq(r.ok, false, 'fails');
+    contains(r.error, 'app name', 'error mentions missing app name');
+  });
+
+  t.test('attachFly with no machineId falls back to the worker\'s lastDeploy machine (restart-sync path)', async () => {
+    const { factories, created } = fakeFactories();
+    const mgr = new WorkerManager({ factories, onEvent: () => {} });
+    const result = await mgr.spawnFly({ appName: 'my-fly-app' });
+    const driver = created.fly[0];
+    driver.defaultAppName = 'my-fly-app';
+    driver.lastDeploy = { appName: 'my-fly-app', machineId: 'm-existing' };
+    const attachCalls = [];
+    driver.attach = async (appName, machineId) => { attachCalls.push([appName, machineId]); };
+
+    const r = await mgr.attachFly(result.id);
+    eq(r.ok, true, 'attach succeeds');
+    deepEq(attachCalls[0], ['my-fly-app', 'm-existing'], 'uses lastDeploy.machineId when none is given');
+  });
+
+  t.test('attachFly with no machineId and no prior deploy fails clearly', async () => {
+    const { factories, created } = fakeFactories();
+    const mgr = new WorkerManager({ factories, onEvent: () => {} });
+    const result = await mgr.spawnFly({ appName: 'my-fly-app' });
+    created.fly[0].defaultAppName = 'my-fly-app';
+    created.fly[0].attach = async () => {};
+
+    const r = await mgr.attachFly(result.id);
+    eq(r.ok, false, 'fails');
+    contains(r.error, 'machine id', 'error mentions missing machine id');
+  });
+
+  t.test('checkFlySync delegates to driver.checkSync', async () => {
+    const { factories, created } = fakeFactories();
+    const mgr = new WorkerManager({ factories, onEvent: () => {} });
+    const result = await mgr.spawnFly({ appName: 'my-fly-app' });
+    created.fly[0].checkSync = async () => ({ ok: true, running: true, machineState: 'started' });
+
+    const r = await mgr.checkFlySync(result.id);
+    eq(r.ok, true);
+    eq(r.running, true);
+    eq(r.machineState, 'started');
+  });
+
+  t.test('checkFlySync fails for a non-fly worker', async () => {
+    const { factories } = fakeFactories();
+    const mgr = new WorkerManager({ factories, onEvent: () => {} });
+    const result = await mgr.spawnWorker({});
+    const r = await mgr.checkFlySync(result.id);
+    eq(r.ok, false, 'fails');
+    contains(r.error, 'fly', 'error mentions fly');
+  });
+
+  t.test('checkFlySync fails for an unknown worker id', async () => {
+    const { factories } = fakeFactories();
+    const mgr = new WorkerManager({ factories, onEvent: () => {} });
+    const r = await mgr.checkFlySync('nope');
+    eq(r.ok, false, 'fails');
+  });
+
+  t.test('checkFlySync fails cleanly when the driver has no checkSync support', async () => {
+    const { factories, created } = fakeFactories();
+    const mgr = new WorkerManager({ factories, onEvent: () => {} });
+    const result = await mgr.spawnFly({ appName: 'my-fly-app' });
+    delete created.fly[0].checkSync;
+    const r = await mgr.checkFlySync(result.id);
+    eq(r.ok, false, 'fails');
+    contains(r.error, 'status check', 'error mentions status check support');
   });
 
   t.test('chat:driver-exit causes worker to be removed from list', async () => {

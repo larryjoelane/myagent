@@ -1,0 +1,25 @@
+# Guardrail: prevent js/resource-exhaustion (CWE-400) regressions.
+# Fixed pattern: setTimeout/setInterval delay taken from a user/env value
+# without an upper bound, allowing an unbounded timer.
+# Good shape: reject out-of-range values (early return / use a constant default)
+# before the timer, so a bounded value reaches setTimeout.
+rules:
+  - id: unbounded-timer-delay
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >
+      setTimeout/setInterval with a variable delay — if it derives from user/env
+      input, an unbounded value stalls the process (resource exhaustion). Reject
+      or clamp to a constant MAX before the timer. See guardrails/README.md.
+    metadata:
+      cwe: "CWE-400: Uncontrolled Resource Consumption"
+      codeql: js/resource-exhaustion
+    patterns:
+      - pattern-either:
+          - pattern: setTimeout($FN, $D)
+          - pattern: setInterval($FN, $D)
+      - metavariable-pattern:
+          metavariable: $D
+          patterns:
+            - pattern-not: $LIT          # literal delay is fine
+            - pattern-not: Math.min(...) # explicit clamp is fine

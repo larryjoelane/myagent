@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# MyAgent security guardrails — pre-commit hook.
+# Runs Semgrep (guardrails/) on staged JS/TS/YAML files and BLOCKS the commit on
+# any match. Hard-blocks when semgrep is not installed.
+#
+# Activate once: git config core.hooksPath githooks   (or: npm run hooks:install)
+# Emergency bypass (discouraged): git commit --no-verify
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+
+# Collect staged, still-present files of the types our rules cover.
+mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACMR \
+  | grep -E '\.(js|cjs|mjs|ts|tsx|ya?ml)$' || true)
+
+if [ "${#staged[@]}" -eq 0 ]; then
+  exit 0
+fi
+
+# Resolve how to invoke Semgrep. We probe several candidate invocations (the
+# `semgrep` command, the Python module via python/py/python3) and pick the FIRST
+# whose `--version` actually succeeds — this tolerates PATH having a non-real
+# `python` (e.g. the Windows Store stub) ahead of the one that has semgrep, and
+# pip --user installs whose Scripts dir isn't on PATH.
+SEMGREP=()
+try_semgrep() {
+  # $@ is a candidate invocation; succeed only if --version exits 0.
+  # `set -e` must not see this fail, so guard it with an if.
+  if "$@" --version >/dev/null 2>&1; then
+    SEMGREP=("$@")
+  fi
+}
+# 1) command/module forms on PATH. `python3 -m semgrep` / `python -m semgrep`
+#    are deprecated upstream and exit non-zero on newer Semgrep, so prefer the
+#    real `semgrep` / `py -m semgrep` entry points first.
+[ "${#SEMGREP[@]}" -eq 0 ] && command -v semgrep  >/dev/null 2>&1 && try_semgrep semgrep
+[ "${#SEMGREP[@]}" -eq 0 ] && command -v py       >/dev/null 2>&1 && try_semgrep py -m semgrep
+[ "${#SEMGREP[@]}" -eq 0 ] && command -v python3  >/dev/null 2>&1 && try_semgrep python3 -m semgrep
+[ "${#SEMGREP[@]}" -eq 0 ] && command -v python   >/dev/null 2>&1 && try_semgrep python -m semgrep
+# 2) known pip --user Scripts locations (PATH may not include them). The glob
+#    covers Store-Python and standard CPython user installs on Windows.
+#    semgrep.exe shells out to its pysemgrep.exe sibling by searching PATH, so
+#    we prepend the candidate's own directory to PATH before testing/using it.
+if [ "${#SEMGREP[@]}" -eq 0 ]; then
+  for exe in \
+    "$HOME"/AppData/Local/Packages/PythonSoftwareFoundation.Python.*/LocalCache/local-packages/Python*/Scripts/semgrep.exe \
+    "$HOME"/AppData/Roaming/Python/Python*/Scripts/semgrep.exe \
+    "$HOME"/AppData/Local/Programs/Python/Python*/Scripts/semgrep.exe \
+    "$HOME"/.local/bin/semgrep ; do
+    if [ -x "$exe" ]; then
+      PATH="$(dirname "$exe"):$PATH"
+      try_semgrep "$exe"
+      [ "${#SEMGREP[@]}" -ne 0 ] && break
+    fi
+  done
+fi
+
+if [ "${#SEMGREP[@]}" -eq 0 ]; then
+  echo "✖ pre-commit: Semgrep is required but not installed (or not reachable)." >&2
+  echo "  Install it, then commit again:" >&2
+  echo "    pipx install semgrep   # or: python -m pip install semgrep / brew install semgrep" >&2
+  echo "  If installed via pip, add its Scripts dir to PATH (pipx ensurepath)." >&2
+  echo "  (Emergency bypass, discouraged: git commit --no-verify)" >&2
+  exit 1
+fi
+
+echo "• guardrails: scanning ${#staged[@]} staged file(s) with Semgrep…"
+# --error: non-zero exit on findings. --quiet: only show findings.
+if ! "${SEMGREP[@]}" scan \
+  --config "$repo_root/guardrails" \
+  --error --quiet --disable-version-check \
+  "${staged[@]}"; then
+  echo "" >&2
+  echo "✖ pre-commit: a security guardrail matched (see findings above)." >&2
+  echo "  Fix the pattern, or add '// nosemgrep: <rule-id>' with justification." >&2
+  echo "  See guardrails/README.md." >&2
+  exit 1
+fi
+
+echo "✓ guardrails: clean"
+exit 0

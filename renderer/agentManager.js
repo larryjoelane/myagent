@@ -20,6 +20,7 @@ import { store } from './state/store.js';
 import { spawnWorker as spawnWorkerAction } from './state/actions.js';
 import { tryHandleMemoryCommand } from './commands/memory.js';
 import { tryHandleAttachCommand, listStaged, clearStaged, buildAttachPreamble } from './commands/attach.js';
+import { tryHandleFlyPushCommand } from './commands/flyPush.js';
 
 let pendingUserOptimistic = null;
 
@@ -227,6 +228,20 @@ function init() {
       return;
     }
 
+    // Built-in /fly-push command — pushes a file/folder to the attached
+    // Fly machine and starts live-sync. Self-contained: no chat turn sent.
+    // A relative path is resolved against the current "Working dir"
+    // (state.pendingCwd, shown in the settings-drawer cwd picker) rather
+    // than the Electron app's own install directory.
+    if (await tryHandleFlyPushCommand(raw, {
+      pushBubble,
+      currentWorkerId: () => state.currentTarget || (state.workers.length === 1 ? state.workers[0].id : null),
+      flyPush: (id, path) => transport.workers.flyPush(id, path, state.pendingCwd),
+    })) {
+      compose?.clear();
+      return;
+    }
+
     const { mention, text } = parseMention(raw);
     const target = resolveTarget(mention);
     if (!target) {
@@ -320,7 +335,8 @@ function init() {
     $('am-settings')?.addEventListener('spawn', (/** @type {any} */ ev) => {
       const kind = ev?.detail?.kind;
       const model = ev?.detail?.model;
-      if (kind) spawnWorker(kind, model ? { model } : {});
+      const appName = ev?.detail?.appName;
+      if (kind) spawnWorker(kind, { ...(model ? { model } : {}), ...(appName ? { appName } : {}) });
     });
     $('am-settings')?.addEventListener('system-message', (/** @type {any} */ ev) => {
       const text = ev?.detail?.text;

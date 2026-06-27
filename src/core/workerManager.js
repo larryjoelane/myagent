@@ -17,6 +17,7 @@
 const crypto = require('crypto');
 const { WorkerChannel } = require('./workerChannel');
 const { Scope } = require('./scope');
+const { isAutoContextExcluded } = require('./autoContextExclusions');
 
 function makeId() { return crypto.randomBytes(6).toString('hex'); }
 
@@ -142,6 +143,21 @@ class WorkerManager {
     });
   }
 
+  // One-shot Fly.io deploy worker. Each send() deploys the sample webapp
+  // image to a fresh Fly Machine under the given (or default) app name and
+  // reports back the reachable URL. No cwd — Fly deploys aren't tied to a
+  // local directory.
+  async spawnFly({ name, appName } = {}) {
+    if (typeof this.factories.fly !== 'function') {
+      throw new Error('fly agent type is not available (no factories.fly)');
+    }
+    return this._spawn({
+      kind: 'fly',
+      name: name || this._nextProviderName('Fly'),
+      driverOpts: { appName },
+    });
+  }
+
   send({ to, text, originalText }) {
     const target = this._resolve(to);
     if (!target) {
@@ -172,8 +188,14 @@ class WorkerManager {
     // Prepending a "relevant past context" preamble would disqualify the
     // slash parser (which requires `^/`) AND pollute the input the tool
     // sees. The user typed a command; honor it verbatim.
+    //
+    // Some worker kinds skip auto-context too — see autoContextExclusions.js
+    // (e.g. fly: the chat box there is log output / skill invocation, and
+    // `text` is a Fly app name or machine id, not a prompt — a prepended
+    // memory/file preamble would corrupt that value before it ever reaches
+    // FlyDeployDriver).
     const isSlash = /^\s*\/[a-z]/i.test(text);
-    const skipAutoContext = isSlash;
+    const skipAutoContext = isSlash || isAutoContextExcluded(target.kind);
     if (this.contextProvider && !skipAutoContext) {
       this._sendWithContext(target, text);
     } else {
@@ -308,6 +330,56 @@ class WorkerManager {
       description: t.description || '',
       usage: Array.isArray(t.usage) ? t.usage : [],
     }));
+  }
+
+  // Surfaces a fly worker's last successful deploy ({ appName, machineId,
+  // url, syncAgentAddr }) so the /fly-push command knows where to sync
+  // files. Returns null for non-fly workers or a fly worker that hasn't
+  // deployed yet.
+  getFlyDeployInfo(id) {
+    const w = this.workers.get(id);
+    if (!w || w.kind !== 'fly') return null;
+    const driver = w.channel?.driver;
+    return driver?.lastDeploy || null;
+  }
+
+  // Attaches a fly worker to an already-existing machine (picked from the
+  // settings-drawer dropdown) instead of creating one via send(). Uses the
+  // driver's defaultAppName (the app name it was spawned with) since the
+  // machine already belongs to that app. machineId defaults to the
+  // worker's own lastDeploy machine — this is also the "restart sync" path:
+  // attachToSyncMachine is idempotent (health-checks before injecting), so
+  // calling this again on a worker that's already attached just confirms or
+  // revives the sync agent, no machineId lookup required from the caller.
+  async attachFly(id, machineId) {
+    const w = this.workers.get(id);
+    if (!w || w.kind !== 'fly') return { ok: false, error: `no fly worker ${id}` };
+    const driver = w.channel?.driver;
+    if (!driver || typeof driver.attach !== 'function') {
+      return { ok: false, error: 'fly worker has no attach support' };
+    }
+    if (!driver.defaultAppName) {
+      return { ok: false, error: 'no Fly app name set for this worker' };
+    }
+    const targetMachineId = machineId || driver.lastDeploy?.machineId;
+    if (!targetMachineId) {
+      return { ok: false, error: 'no machine id — pick one to attach to first' };
+    }
+    await driver.attach(driver.defaultAppName, targetMachineId);
+    return { ok: true };
+  }
+
+  // Pure status read for a fly worker's sync agent — no side effects.
+  // Returns { ok: false, error } for a non-fly worker or one that hasn't
+  // deployed/attached yet; otherwise { ok: true, running, machineState }.
+  async checkFlySync(id) {
+    const w = this.workers.get(id);
+    if (!w || w.kind !== 'fly') return { ok: false, error: `no fly worker ${id}` };
+    const driver = w.channel?.driver;
+    if (!driver || typeof driver.checkSync !== 'function') {
+      return { ok: false, error: 'fly worker has no status check support' };
+    }
+    return driver.checkSync();
   }
 
   cancel(id) {

@@ -10,6 +10,8 @@
     "vendor:transformers": "node scripts/copy-transformers.js",
     "prestart": "node scripts/ensure-native.js electron && node scripts/copy-transformers.js && vite build",
     "predev": "node scripts/ensure-native.js electron && node scripts/copy-transformers.js",
+    "guardrails": "semgrep scan --config guardrails --error --disable-version-check .",
+    "hooks:install": "git config core.hooksPath githooks",
     "start": "electron .",
     "dev": "concurrently --kill-others-on-fail --names \"vite,electron\" --prefix-colors \"cyan,yellow\" \"vite\" \"node scripts/dev-electron.js\"",
     "build": "vite build",

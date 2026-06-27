@@ -1,0 +1,50 @@
+# Guardrail: prevent js/path-injection (CWE-22/23) regressions.
+# Fixed pattern: filesystem paths built from a variable that could carry `..`
+# or an absolute prefix, passed to fs.* without an inline containment check.
+# Good shape: resolve under a base + `startsWith(base + path.sep)` (or
+# path.basename() to strip traversal) BEFORE the fs call, in the same function.
+rules:
+  - id: fs-path-from-variable-no-containment
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >
+      Filesystem path built from a variable (path.join/path.resolve/template with
+      a non-literal) reaches fs.* — js/path-injection risk. Contain it inline
+      before the sink: resolve under a base dir and require
+      `resolved.startsWith(base + path.sep)`, or reduce a user arg to
+      path.basename(). See guardrails/README.md.
+    metadata:
+      cwe: "CWE-22: Improper Limitation of a Pathname to a Restricted Directory"
+      codeql: js/path-injection
+    patterns:
+      - pattern-either:
+          - pattern: fs.readFileSync($P, ...)
+          - pattern: fs.readFile($P, ...)
+          - pattern: fs.writeFileSync($P, ...)
+          - pattern: fs.writeFile($P, ...)
+          - pattern: fs.appendFileSync($P, ...)
+          - pattern: fs.appendFile($P, ...)
+          - pattern: fs.mkdirSync($P, ...)
+          - pattern: fs.rmSync($P, ...)
+          - pattern: fs.rmdirSync($P, ...)
+          - pattern: fs.unlinkSync($P, ...)
+          - pattern: fs.createReadStream($P, ...)
+          - pattern: fs.createWriteStream($P, ...)
+          - pattern: fs.existsSync($P)
+      - metavariable-pattern:
+          metavariable: $P
+          patterns:
+            - pattern-either:
+                - pattern: path.join(..., $SEG, ...)
+                - pattern: path.resolve(..., $SEG, ...)
+                - pattern: "`...${$SEG}...`"
+            # Only flag when a segment is a non-literal (a variable/expr).
+            - metavariable-pattern:
+                metavariable: $SEG
+                patterns:
+                  - pattern-not: '"..."'
+                  - pattern-not: "'...'"
+    # Allow the vetted shapes: a startsWith containment guard, a basename
+    # reduction, or our safePath helpers in the same scope.
+    pattern-not-inside: |
+      ... .startsWith(...) ...
