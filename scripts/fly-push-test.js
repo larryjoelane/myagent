@@ -20,6 +20,7 @@
 require('dotenv').config();
 
 const fs = require('fs');
+const fs = require('fs');
 const path = require('path');
 const { FlyClient } = require('../src/core/fly/flyClient');
 const { attachToSyncMachine, SYNC_AGENT_PORT, APP_INTERNAL_PORT } = require('../src/core/fly/flyBootstrap');
@@ -32,7 +33,21 @@ function usageAndExit() {
 
 async function main() {
   const [appName, localPathArg, machineIdArg] = process.argv.slice(2);
+  if (typeof localPathArg !== 'string' || localPathArg.trim() === '') {
+    throw new Error('localPath must be a non-empty path string.');
+  }
   if (!appName || !localPathArg) usageAndExit();
+  const resolvedLocalPath = path.resolve(process.cwd(), localPathArg);
+  let localPath;
+  try {
+    localPath = fs.realpathSync(resolvedLocalPath);
+  } catch {
+    throw new Error(`Local path does not exist or is not accessible: ${resolvedLocalPath}`);
+  }
+  const st = fs.statSync(localPath);
+  if (!st.isFile() && !st.isDirectory()) {
+    throw new Error(`Local path must be a file or directory: ${localPath}`);
+  }
 
   const workspaceRoot = fs.realpathSync(process.cwd());
   const requestedPath = path.resolve(workspaceRoot, localPathArg);
