@@ -54,25 +54,21 @@ async function main() {
     throw new Error('localPath must be a non-empty path string.');
   }
   if (!appName || !localPathArg) usageAndExit();
-  const resolvedLocalPath = path.resolve(process.cwd(), localPathArg);
-  let localPath;
-  try {
-    localPath = fs.realpathSync(resolvedLocalPath);
-  } catch {
-    throw new Error(`Local path does not exist or is not accessible: ${resolvedLocalPath}`);
-  }
-  const st = fs.statSync(localPath);
-  if (!st.isFile() && !st.isDirectory()) {
-    throw new Error(`Local path must be a file or directory: ${localPath}`);
-  }
 
   const workspaceRoot = fs.realpathSync(process.cwd());
   const requestedPath = path.resolve(workspaceRoot, localPathArg);
-  const localPath = fs.realpathSync(requestedPath);
+  let localPath;
+  try {
+    localPath = fs.realpathSync(requestedPath);
+  } catch {
+    throw new Error(`Local path does not exist or is not accessible: ${requestedPath}`);
+  }
+
   const insideWorkspace = localPath === workspaceRoot || localPath.startsWith(workspaceRoot + path.sep);
   if (!insideWorkspace) {
     throw new Error(`localPath must be inside the current working directory: ${workspaceRoot}`);
   }
+
   const localStat = fs.statSync(localPath);
   if (!localStat.isFile() && !localStat.isDirectory()) {
     throw new Error(`localPath must point to a file or directory: ${localPath}`);
