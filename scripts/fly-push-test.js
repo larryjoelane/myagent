@@ -114,6 +114,7 @@ async function main() {
     machineId,
     syncAgentPort: SYNC_AGENT_PORT,
     localRoot: localPath,
+    allowedRoot: workspaceRoot,
   });
   const pushed = await session.pushAll();
   console.log(`      Pushed ${pushed} file(s).`);

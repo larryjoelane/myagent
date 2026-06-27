@@ -27,11 +27,11 @@ const HIDDEN_DIR_NAMES = new Set(['node_modules', '.git', 'dist', '.myagent']);
 
 class FlySyncSession {
   /**
-   * @param {{ flyClient: import('./flyClient').FlyClient, appName: string, machineId: string, syncAgentPort: number, localRoot: string }} opts
+   * @param {{ flyClient: import('./flyClient').FlyClient, appName: string, machineId: string, syncAgentPort: number, localRoot: string, allowedRoot?: string }} opts
    *   localRoot is the absolute local file or directory path being synced;
    *   remote paths are computed relative to its parent (file) or itself (dir).
    */
-  constructor({ flyClient, appName, machineId, syncAgentPort, localRoot }) {
+  constructor({ flyClient, appName, machineId, syncAgentPort, localRoot, allowedRoot }) {
     this.flyClient = flyClient;
     this.appName = appName;
     this.machineId = machineId;
@@ -40,7 +40,11 @@ class FlySyncSession {
     this.localRoot = fs.realpathSync(resolvedLocalRoot);
     this.isDir = fs.statSync(this.localRoot).isDirectory();
     this.baseDir = this.isDir ? this.localRoot : path.dirname(this.localRoot);
-    this.allowedRoot = this.baseDir;
+    const resolvedAllowedRoot = path.resolve(allowedRoot || this.baseDir);
+    this.allowedRoot = fs.realpathSync(resolvedAllowedRoot);
+    if (this.localRoot !== this.allowedRoot && !this.localRoot.startsWith(this.allowedRoot + path.sep)) {
+      throw new Error(`Path escapes allowed root: ${this.localRoot}`);
+    }
     this.watchers = [];
     this.closed = false;
   }
