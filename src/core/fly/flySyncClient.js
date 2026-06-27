@@ -36,11 +36,30 @@ class FlySyncSession {
     this.appName = appName;
     this.machineId = machineId;
     this.syncAgentPort = syncAgentPort;
-    this.localRoot = localRoot;
-    this.isDir = fs.statSync(localRoot).isDirectory();
-    this.baseDir = this.isDir ? localRoot : path.dirname(localRoot);
+    const resolvedLocalRoot = path.resolve(localRoot);
+    this.localRoot = fs.realpathSync(resolvedLocalRoot);
+    this.isDir = fs.statSync(this.localRoot).isDirectory();
+    this.baseDir = this.isDir ? this.localRoot : path.dirname(this.localRoot);
+    this.allowedRoot = this.baseDir;
     this.watchers = [];
     this.closed = false;
+  }
+
+  _normalizeCandidatePath(absPath) {
+    const resolved = path.resolve(absPath);
+    try {
+      return fs.realpathSync(resolved);
+    } catch {
+      return resolved;
+    }
+  }
+
+  _assertWithinAllowedRoot(absPath) {
+    const normalized = this._normalizeCandidatePath(absPath);
+    if (normalized !== this.allowedRoot && !normalized.startsWith(this.allowedRoot + path.sep)) {
+      throw new Error(`Path escapes sync root: ${absPath}`);
+    }
+    return normalized;
   }
 
   _remotePath(absPath) {
@@ -89,12 +108,14 @@ class FlySyncSession {
 
   /** Push one file's current content. */
   async pushFile(absPath) {
-    const content = fs.readFileSync(absPath, 'utf8');
-    return this._request('PUT', '/file', { path: this._remotePath(absPath), content });
+    const safePath = this._assertWithinAllowedRoot(absPath);
+    const content = fs.readFileSync(safePath, 'utf8');
+    return this._request('PUT', '/file', { path: this._remotePath(safePath), content });
   }
 
   async deleteFile(absPath) {
-    return this._request('DELETE', '/file', { path: this._remotePath(absPath) });
+    const safePath = this._assertWithinAllowedRoot(absPath);
+    return this._request('DELETE', '/file', { path: this._remotePath(safePath) });
   }
 
   /** Push every file under localRoot (or just the one file). Returns count pushed. */
@@ -116,7 +137,13 @@ class FlySyncSession {
     const notify = onEvent || (() => {});
     const handle = fs.watch(this.localRoot, { recursive: this.isDir, persistent: true }, (eventType, filename) => {
       if (this.closed || !filename) return;
-      const absPath = this.isDir ? path.join(this.localRoot, filename) : this.localRoot;
+      const rawPath = this.isDir ? path.join(this.localRoot, filename) : this.localRoot;
+      let absPath;
+      try {
+        absPath = this._assertWithinAllowedRoot(rawPath);
+      } catch {
+        return;
+      }
       if (this.isDir && filename.split(path.sep).some((seg) => HIDDEN_DIR_NAMES.has(seg))) return;
       fs.stat(absPath, (err, st) => {
         if (this.closed) return;
