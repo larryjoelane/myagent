@@ -30,9 +30,26 @@ function usageAndExit() {
   console.error('Usage: node scripts/fly-push-test.js <appName> <localPath> [machineId]');
   process.exit(1);
 }
+function validateLocalPathArg(localPathArg) {
+  if (typeof localPathArg !== 'string' || localPathArg.trim() === '') {
+    throw new Error('localPath must be a non-empty relative path');
+  }
+
+  if (path.isAbsolute(localPathArg)) {
+    throw new Error('localPath must be relative (absolute paths are not allowed)');
+  }
+
+  const normalized = path.normalize(localPathArg);
+  const segments = normalized.split(path.sep);
+  if (segments.includes('..')) {
+    throw new Error('localPath must not contain parent-directory traversal ("..")');
+  }
+}
+
 
 async function main() {
   const [appName, localPathArg, machineIdArg] = process.argv.slice(2);
+  validateLocalPathArg(localPathArg);
   if (typeof localPathArg !== 'string' || localPathArg.trim() === '') {
     throw new Error('localPath must be a non-empty path string.');
   }
