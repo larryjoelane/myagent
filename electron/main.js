@@ -40,12 +40,15 @@ const { FlySyncManager } = require('../src/core/fly/flySyncManager');
 const {
   OpenAICompatibleDriver,
   OPENROUTER_PROVIDER,
+  HUGGINGFACE_PROVIDER,
 } = require('../src/core/drivers/openAICompatibleDriver');
 const { OllamaRunner } = require('../src/core/runners/ollama');
 const { OpenRouterRunner } = require('../src/core/runners/openrouter');
+const { HuggingFaceRunner } = require('../src/core/runners/huggingface');
 const {
   createOllamaPreset,
   createOpenRouterPreset,
+  createHuggingFacePreset,
   buildRegistryWithSkills,
 } = require('../src/core/llm');
 const { loadSkills } = require('../src/core/skills');
@@ -530,6 +533,18 @@ const workerManager = new WorkerManager({
       providerConfig: OPENROUTER_PROVIDER,
       runnerFactory: (runnerOpts) => new OpenRouterRunner(runnerOpts),
       presetFactory: (presetOpts) => createOpenRouterPreset(presetOpts),
+    }),
+    // Self-hosted Hugging Face Inference Endpoint (TGI). Reads
+    // HUGGINGFACE_API_KEY / HUGGINGFACE_MODEL / HUGGINGFACE_ENDPOINT_URL from
+    // process.env. Unlike ollama-cloud/openrouter there's no fixed default
+    // host — every endpoint has a unique hostname — so HUGGINGFACE_ENDPOINT_URL
+    // is effectively required, AND that hostname must be added to
+    // MYAGENT_ALLOWED_HOSTS for OpenAIChat's SSRF allowlist to permit it.
+    huggingface: (opts) => buildOpenAICompatibleWorker(opts, {
+      label: 'huggingface',
+      providerConfig: HUGGINGFACE_PROVIDER,
+      runnerFactory: (runnerOpts) => new HuggingFaceRunner(runnerOpts),
+      presetFactory: (presetOpts) => createHuggingFacePreset(presetOpts),
     }),
     // Local in-process text model (ONNX via the model worker). Drives tools by
     // parsed text commands instead of JSON tool-calling — for no/low-GPU

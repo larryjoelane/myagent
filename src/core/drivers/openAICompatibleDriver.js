@@ -1,8 +1,10 @@
 // OpenAICompatibleDriver — chat-driven worker backed by any OpenAI-format
-// HTTP API. Two providers ride it today: ollama-cloud (https://ollama.com)
-// and openrouter (https://openrouter.ai). The provider identity and its
-// env-var names come from a small `providerConfig` table (OLLAMA_PROVIDER /
-// OPENROUTER_PROVIDER below); everything else is shared.
+// HTTP API. Three providers ride it today: ollama-cloud (https://ollama.com),
+// openrouter (https://openrouter.ai), and huggingface (a self-hosted HF
+// Inference Endpoint running TGI). The provider identity and its env-var
+// names come from a small `providerConfig` table (OLLAMA_PROVIDER /
+// OPENROUTER_PROVIDER / HUGGINGFACE_PROVIDER below); everything else is
+// shared.
 //
 // Two modes:
 //
@@ -25,6 +27,12 @@
 // Config is env-only by default, per provider:
 //   ollama-cloud: OLLAMA_API_KEY (required) / OLLAMA_MODEL / OLLAMA_HOST
 //   openrouter:   OPENROUTER_API_KEY (required) / OPENROUTER_MODEL / OPENROUTER_HOST
+//   huggingface:  HUGGINGFACE_API_KEY (required) / HUGGINGFACE_MODEL /
+//                 HUGGINGFACE_ENDPOINT_URL (required — no fixed default,
+//                 every HF endpoint has a unique hostname). The endpoint's
+//                 hostname must ALSO be added to MYAGENT_ALLOWED_HOSTS
+//                 (see openaiChat.js) or requests are blocked by the SSRF
+//                 allowlist.
 //
 // OllamaCloudDriver is kept as a back-compat alias (same class, default
 // provider config) so existing call sites and tests keep working.
@@ -67,6 +75,21 @@ const OPENROUTER_PROVIDER = {
   toolArgsFormat: 'string',
 };
 
+const HUGGINGFACE_PROVIDER = {
+  provider: 'huggingface',
+  apiKeyEnv: 'HUGGINGFACE_API_KEY',
+  hostEnv: 'HUGGINGFACE_ENDPOINT_URL',
+  modelEnv: 'HUGGINGFACE_MODEL',
+  // No fixed default host: every HF Inference Endpoint has a unique
+  // generated subdomain, so the URL must come from HUGGINGFACE_ENDPOINT_URL
+  // (or an explicit `host` arg) — there's nothing stable to bake in here.
+  defaultHost: null,
+  defaultModel: 'tgi',
+  // TGI's OpenAI route follows the strict schema (string-encoded tool args),
+  // same as OpenRouter.
+  toolArgsFormat: 'string',
+};
+
 // OpenAI-compatible chat driver. Provider-neutral: the HTTP/streaming
 // details live in the injected preset (createOllamaPreset /
 // createOpenRouterPreset), and the provider identity + env-var names come
@@ -99,6 +122,7 @@ class OpenAICompatibleDriver {
     const pc = providerConfig || OLLAMA_PROVIDER;
     this.provider = pc.provider;
     this.apiKeyEnv = pc.apiKeyEnv;
+    this.hostEnv = pc.hostEnv;
     // How tool-call `arguments` are serialized back into assistant history:
     // 'object' (Ollama) or 'string' (OpenAI/OpenRouter). Defaults to the
     // Ollama shape so the back-compat OllamaCloudDriver alias is unchanged.
@@ -197,6 +221,15 @@ class OpenAICompatibleDriver {
       this.started = true;
       this._emit('chat:error', { error: `${this.apiKeyEnv} not set in .env` });
       this._emit('chat:driver-exit', { reason: 'missing-api-key' });
+      return;
+    }
+    if (!this.host) {
+      // Providers with a fixed defaultHost (openrouter/ollama-cloud) never
+      // hit this; providers with no fixed default (huggingface — every
+      // endpoint has a unique hostname) need it set explicitly.
+      this.started = true;
+      this._emit('chat:error', { error: `${this.hostEnv || 'host'} not set` });
+      this._emit('chat:driver-exit', { reason: 'missing-host' });
       return;
     }
     if (this.toolsEnabled) {
@@ -651,6 +684,7 @@ module.exports = {
   OllamaCloudDriver: OpenAICompatibleDriver,
   OLLAMA_PROVIDER,
   OPENROUTER_PROVIDER,
+  HUGGINGFACE_PROVIDER,
 };
 // Exposed for tests + future debugging utilities.
 module.exports._describeEnvContextSpec = describeEnvContextSpec;

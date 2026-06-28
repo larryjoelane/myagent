@@ -96,8 +96,10 @@ exports.run = (t) => {
       flySync: { push: async (id, path) => { calls.push(path); return { ok: true, pushed: 1 }; } },
     });
     const handler = ipcMain.handlers.get('worker:fly-push');
-    await handler(null, { id: 'w1', path: 'myexampleapp', cwd: 'C:\\Users\\larry\\projects' });
-    eq(calls[0], 'C:\\Users\\larry\\projects\\myexampleapp', 'resolved against the given cwd');
+    const path = require('path');
+    const cwd = path.resolve('/some/projects');
+    await handler(null, { id: 'w1', path: 'myexampleapp', cwd });
+    eq(calls[0], path.join(cwd, 'myexampleapp'), 'resolved against the given cwd');
   });
 
   t.test('worker:fly-push leaves an absolute path untouched even when cwd is given', async () => {
@@ -107,8 +109,10 @@ exports.run = (t) => {
       flySync: { push: async (id, path) => { calls.push(path); return { ok: true, pushed: 1 }; } },
     });
     const handler = ipcMain.handlers.get('worker:fly-push');
-    await handler(null, { id: 'w1', path: 'C:\\Users\\larry\\elsewhere\\app', cwd: 'C:\\Users\\larry\\projects' });
-    eq(calls[0], 'C:\\Users\\larry\\elsewhere\\app', 'absolute path is not re-resolved');
+    const path = require('path');
+    const absPath = path.resolve('/some/elsewhere/app');
+    await handler(null, { id: 'w1', path: absPath, cwd: path.resolve('/some/projects') });
+    eq(calls[0], absPath, 'absolute path is not re-resolved');
   });
 
   t.test('worker:fly-push falls back to projectRoot when no cwd is given', async () => {

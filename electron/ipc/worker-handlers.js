@@ -39,6 +39,7 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
       const kind = body.kind === 'shell'         ? 'shell'
                  : body.kind === 'ollama-cloud'  ? 'ollama-cloud'
                  : body.kind === 'local'         ? 'local'
+                 : body.kind === 'huggingface'   ? 'huggingface'
                  : body.kind === 'fly'           ? 'fly'
                  : body.kind === 'openrouter'    ? 'openrouter'
                                                  : 'openrouter';
@@ -52,6 +53,13 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
         result = await workerManager.spawnFly({ name: body.name, appName: body.appName });
       } else if (kind === 'ollama-cloud') {
         result = await workerManager.spawnOllamaCloud({
+          name: body.name, cwd, model: body.model,
+          maxIterations: body.maxIterations,
+          envContext: body.envContext,
+          parallelDispatch: body.parallelDispatch,
+        });
+      } else if (kind === 'huggingface') {
+        result = await workerManager.spawnHuggingFace({
           name: body.name, cwd, model: body.model,
           maxIterations: body.maxIterations,
           envContext: body.envContext,

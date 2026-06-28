@@ -40,14 +40,22 @@ class FlySyncSession {
     this.localRoot = fs.realpathSync(resolvedLocalRoot);
     this.isDir = fs.statSync(this.localRoot).isDirectory();
     this.baseDir = this.isDir ? this.localRoot : path.dirname(this.localRoot);
-    this.allowedRoot = fs.realpathSync(this.baseDir);
+    const resolvedAllowedRoot = allowedRoot ? path.resolve(allowedRoot) : this.baseDir;
     this.allowedRoot = fs.realpathSync(resolvedAllowedRoot);
     if (this.localRoot !== this.allowedRoot && !this.localRoot.startsWith(this.allowedRoot + path.sep)) {
       throw new Error(`Path escapes allowed root: ${this.localRoot}`);
     }
     this.watchers = [];
     this.closed = false;
-    return fs.realpathSync(resolved);
+  }
+
+  // Resolves symlinks for a candidate path that may not exist yet (e.g. a
+  // file deleted between the fs.watch event and this check) — falls back to
+  // the unresolved absolute path so the allowed-root prefix check below still
+  // runs on something well-formed instead of throwing ENOENT.
+  _normalizeCandidatePath(absPath) {
+    const resolved = path.resolve(absPath);
+    try {
       return fs.realpathSync(resolved);
     } catch {
       return resolved;
