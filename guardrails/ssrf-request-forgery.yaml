@@ -1,0 +1,48 @@
+# Guardrail: prevent js/request-forgery (SSRF, CWE-918) regressions.
+# Fixed pattern: fetch()/http.request() to a URL whose host comes from input
+# (template string / concatenation with a variable).
+# Good shape: build the request URL from a SERVER-CONTROLLED constant host
+# (allowlist / literal switch — see allowedOrigin in openaiChat.js), never from
+# a raw input string.
+rules:
+  - id: fetch-url-from-variable
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >
+      fetch() called with a URL built from a variable — js/request-forgery (SSRF)
+      risk. The request host must come from a server-controlled allowlist/literal,
+      not concatenated input. Route through allowedOrigin()/an ALLOWED_HOSTS
+      membership check so the host is a constant. See guardrails/README.md.
+    metadata:
+      cwe: "CWE-918: Server-Side Request Forgery"
+      codeql: js/request-forgery
+    patterns:
+      - pattern-either:
+          - pattern: fetch(`...${$U}...`, ...)
+          - pattern: fetch(`...${$U}...`)
+          - pattern: fetch($A + $B, ...)
+      # Don't fire when the URL is constructed via new URL() from a vetted base
+      # and only a constant path is appended (the allowedOrigin shape).
+      - pattern-not: fetch(new URL($X), ...)
+
+  - id: http-request-host-from-variable
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >
+      http(s).request/get with a host/URL from a variable — SSRF risk. Pin the
+      host to a server-controlled allowlist. See guardrails/README.md.
+    metadata:
+      cwe: "CWE-918: Server-Side Request Forgery"
+      codeql: js/request-forgery
+    patterns:
+      - pattern-either:
+          - pattern: $H.request(`...${$U}...`, ...)
+          - pattern: $H.get(`...${$U}...`, ...)
+          - pattern: '$H.request({ ..., host: $U, ... }, ...)'
+          - pattern: '$H.request({ ..., hostname: $U, ... }, ...)'
+      - metavariable-pattern:
+          metavariable: $H
+          patterns:
+            - pattern-either:
+                - pattern: http
+                - pattern: https

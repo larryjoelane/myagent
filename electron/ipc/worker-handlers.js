@@ -9,6 +9,8 @@
 //
 // Wired in from electron/main.js via register(deps).
 
+const path = require('path');
+
 /**
  * @typedef {object} WorkerHandlerDeps
  * @property {import('electron').IpcMain} ipcMain
@@ -17,10 +19,18 @@
  * @property {import('../../src/core/workerManager').WorkerManager} workerManager
  * @property {import('../../src/core/appSettings').AppSettings} appSettings
  * @property {string} projectRoot
+ * @property {{ push: (id: string, absPath: string, deployInfo: any) => Promise<any>, closeFor: (id: string) => void }} [flySync]
+ *   Manages FlySyncSession instances keyed by worker id — injectable so
+ *   tests can stub it. Wired in main.js to a FlySyncManager
+ *   (src/core/fly/flySyncManager.js).
+ * @property {() => (import('../../src/core/fly/flyClient').FlyClient | null)} [getFlyClient]
+ *   Lazy accessor for a FlyClient instance (null when FLY_API_TOKEN is
+ *   unset) — used by worker:fly-list-machines to list candidate machines
+ *   for the "attach to existing" dropdown, independent of any worker.
  */
 
 /** @param {WorkerHandlerDeps} deps */
-function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, projectRoot }) {
+function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, projectRoot, flySync, getFlyClient }) {
   // --- Worker management --------------------------------------------------
   // Workers are headless agents (shell / local / ollama-cloud / openrouter)
   // the chat drives. openrouter is the default kind.
@@ -29,7 +39,11 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
       const kind = body.kind === 'shell'         ? 'shell'
                  : body.kind === 'ollama-cloud'  ? 'ollama-cloud'
                  : body.kind === 'local'         ? 'local'
+<<<<<<< HEAD
                  : body.kind === 'huggingface'   ? 'huggingface'
+=======
+                 : body.kind === 'fly'           ? 'fly'
+>>>>>>> f70b14ef8b2381f43a221d0045b0b31d369e4bd6
                  : body.kind === 'openrouter'    ? 'openrouter'
                                                  : 'openrouter';
       const cwd = body.cwd || appSettings.get('lastCwd') || projectRoot;
@@ -38,6 +52,8 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
         result = await workerManager.spawnShell({ name: body.name, cwd });
       } else if (kind === 'local') {
         result = await workerManager.spawnLocal({ name: body.name, cwd, model: body.model });
+      } else if (kind === 'fly') {
+        result = await workerManager.spawnFly({ name: body.name, appName: body.appName });
       } else if (kind === 'ollama-cloud') {
         result = await workerManager.spawnOllamaCloud({
           name: body.name, cwd, model: body.model,
@@ -162,6 +178,8 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
       : [
           'openai/gpt-5-nano',
           'openai/gpt-4o-mini',
+          'z-ai/glm-5.2',
+          'qwen/qwen3-coder-30b-a3b-instruct',
         ];
     // GPT-5-nano is the default selection; env OPENROUTER_MODEL overrides.
     const def = (process.env.OPENROUTER_MODEL || '').trim() || 'openai/gpt-5-nano';
@@ -191,8 +209,86 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
     return workerManager.cancel(id);
   });
 
+  // Push a file or folder to the Fly machine attached to worker `id`,
+  // and start auto-watching it so subsequent saves sync live (Replit-style —
+  // no rebuild/redeploy). The worker must be a `fly` kind that has already
+  // bootstrapped a machine (i.e. send() succeeded at least once).
+  ipcMain.handle('worker:fly-push', async (_e, { id, path: target, cwd } = {}) => {
+    if (!target || typeof target !== 'string') {
+      return { ok: false, error: 'path is required' };
+    }
+    // A relative path is resolved against the renderer's current "Working
+    // dir" (cwd, passed through from state.pendingCwd), falling back to
+    // projectRoot — never the Electron process's own cwd, which is the
+    // app's install directory and almost never what the user means.
+    const absTarget = path.isAbsolute(target)
+      ? target
+      : path.resolve(cwd || appSettings.get('lastCwd') || projectRoot, target);
+    const deployInfo = workerManager.getFlyDeployInfo(id);
+    if (!deployInfo) {
+      return { ok: false, error: 'no Fly machine attached — spawn/deploy a Fly worker first' };
+    }
+    if (!flySync) return { ok: false, error: 'fly sync is not available' };
+    try {
+      return await flySync.push(id, absTarget, deployInfo);
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  // List existing machines for a Fly app name, so the settings-drawer can
+  // offer a dropdown of machines to attach to instead of always creating a
+  // new one. Independent of any spawned worker — only needs a FlyClient.
+  ipcMain.handle('worker:fly-list-machines', async (_e, { appName } = {}) => {
+    if (!appName || typeof appName !== 'string') {
+      return { ok: false, error: 'appName is required' };
+    }
+    const client = typeof getFlyClient === 'function' ? getFlyClient() : null;
+    if (!client) return { ok: false, error: 'FLY_API_TOKEN not set in .env' };
+    try {
+      const machines = await client.listMachines(appName);
+      return {
+        ok: true,
+        machines: (machines || []).map((m) => ({
+          id: m.id, name: m.name, state: m.state, region: m.region,
+        })),
+      };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  // Attach a Fly worker to an already-existing machine instead of creating
+  // one. The driver checks (then injects if needed) the sync agent on the
+  // existing machine — see FlyDeployDriver.attach / attachToSyncMachine.
+  // machineId is optional: when omitted, workerManager.attachFly() falls
+  // back to the worker's own lastDeploy machine, which is what makes this
+  // double as the "restart sync" action on an already-attached worker.
+  ipcMain.handle('worker:fly-attach', async (_e, { id, machineId } = {}) => {
+    if (machineId !== undefined && typeof machineId !== 'string') {
+      return { ok: false, error: 'machineId must be a string when provided' };
+    }
+    try {
+      return await workerManager.attachFly(id, machineId);
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  // Pure status check for a fly worker's sync agent — used by the
+  // settings-drawer to show a live/dead indicator and decide whether to
+  // surface a "Restart sync" action, without side effects.
+  ipcMain.handle('worker:fly-check-sync', async (_e, { id } = {}) => {
+    try {
+      return await workerManager.checkFlySync(id);
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
   ipcMain.handle('worker:close', async (_e, { id } = {}) => {
     await workerManager.close(id);
+    if (flySync && typeof flySync.closeFor === 'function') flySync.closeFor(id);
     return { ok: true };
   });
 

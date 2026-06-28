@@ -34,6 +34,9 @@ const { WorkerManager } = require('../src/core/workerManager');
 const { Scope } = require('../src/core/scope');
 const { ShellDriver } = require('../src/core/drivers/shellDriver');
 const { LocalModelDriver } = require('../src/core/drivers/localModelDriver');
+const { FlyDeployDriver } = require('../src/core/drivers/flyDeployDriver');
+const { FlyClient } = require('../src/core/fly/flyClient');
+const { FlySyncManager } = require('../src/core/fly/flySyncManager');
 const {
   OpenAICompatibleDriver,
   OPENROUTER_PROVIDER,
@@ -486,6 +489,23 @@ function buildLocalWorker(opts) {
   });
 }
 
+// Fly Machines API client — lazy so a missing FLY_API_TOKEN doesn't break
+// app startup or worker spawn; getFlyClient() returns null when there's no
+// token, and FlyDeployDriver surfaces that as a clean chat:error from
+// send() rather than a thrown exception from the spawn path.
+let flyClient = null;
+function getFlyClient() {
+  if (flyClient) return flyClient;
+  if (!process.env.FLY_API_TOKEN) return null;
+  flyClient = new FlyClient({});
+  return flyClient;
+}
+
+// One FlySyncSession per fly worker, keyed by worker id. Created lazily on
+// the first /fly-push; closed when its worker closes (see worker:close
+// wiring in registerIpcHandlers below).
+const flySyncManager = new FlySyncManager();
+
 const workerManager = new WorkerManager({
   factories: {
     shell:  (opts) => new ShellDriver({ ...opts, cwd: opts.cwd || PROJECT_ROOT }),
@@ -531,6 +551,15 @@ const workerManager = new WorkerManager({
     // users. Reuses the same tool registry + cwd-aware hooks as the cloud
     // workers, so the no-secrets guardrail + per-worker scope still apply.
     local: (opts) => buildLocalWorker(opts),
+    // One-shot Fly.io deploy worker. FLY_API_TOKEN is read lazily by
+    // getFlyClient() on first spawn (not at app startup), and the driver
+    // emits a clean chat:error — rather than crashing the app — if the
+    // token is missing or the Fly API call fails.
+    fly: (opts) => new FlyDeployDriver({
+      ...opts,
+      flyClient: getFlyClient(),
+      defaultAppName: opts.appName || appSettings.get('flyAppName') || null,
+    }),
   },
   onEvent: (name, payload) => broadcastChat(name, payload),
   // Chat turns mirror to MySecondBrain (one row per Q+A pair). `store` is
@@ -676,6 +705,11 @@ function registerIpcHandlers() {
   workerHandlers.register({
     ipcMain, BrowserWindow, dialog, workerManager, appSettings,
     projectRoot: PROJECT_ROOT,
+    flySync: {
+      push: (id, absPath, deployInfo) => flySyncManager.push(id, absPath, deployInfo, getFlyClient()),
+      closeFor: (id) => flySyncManager.closeFor(id),
+    },
+    getFlyClient,
   });
   fsHandlers.register({ ipcMain, scope: editorScope, shell });
   editorHandlers.register({ ipcMain, editorWindow, scope: editorScope, appSettings });

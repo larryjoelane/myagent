@@ -1,0 +1,36 @@
+# Guardrail: prevent js/incomplete-sanitization (CWE-116) and
+# js/identity-replacement regressions.
+# Fixed patterns:
+#  - .replace(x, x): replacing a substring with itself (a no-op / wrong escape)
+#  - escaping quotes without escaping backslash first (incomplete sanitization)
+rules:
+  - id: identity-replacement
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >
+      .replace(x, x) replaces a substring with itself — a no-op, almost always a
+      wrong-escaping bug. If escaping, the replacement must differ from the
+      search. See guardrails/README.md.
+    metadata:
+      cwe: "CWE-116: Improper Encoding or Escaping of Output"
+      codeql: js/identity-replacement
+    pattern-either:
+      - pattern: $S.replace("$X", "$X")
+      - pattern: $S.replace('$X', '$X')
+      - pattern: $S.replaceAll("$X", "$X")
+      - pattern: $S.replaceAll('$X', '$X')
+
+  - id: quote-escape-without-backslash-first
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >
+      Escaping quotes without first escaping backslash leaves `\"` able to break
+      out (incomplete sanitization). Escape backslash FIRST
+      (s.replace(/\\/g,'\\\\').replace(/"/g,'\\"')) or use JSON.stringify().
+      See guardrails/README.md.
+    metadata:
+      cwe: "CWE-116: Improper Encoding or Escaping of Output"
+      codeql: js/incomplete-sanitization
+    patterns:
+      - pattern: $S.replace(/"/g, $R)
+      - pattern-not-inside: $S.replace(/\\/g, ...).replace(...)
