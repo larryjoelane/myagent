@@ -24,6 +24,9 @@ import './components/chat-log.js';
 import './components/topbar-commands.js';
 import './components/agent-manager.js';
 import './components/file-tree.js';
+// Embedded editor surface — same components the editor BrowserWindow uses,
+// reused inline here when editorOpenMode = 'tab'.
+import './components/file-editor.js';
 
 const transport = window.transport;
 
@@ -80,13 +83,82 @@ manager.start();
     if (!tree) return;
     void tree.setOpen?.(!tree.open);
   });
-  // file-open is dispatched (bubbles, composed) from inside the
-  // file-tree's shadow root when a leaf is clicked. Forward to main
-  // so it can lazy-create the editor BrowserWindow and load the file.
-  document.addEventListener('file-open', (/** @type {any} */ ev) => {
-    const path = ev?.detail?.path;
-    if (!path) return;
+  const editorWrap = document.getElementById('editor-wrap');
+  const editorTitle = document.getElementById('editor-wrap-title');
+  const inlineEditor = /** @type {any} */ (document.getElementById('am-editor'));
+
+  /** Open a file in a separate editor BrowserWindow (the original behavior). */
+  function openInWindow(path) {
     try { window.transport?.editor?.openFile?.(path); }
     catch { /* ignore */ }
+  }
+
+  /** Open a file as a tab in the inline editor panel, revealing the panel. */
+  function openInTab(path) {
+    if (!inlineEditor) { openInWindow(path); return; }
+    editorWrap?.classList.remove('editor-wrap--hidden');
+    if (editorTitle) editorTitle.textContent = basenameOf(path);
+    try { inlineEditor.openFile(path); }
+    catch { openInWindow(path); }
+  }
+
+  function basenameOf(p) {
+    const parts = String(p || '').split(/[\\/]/);
+    return parts[parts.length - 1] || 'Editor';
+  }
+
+  // Read the persisted open-mode each time (cheap; lets a Settings change
+  // take effect without reloading). Default 'window' preserves prior UX.
+  async function currentOpenMode() {
+    try {
+      const r = await window.transport?.settings?.get?.('editorOpenMode', 'window');
+      return r?.value === 'tab' ? 'tab' : 'window';
+    } catch { return 'window'; }
+  }
+
+  // file-open is dispatched (bubbles, composed) from inside the file-tree's
+  // shadow root on a plain file click. Route per the editorOpenMode setting.
+  document.addEventListener('file-open', async (/** @type {any} */ ev) => {
+    const path = ev?.detail?.path;
+    if (!path) return;
+    const mode = await currentOpenMode();
+    if (mode === 'tab') openInTab(path);
+    else openInWindow(path);
+  });
+
+  // file-open-window is the right-click "Open in new window" override —
+  // always a separate BrowserWindow regardless of the setting.
+  document.addEventListener('file-open-window', (/** @type {any} */ ev) => {
+    const path = ev?.detail?.path;
+    if (path) openInWindow(path);
+  });
+
+  // file-open-tab is the right-click "Open in tab" override — always inline.
+  document.addEventListener('file-open-tab', (/** @type {any} */ ev) => {
+    const path = ev?.detail?.path;
+    if (path) openInTab(path);
+  });
+
+  const appRow = document.getElementById('app-row');
+  const maxBtn = document.getElementById('editor-wrap-max');
+
+  // Maximize: hide the chat + terminal so the editor fills the row. The
+  // file-tree rail stays so you can still open other files.
+  maxBtn?.addEventListener('click', () => {
+    const max = appRow?.classList.toggle('app-row--editor-max');
+    maxBtn.setAttribute('aria-pressed', max ? 'true' : 'false');
+  });
+
+  document.getElementById('editor-wrap-close')?.addEventListener('click', () => {
+    // Closing the panel closes its tabs too, dropping their in-memory
+    // buffers — otherwise a later re-open would resurrect a stale buffer
+    // and not reflect on-disk changes. If a tab has unsaved edits and the
+    // user cancels the discard prompt, keep the panel open.
+    if (inlineEditor?.closeAll && inlineEditor.closeAll() === false) return;
+    editorWrap?.classList.add('editor-wrap--hidden');
+    // Closing the panel must also drop maximize, or the chat/terminal
+    // would stay hidden with nothing visible in their place.
+    appRow?.classList.remove('app-row--editor-max');
+    maxBtn?.setAttribute('aria-pressed', 'false');
   });
 }

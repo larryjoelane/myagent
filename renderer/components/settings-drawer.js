@@ -52,6 +52,8 @@ export class SettingsDrawer extends LitElement {
     _flyMachines: { state: true },
     /** Currently-selected machine id in the attach dropdown. */
     _flyMachineId: { state: true },
+    /** How file-tree clicks open files: 'tab' (inline) or 'window'. */
+    _editorOpenMode: { state: true },
   };
 
   static styles = [
@@ -335,6 +337,8 @@ export class SettingsDrawer extends LitElement {
     this._autoContextSpreadStrength = 0.25;
     /** @type {boolean} */
     this._autoFileContext = true;
+    /** @type {'tab'|'window'} How file clicks open: inline tab or new window. */
+    this._editorOpenMode = 'window';
     /** @type {string[]} */
     this._ollamaModels = [];
     /** @type {string} */
@@ -380,6 +384,7 @@ export class SettingsDrawer extends LitElement {
       this._autoContextSpreadStrength = (Number.isFinite(ss) && ss >= 0 && ss <= 1) ? ss : 0.25;
     }
     this._autoFileContext = (await getSetting('autoFileContext', true)) !== false;
+    this._editorOpenMode = (await getSetting('editorOpenMode', 'window')) === 'tab' ? 'tab' : 'window';
     // Hydrate the persisted toolDetails into the store so chat-bubble
     // and tool-card render with the right default mode.
     const td = await getSetting('toolDetails', 'collapsed');
@@ -487,6 +492,25 @@ export class SettingsDrawer extends LitElement {
                   @click=${() => setSide('left')}>Left</button>
           <button id="am-chat-side-right" class=${`cmd-btn cmd-btn--small${this._chatSide === 'right' ? ' cmd-btn--active' : ''}`} type="button"
                   @click=${() => setSide('right')}>Right</button>
+        </span>
+      </div>
+    `;
+  }
+
+  _renderEditorOpenModeRow() {
+    const setMode = async (/** @type {'tab'|'window'} */ mode) => {
+      this._editorOpenMode = mode;
+      await setSetting('editorOpenMode', mode);
+      this.requestUpdate();
+    };
+    return html`
+      <div class="row" title="Where clicking a file in the tree opens it: an inline tab in this window, or a separate editor window.">
+        <span>Open files in</span>
+        <span class="segmented" role="group" aria-label="Open files in">
+          <button id="am-editor-mode-tab" class=${`cmd-btn cmd-btn--small${this._editorOpenMode === 'tab' ? ' cmd-btn--active' : ''}`} type="button"
+                  @click=${() => setMode('tab')}>Tab</button>
+          <button id="am-editor-mode-window" class=${`cmd-btn cmd-btn--small${this._editorOpenMode === 'window' ? ' cmd-btn--active' : ''}`} type="button"
+                  @click=${() => setMode('window')}>New window</button>
         </span>
       </div>
     `;
@@ -733,6 +757,7 @@ export class SettingsDrawer extends LitElement {
     return html`
       ${this._renderMirrorRow()}
       ${this._renderChatSideRow()}
+      ${this._renderEditorOpenModeRow()}
       ${this._renderToolDetailsRow()}
       ${this._renderWorkersHeader()}
       ${this._renderCwdRow()}

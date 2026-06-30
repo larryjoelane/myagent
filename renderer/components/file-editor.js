@@ -103,10 +103,17 @@ export class FileEditor extends LitElement {
   static properties = {
     _activePath: { state: true },
     _error: { state: true },
+    /** When set, this editor is embedded inline in the main window (a tab
+     *  surface) rather than owning a dedicated BrowserWindow. Embedded mode
+     *  skips the editor:* IPC plumbing (ready / onLoadFile / setTitle /
+     *  reportActiveTab) — those are window-scoped — and is driven directly
+     *  via the public openFile() method instead. */
+    embedded: { type: Boolean, reflect: true },
   };
 
   constructor() {
     super();
+    this.embedded = false;
     /** @type {EditorView | null} */
     this._view = null;
     /**
@@ -126,10 +133,23 @@ export class FileEditor extends LitElement {
 
   connectedCallback() {
     super.connectedCallback();
+    const t = transport();
+    // Reload-on-external-save applies to BOTH surfaces (inline tab and
+    // editor window): when another surface saves a file we have open and
+    // unmodified, pull the new content in so we don't show stale text.
+    if (t?.fs?.onFileChanged) {
+      this._unsubFsChange = t.fs.onFileChanged((msg) => {
+        if (msg && typeof msg.path === 'string') {
+          this._onFileChanged(msg.path, typeof msg.mtime === 'number' ? msg.mtime : 0);
+        }
+      });
+    }
+    // Embedded (inline) editors are driven directly via openFile(); they
+    // don't participate in the editor-window load/title/active-tab IPC.
+    if (this.embedded) return;
     // Subscribe to load-file pushes from main. Stored so we can detach
     // on disconnect (test cleanliness; in prod the window owns the
     // element's lifetime).
-    const t = transport();
     if (t?.editor?.onLoadFile) {
       this._unsubLoad = t.editor.onLoadFile((msg) => {
         if (msg && typeof msg.path === 'string') {
@@ -142,9 +162,33 @@ export class FileEditor extends LitElement {
     try { t?.editor?.ready?.(); } catch { /* ignore */ }
   }
 
+  /** Public imperative API for embedded mode: open a file as a tab in this
+   *  inline editor. Mirrors the editor:load-file push the window uses. */
+  openFile(/** @type {string} */ path) {
+    if (path) void this._loadAndOpen(path);
+  }
+
+  /** Public imperative API for embedded mode: close every open tab,
+   *  dropping all in-memory buffers. The inline panel calls this when its
+   *  ✕ is clicked so a later re-open re-reads the file from disk instead
+   *  of resurrecting a stale buffer. Honors the per-tab dirty prompt via
+   *  _close; returns false if the user cancelled a discard so the caller
+   *  can keep the panel open. */
+  closeAll() {
+    // Snapshot keys — _close mutates _buffers as it goes.
+    for (const path of [...this._buffers.keys()]) {
+      this._close(path);
+      // _close aborts (leaves the buffer) when the user declines to
+      // discard unsaved changes; stop and report so the panel stays.
+      if (this._buffers.has(path)) return false;
+    }
+    return true;
+  }
+
   disconnectedCallback() {
     super.disconnectedCallback();
     try { this._unsubLoad?.(); } catch { /* ignore */ }
+    try { this._unsubFsChange?.(); } catch { /* ignore */ }
     if (this._view) {
       try { this._view.destroy(); } catch { /* ignore */ }
       this._view = null;
@@ -333,6 +377,50 @@ export class FileEditor extends LitElement {
     this._pushTitle();
   }
 
+  /** A file was (re)written on disk somewhere (this surface or another,
+   *  or the agent). If we have it open, reload it so we don't show stale
+   *  content — but only when it's safe:
+   *    - skip if we don't have the file open;
+   *    - skip our own save echo (the new mtime equals the buffer's, which
+   *      _save already adopted);
+   *    - skip if the buffer is dirty — clobbering would lose the user's
+   *      unsaved edits. Their own save still has the mtime-conflict guard.
+   *  Reloading rebuilds the buffer state from disk and refreshes the tab. */
+  async _onFileChanged(/** @type {string} */ path, /** @type {number} */ mtime) {
+    const buf = this._buffers.get(path);
+    if (!buf) return;
+    // Our own just-saved write — mtime already matches; nothing to do.
+    if (mtime && buf.mtime && mtime === buf.mtime) return;
+    // Don't overwrite unsaved local edits.
+    if (this._isDirty(path)) return;
+    const t = transport();
+    if (!t?.fs?.readFile) return;
+    let r;
+    try { r = await t.fs.readFile(path); }
+    catch { return; /* transient read error — leave the stale buffer */ }
+    if (!r || !r.ok) return;
+    const content = r.content || '';
+    // No change in content (e.g. a touch) — just adopt the mtime so we
+    // stop treating it as foreign, and skip the view churn.
+    if (content === buf.loadedContent) {
+      buf.mtime = r.mtime || buf.mtime;
+      return;
+    }
+    const newState = EditorState.create({
+      doc: content,
+      extensions: buildExtensions({ host: this, language: languageFor(path) }),
+    });
+    buf.state = newState;
+    buf.mtime = r.mtime || 0;
+    buf.loadedContent = content;
+    // If this is the visible tab, swap the live view to the new state.
+    if (this._activePath === path && this._view) {
+      this._view.setState(newState);
+    }
+    this._tabs?.setTabState(path, { dirty: false });
+    this._pushTitle();
+  }
+
   /** Save the active buffer to a new path picked via native dialog.
    *  Adds the chosen directory to the editor scope so the write
    *  isn't refused, then writes (no expectedMtime — Save As never
@@ -364,6 +452,15 @@ export class FileEditor extends LitElement {
       buf.state = this._view.state;
     }
     const content = this._docFor(path);
+    // Guard against silently writing an empty file over what should be
+    // real content (a symptom we chased: "Save As makes an empty file").
+    // If the buffer was non-empty when loaded but we're about to write
+    // nothing, something went wrong with the view snapshot — refuse and
+    // tell the user rather than destroying data.
+    if (content === '' && buf.loadedContent !== '') {
+      this._error = `Refused to save an empty file over ${basename(path)} — the editor content looks lost. Re-open the file and try again.`;
+      return;
+    }
     this._error = '';
     let r;
     try { r = await t.fs.writeFile(newPath, content, {}); }
@@ -404,6 +501,10 @@ export class FileEditor extends LitElement {
    *  reflects the file. Empty path → "Editor". Also publishes the
    *  active-tab snapshot for the chat auto-context provider. */
   _pushTitle() {
+    // Embedded editors don't own a BrowserWindow, so there's no OS title to
+    // set; and reporting active-tab here would fight the real editor window
+    // for the chat auto-context slot. The inline tab strip is the UI.
+    if (this.embedded) return;
     const t = transport();
     if (!t?.editor) return;
     if (!this._activePath) {
@@ -434,7 +535,7 @@ export class FileEditor extends LitElement {
     const hasActive = !!this._activePath;
     return html`
       <style>
-        file-editor { display: flex; flex-direction: column; height: 100vh; background: var(--bg, #1e1e1e); color: var(--text, #dcdcdc); }
+        file-editor { display: flex; flex-direction: column; height: 100%; flex: 1 1 auto; min-height: 0; background: var(--bg, #1e1e1e); color: var(--text, #dcdcdc); }
         file-editor #editor-host { flex: 1 1 auto; min-height: 0; overflow: hidden; }
         file-editor #editor-host .cm-editor { height: 100%; }
         file-editor #editor-error {

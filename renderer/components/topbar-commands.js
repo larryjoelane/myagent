@@ -25,17 +25,44 @@ export class TopbarCommands extends LitElement {
 
   static properties = {
     closePaneDisabled: { type: Boolean, attribute: 'close-pane-disabled', reflect: true },
+    /** Dev-only: shows the 📷 screenshot button. Set from capture.isDev(). */
+    _isDev: { state: true },
+    /** Transient label flashed on the camera button after a capture. */
+    _shotFlash: { state: true },
   };
 
   constructor() {
     super();
     this.closePaneDisabled = true;
+    this._isDev = false;
+    this._shotFlash = '';
   }
 
   connectedCallback() {
     super.connectedCallback();
     this.classList.add('commands');
     this.setAttribute('aria-label', 'Commands');
+    // Ask main whether this is a dev/from-source run; only then do we
+    // render the screenshot button. Packaged builds never show it.
+    const t = /** @type {any} */ (window).transport;
+    t?.capture?.isDev?.().then((r) => { this._isDev = !!(r && r.isDev); }).catch(() => {});
+  }
+
+  async _onScreenshot() {
+    const t = /** @type {any} */ (window).transport;
+    if (!t?.capture?.screenshot) return;
+    let r;
+    try { r = await t.capture.screenshot({}); }
+    catch (err) { r = { ok: false, error: err?.message || String(err) }; }
+    if (r && r.ok) {
+      const name = String(r.path || '').split(/[\\/]/).pop();
+      this._shotFlash = `✓ ${name}`;
+    } else {
+      this._shotFlash = `✗ ${(r && (r.error || r.reason)) || 'failed'}`;
+    }
+    // Clear the flash after a moment so the button returns to 📷.
+    clearTimeout(this._flashTimer);
+    this._flashTimer = setTimeout(() => { this._shotFlash = ''; }, 2200);
   }
 
   _emit(name) {
@@ -60,6 +87,11 @@ export class TopbarCommands extends LitElement {
               title="Close terminal tab (Ctrl+Shift+W)"
               ?disabled=${this.closePaneDisabled}
               @click=${() => this._emit('close-pane')}>Close</button>
+      ${this._isDev ? html`
+        <button id="cmd-screenshot" class="cmd-btn" type="button"
+                title="Capture a screenshot of this window → docs/screenshots/ (dev only)"
+                @click=${() => this._onScreenshot()}>${this._shotFlash || '📷'}</button>
+      ` : ''}
     `;
   }
 }

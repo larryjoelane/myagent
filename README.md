@@ -1,10 +1,11 @@
 # MyAgent
 
-A local-first coding agent desktop app. It pairs a multi-pane `xterm.js`
-terminal with **pluggable model backends**, a **hybrid memory search** over your
-sessions, a **file explorer + CodeMirror editor**, and **gated hooks + Agent
-Skills** — all in an Electron window structured so the same renderer can be
-served as a web app later.
+A local-first coding-agent desktop app. MyAgent pairs a multi-pane `xterm.js`
+terminal with **pluggable hosted model backends** (OpenRouter and Ollama Cloud),
+a **hybrid full-text + vector memory search** over your past sessions, and a
+**built-in file explorer and editor** — with **gated hooks and Agent Skills**.
+Its core is plain Node with no Electron dependencies, so the same modules back
+the desktop app today and a web server later.
 
 > 🧠 **[Live showcase →](https://larryjoelane.github.io/myagent/)** — see the
 > Hebbian memory feature (an interactive synapse graph: memories that are
@@ -14,10 +15,8 @@ served as a web app later.
 
 | Kind | What it is | Auth |
 |---|---|---|
-| `local` | In-process ONNX model via `@huggingface/transformers` (CPU/WebGPU), e.g. Qwen2.5-Coder. For no/low-GPU or fully offline use. | none |
-| `ollama` | Local Ollama (`llama.cpp` under the hood), e.g. SmolLM3-3B GGUF. | none |
-| `ollama-cloud` | Hosted Ollama models. | `OLLAMA_API_KEY` |
 | `openrouter` | OpenRouter-hosted models via an OpenAI-compatible driver. | `OPENROUTER_API_KEY` |
+| `ollama-cloud` | Hosted Ollama Cloud models. | `OLLAMA_API_KEY` |
 
 Generated files are written to `./project-output/` (default).
 
@@ -31,8 +30,8 @@ renderer/        UI: xterm.js terminals, chat surface (lit), file explorer
 electron/        Electron main + preload (platform-specific) + ipc/ handlers
   ipc/           per-domain IPC handlers (agent, memory, worker, fs, editor…)
 src/core/        Pure Node modules — no Electron imports; reusable elsewhere
-  drivers/       Model drivers (OpenAI-compatible, local model, …)
-  runners/       Pluggable model runners (Ollama, etc.)
+  drivers/       Model drivers (OpenAI-compatible: OpenRouter, Ollama Cloud)
+  runners/       Pluggable model runners
   workerManager.js   spawn/list/send/close for chat agents + shells
   sessionIndex.js    SQLite (FTS5 + vector) memory store ("MySecondBrain")
   sessionWorker*.js  off-thread host + worker for the memory index
@@ -57,15 +56,13 @@ and decision records.
 
 1. **Node.js 23.x** (matches `engines.node`; we use modern `fetch` /
    `ReadableStream`).
-2. **At least one model backend.** The fully-local `local` kind needs nothing
-   external (it downloads ONNX weights from Hugging Face on first use). For the
-   Ollama backends, install **Ollama** from <https://ollama.com/download>:
-   - Windows: `winget install Ollama.Ollama`
-   - macOS: `brew install ollama`
-   - Linux: `curl -fsSL https://ollama.com/install.sh | sh`
-3. *(Optional)* `OLLAMA_API_KEY` / `OPENROUTER_API_KEY` in a `.env` file for the
-   cloud backends (loaded via `dotenv` in `electron/main.js`).
-4. **Python 3.8+ and Semgrep** (for contributors — required by the security
+2. **An API key for at least one hosted backend**, in a `.env` file (loaded via
+   `dotenv` in `electron/main.js`):
+   - `OPENROUTER_API_KEY` — for the `openrouter` backend
+     (<https://openrouter.ai/keys>).
+   - `OLLAMA_API_KEY` — for the `ollama-cloud` backend
+     (<https://ollama.com>).
+3. **Python 3.8+ and Semgrep** (for contributors — required by the security
    guardrails pre-commit hook). Semgrep is a Python tool that runs **natively on
    Windows, macOS, and Linux** — no Docker and no WSL required (Semgrep now ships
    a native Windows wheel; the old "use Docker/WSL on Windows" workaround is
@@ -87,28 +84,16 @@ and decision records.
 
 ## Models
 
-MyAgent loads models from a registry (`src/core/models/registry.js`). Two
-categories:
+- **Generative** — pick any model your hosted backend exposes: an OpenRouter
+  model id (`vendor/model`) for the `openrouter` kind, or an Ollama Cloud tag
+  (the `-cloud` models) for the `ollama-cloud` kind. Configure the default and
+  the picker list via the env vars in [Configuration](#configuration).
+- **Embedder** — `Xenova/all-MiniLM-L6-v2` (384-dim), downloaded from Hugging
+  Face at runtime. This is an internal dependency of the memory-search index and
+  semantic router, not a chat backend.
 
-- **Embedder** — `Xenova/all-MiniLM-L6-v2` (384-dim). Powers the memory-search
-  index and the semantic router. Downloaded from Hugging Face at runtime.
-- **Generative** — local ONNX models (Qwen2.5-0.5B, Qwen2.5-Coder-3B, Qwen3-4B)
-  for the `local` worker, plus whatever you pull through Ollama / Ollama Cloud /
-  OpenRouter.
-
-Model weights are **not** bundled — they're downloaded by you at runtime under
-their own licenses (see [NOTICE](./NOTICE)).
-
-### Using an Ollama model
-
-```bash
-ollama run hf.co/ggml-org/SmolLM3-3B-GGUF:Q4_K_M
-```
-
-`Q4_K_M` is a good 4-bit default (~2 GB). Ollama stores blobs in a
-content-addressed store: `%USERPROFILE%\.ollama\models` (Windows) or
-`~/.ollama/models` (macOS/Linux). Override with `OLLAMA_MODELS`. Inspect with
-`ollama list` / `ollama show <tag>`.
+Model weights are **not** bundled — hosted models run on their providers, and the
+embedder is downloaded at runtime under its own license (see [NOTICE](./NOTICE)).
 
 ---
 
@@ -135,7 +120,7 @@ npm run dev
 Local [Semgrep](https://semgrep.dev) rules in [`guardrails/`](./guardrails) catch
 the vulnerability patterns we've already fixed (path injection, SSRF,
 command injection, etc.) **before** they re-enter the codebase. They require
-**Python + Semgrep** (see [Prerequisites](#prerequisites) step 4).
+**Python + Semgrep** (see [Prerequisites](#prerequisites) step 3).
 
 ```bash
 # one-time: activate the pre-commit hook (blocks commits that match a rule)
@@ -157,10 +142,12 @@ Environment variables (read by the runners / `electron/main.js`):
 
 | Var | Default | Purpose |
 |---|---|---|
-| `OLLAMA_HOST` | `http://127.0.0.1:11434` | Ollama API endpoint |
-| `MYAGENT_MODEL` | `hf.co/ggml-org/SmolLM3-3B-GGUF:Q4_K_M` | Default Ollama model tag |
-| `OLLAMA_API_KEY` | — | Auth for the `ollama-cloud` backend |
 | `OPENROUTER_API_KEY` | — | Auth for the `openrouter` backend |
+| `OPENROUTER_MODELS` | built-in list | Comma-separated model ids for the OpenRouter picker |
+| `OPENROUTER_MODEL` | `openai/gpt-5-nano` | Default OpenRouter model selection |
+| `OLLAMA_API_KEY` | — | Auth for the `ollama-cloud` backend |
+| `OLLAMA_MODELS` | built-in list | Comma-separated `-cloud` tags for the Ollama Cloud picker |
+| `OLLAMA_MODEL` | `devstral-small-2:24b-cloud` | Default Ollama Cloud model selection |
 | `MYAGENT_SESSIONS_DIR` | `.myagent/sessions` | Override where all local state lives |
 
 ---
@@ -328,15 +315,12 @@ The full design and rationale (granularity, schema, storage, script split, canon
 
 ## Relevant links
 
-**Models:**
-- MiniLM-L6-v2 embedder (Xenova ONNX port): <https://huggingface.co/Xenova/all-MiniLM-L6-v2>
-- Qwen2.5 / Qwen3 ONNX builds (local generative): <https://huggingface.co/onnx-community>
+**Backends:**
+- OpenRouter: <https://openrouter.ai> · model catalog: <https://openrouter.ai/models>
+- Ollama Cloud: <https://ollama.com>
 
-**Backends / runtime:**
-- Ollama: <https://ollama.com> · model library: <https://ollama.com/library>
-- OpenRouter: <https://openrouter.ai>
-- transformers.js (in-process ONNX): <https://huggingface.co/docs/transformers.js>
-- llama.cpp: <https://github.com/ggml-org/llama.cpp>
+**Memory-search embedder:**
+- MiniLM-L6-v2 (Xenova ONNX port): <https://huggingface.co/Xenova/all-MiniLM-L6-v2>
 
 **Core libraries:**
 - Electron: <https://www.electronjs.org>
@@ -349,10 +333,9 @@ The full design and rationale (granularity, schema, storage, script split, canon
 
 ## Roadmap
 
-Already shipped: multi-turn history, multiple runtime-switchable backends
-(`local` / `ollama` / `ollama-cloud` / `openrouter`), PTY-backed shells, hybrid
-memory search, a file explorer + CodeMirror editor, and two-phase hooks +
-Agent Skills.
+Already shipped: multi-turn history, runtime-switchable hosted backends
+(`openrouter` / `ollama-cloud`), PTY-backed shells, hybrid memory search, a file
+explorer + CodeMirror editor, and two-phase hooks + Agent Skills.
 
 Still planned:
 

@@ -39,11 +39,8 @@ function register({ ipcMain, BrowserWindow, dialog, workerManager, appSettings, 
       const kind = body.kind === 'shell'         ? 'shell'
                  : body.kind === 'ollama-cloud'  ? 'ollama-cloud'
                  : body.kind === 'local'         ? 'local'
-<<<<<<< HEAD
                  : body.kind === 'huggingface'   ? 'huggingface'
-=======
                  : body.kind === 'fly'           ? 'fly'
->>>>>>> f70b14ef8b2381f43a221d0045b0b31d369e4bd6
                  : body.kind === 'openrouter'    ? 'openrouter'
                                                  : 'openrouter';
       const cwd = body.cwd || appSettings.get('lastCwd') || projectRoot;

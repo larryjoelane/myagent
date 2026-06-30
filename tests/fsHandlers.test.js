@@ -8,7 +8,7 @@ const fsp = fs.promises;
 const os = require('os');
 const path = require('path');
 const { Scope } = require('../src/core/scope');
-const { listDir, readFile, writeFile, deleteFile, stat } = require('../electron/ipc/fs-handlers');
+const { register, listDir, readFile, writeFile, deleteFile, createDir, renamePath, stat } = require('../electron/ipc/fs-handlers');
 const { eq, ok, notOk, contains, deepEq } = require('./assert');
 
 // A trash backend stub that records the paths it was asked to trash, so we can
@@ -304,6 +304,119 @@ exports.run = (ctx) => {
     eq(r.reason, 'bad-input');
   });
 
+  ctx.test('createDir: creates a new directory', async () => {
+    const root = await tmpdir();
+    try {
+      const d = path.join(root, 'newfolder');
+      const r = await createDir({ path: d, scope: new Scope([root]) });
+      eq(r.ok, true);
+      eq(r.type, 'dir');
+      ok((await fsp.stat(d)).isDirectory(), 'directory exists on disk');
+    } finally { await rmrf(root); }
+  });
+
+  ctx.test('createDir: refuses when the target already exists', async () => {
+    const root = await tmpdir();
+    try {
+      const d = path.join(root, 'existing');
+      await fsp.mkdir(d);
+      const r = await createDir({ path: d, scope: new Scope([root]) });
+      eq(r.ok, false);
+      eq(r.reason, 'exists');
+    } finally { await rmrf(root); }
+  });
+
+  ctx.test('createDir: refuses out-of-scope', async () => {
+    const a = await tmpdir();
+    const b = await tmpdir();
+    try {
+      const d = path.join(b, 'sneaky');
+      const r = await createDir({ path: d, scope: new Scope([a]) });
+      eq(r.ok, false);
+      eq(r.reason, 'out-of-scope');
+      notOk(fs.existsSync(d), 'directory NOT created');
+    } finally { await rmrf(a); await rmrf(b); }
+  });
+
+  ctx.test('createDir: bad input rejected', async () => {
+    const r = await createDir({ scope: new Scope() });
+    eq(r.ok, false);
+    eq(r.reason, 'bad-input');
+  });
+
+  ctx.test('renamePath: renames a file within scope', async () => {
+    const root = await tmpdir();
+    try {
+      const f = path.join(root, 'old.txt');
+      await fsp.writeFile(f, 'hi');
+      const newPath = path.join(root, 'new.txt');
+      const r = await renamePath({ path: f, newPath, scope: new Scope([root]) });
+      eq(r.ok, true);
+      eq(r.path, newPath);
+      eq(await fsp.readFile(newPath, 'utf8'), 'hi');
+      notOk(fs.existsSync(f), 'old path gone');
+    } finally { await rmrf(root); }
+  });
+
+  ctx.test('renamePath: renames a directory within scope', async () => {
+    const root = await tmpdir();
+    try {
+      const d = path.join(root, 'olddir');
+      await fsp.mkdir(d);
+      const newPath = path.join(root, 'newdir');
+      const r = await renamePath({ path: d, newPath, scope: new Scope([root]) });
+      eq(r.ok, true);
+      ok(fs.existsSync(newPath), 'new dir exists');
+    } finally { await rmrf(root); }
+  });
+
+  ctx.test('renamePath: refuses when destination already exists', async () => {
+    const root = await tmpdir();
+    try {
+      const f = path.join(root, 'a.txt');
+      const g = path.join(root, 'b.txt');
+      await fsp.writeFile(f, 'a');
+      await fsp.writeFile(g, 'b');
+      const r = await renamePath({ path: f, newPath: g, scope: new Scope([root]) });
+      eq(r.ok, false);
+      eq(r.reason, 'exists');
+      eq(await fsp.readFile(g, 'utf8'), 'b', 'destination untouched');
+    } finally { await rmrf(root); }
+  });
+
+  ctx.test('renamePath: refuses when source is out-of-scope', async () => {
+    const a = await tmpdir();
+    const b = await tmpdir();
+    try {
+      const f = path.join(b, 'outside.txt');
+      await fsp.writeFile(f, 'x');
+      const r = await renamePath({ path: f, newPath: path.join(b, 'renamed.txt'), scope: new Scope([a]) });
+      eq(r.ok, false);
+      eq(r.reason, 'out-of-scope');
+    } finally { await rmrf(a); await rmrf(b); }
+  });
+
+  ctx.test('renamePath: refuses when destination is out-of-scope (no scope-escape)', async () => {
+    const a = await tmpdir();
+    const b = await tmpdir();
+    try {
+      const f = path.join(a, 'mine.txt');
+      await fsp.writeFile(f, 'x');
+      const escapeTarget = path.join(b, 'escaped.txt');
+      const r = await renamePath({ path: f, newPath: escapeTarget, scope: new Scope([a]) });
+      eq(r.ok, false);
+      eq(r.reason, 'out-of-scope');
+      ok(fs.existsSync(f), 'original file untouched');
+      notOk(fs.existsSync(escapeTarget), 'no file created outside scope');
+    } finally { await rmrf(a); await rmrf(b); }
+  });
+
+  ctx.test('renamePath: bad input rejected', async () => {
+    const r = await renamePath({ scope: new Scope() });
+    eq(r.ok, false);
+    eq(r.reason, 'bad-input');
+  });
+
   ctx.test('stat: existing file returns metadata', async () => {
     const root = await tmpdir();
     try {
@@ -338,5 +451,69 @@ exports.run = (ctx) => {
       eq(r.ok, false);
       eq(r.reason, 'out-of-scope');
     } finally { await rmrf(a); await rmrf(b); }
+  });
+
+  // --- write-broadcast: fs:write-file fans out fs:file-changed so other
+  // open editor surfaces (inline tab / editor window) can reload. ----------
+
+  // Minimal ipcMain stub that captures registered handlers so we can
+  // invoke fs:write-file the way the real bridge does (through register,
+  // which is where the broadcast lives — not in the pure writeFile()).
+  function fakeIpc() {
+    const handlers = new Map();
+    return {
+      handle: (channel, fn) => handlers.set(channel, fn),
+      invoke: (channel, body) => handlers.get(channel)({}, body),
+    };
+  }
+
+  ctx.test('fs:write-file broadcasts fs:file-changed with path + mtime on success', async () => {
+    const root = await tmpdir();
+    try {
+      const events = [];
+      const ipc = fakeIpc();
+      register({
+        ipcMain: ipc, scope: new Scope([root]),
+        broadcast: (event, payload) => events.push({ event, payload }),
+      });
+      const target = path.join(root, 'note.txt');
+      const r = await ipc.invoke('fs:write-file', { path: target, content: 'hello' });
+      eq(r.ok, true);
+      eq(events.length, 1);
+      eq(events[0].event, 'fs:file-changed');
+      eq(events[0].payload.path, target);
+      eq(events[0].payload.mtime, r.mtime);
+    } finally { await rmrf(root); }
+  });
+
+  ctx.test('fs:write-file does NOT broadcast when the write is refused', async () => {
+    const inScope = await tmpdir();
+    const outScope = await tmpdir();
+    try {
+      const events = [];
+      const ipc = fakeIpc();
+      register({
+        ipcMain: ipc, scope: new Scope([inScope]),
+        broadcast: (event, payload) => events.push({ event, payload }),
+      });
+      // Out-of-scope target — writeFile refuses, so no change to announce.
+      const r = await ipc.invoke('fs:write-file', {
+        path: path.join(outScope, 'x.txt'), content: 'nope',
+      });
+      eq(r.ok, false);
+      eq(events.length, 0);
+    } finally { await rmrf(inScope); await rmrf(outScope); }
+  });
+
+  ctx.test('fs:write-file works without a broadcast fn injected (no-op)', async () => {
+    const root = await tmpdir();
+    try {
+      const ipc = fakeIpc();
+      register({ ipcMain: ipc, scope: new Scope([root]) });
+      const r = await ipc.invoke('fs:write-file', {
+        path: path.join(root, 'a.txt'), content: 'ok',
+      });
+      eq(r.ok, true); // no throw despite no broadcast
+    } finally { await rmrf(root); }
   });
 };

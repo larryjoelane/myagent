@@ -7,6 +7,10 @@
 //                                         when expectedMtime is provided
 //   fs:delete-file(path)                — move a file or directory to the OS
 //                                         trash (recoverable). Scope-gated.
+//   fs:create-dir(path)                 — mkdir (non-recursive parent; the
+//                                         immediate dir must not already exist)
+//   fs:rename(path, newPath)            — rename/move a file or directory;
+//                                         both ends must be in scope
 //   fs:stat(path)                       — exists / type / size / mtime
 //   fs:scope-add(path)                  — extend the editor scope
 //   fs:scope-remove(path)               — shrink the editor scope
@@ -38,14 +42,17 @@ const DEFAULT_MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
  *   real electron.shell, resolved lazily so non-Electron unit tests can omit it.
  */
 
-/** @param {FsHandlerDeps} deps */
-function register({ ipcMain, scope, maxFileSize = DEFAULT_MAX_FILE_SIZE, shell }) {
+/** @param {FsHandlerDeps & { broadcast?: (event: string, payload: any) => void }} deps */
+function register({ ipcMain, scope, maxFileSize = DEFAULT_MAX_FILE_SIZE, shell, broadcast }) {
   if (!ipcMain || typeof ipcMain.handle !== 'function') {
     throw new Error('fs-handlers: ipcMain is required');
   }
   if (!scope || typeof scope.contains !== 'function') {
     throw new Error('fs-handlers: scope is required');
   }
+  // No-op broadcast when none injected (unit tests) — keeps writeFile's
+  // disk-change fan-out optional.
+  const emit = typeof broadcast === 'function' ? broadcast : () => {};
   // Resolve the trash backend once. Injected stub wins; otherwise pull
   // electron.shell at register time (we're in the main process here).
   const trash = shell || requireElectronShell();
@@ -59,11 +66,27 @@ function register({ ipcMain, scope, maxFileSize = DEFAULT_MAX_FILE_SIZE, shell }
   });
 
   ipcMain.handle('fs:write-file', async (_e, body = {}) => {
-    return await writeFile({ ...body, scope });
+    const r = await writeFile({ ...body, scope });
+    // On a successful write, tell every renderer the file changed on
+    // disk so any OTHER open editor surface (the inline tab or a
+    // separate editor window) showing this path can reload it. The
+    // saving surface ignores its own echo via the mtime match.
+    if (r && r.ok) {
+      emit('fs:file-changed', { path: r.path, mtime: r.mtime });
+    }
+    return r;
   });
 
   ipcMain.handle('fs:delete-file', async (_e, body = {}) => {
     return await deleteFile({ ...body, scope, trash });
+  });
+
+  ipcMain.handle('fs:create-dir', async (_e, body = {}) => {
+    return await createDir({ ...body, scope });
+  });
+
+  ipcMain.handle('fs:rename', async (_e, body = {}) => {
+    return await renamePath({ ...body, scope });
   });
 
   ipcMain.handle('fs:stat', async (_e, body = {}) => {
@@ -268,6 +291,61 @@ async function deleteFile({ path: target, scope, trash }) {
   };
 }
 
+/**
+ * Create a new directory. Scope-gated. Non-recursive on purpose — the
+ * file-tree's "New folder" only ever targets an already-visible (and
+ * therefore already-in-scope, already-existing-on-disk) parent, so there's
+ * no legitimate case that needs mkdir -p; refusing it surfaces a typo'd
+ * nested path instead of silently creating extra intermediate folders.
+ * @param {{ path: string, scope: any }} args
+ */
+async function createDir({ path: target, scope }) {
+  if (!target || typeof target !== 'string') {
+    return { ok: false, reason: 'bad-input', error: 'path is required' };
+  }
+  if (!(await scope.contains(target))) {
+    return outOfScope(target, scope);
+  }
+  try {
+    await fsp.mkdir(target);
+  } catch (err) {
+    if (err.code === 'EEXIST') return { ok: false, reason: 'exists', error: `${target} already exists` };
+    return { ok: false, reason: 'io', error: err.message };
+  }
+  return { ok: true, path: target, type: 'dir' };
+}
+
+/**
+ * Rename or move a file/directory. Both the source and destination must
+ * resolve inside scope — without that check this would be a scope-escape
+ * primitive (move a scoped file out to an arbitrary path). Refuses to
+ * overwrite an existing destination rather than silently clobbering it.
+ * @param {{ path: string, newPath: string, scope: any }} args
+ */
+async function renamePath({ path: target, newPath, scope }) {
+  if (!target || typeof target !== 'string' || !newPath || typeof newPath !== 'string') {
+    return { ok: false, reason: 'bad-input', error: 'path and newPath are required' };
+  }
+  if (!(await scope.contains(target))) {
+    return outOfScope(target, scope);
+  }
+  if (!(await scope.contains(newPath))) {
+    return outOfScope(newPath, scope);
+  }
+  try {
+    await fsp.stat(newPath);
+    return { ok: false, reason: 'exists', error: `${newPath} already exists` };
+  } catch (err) {
+    if (err.code !== 'ENOENT') return { ok: false, reason: 'io', error: err.message };
+  }
+  try {
+    await fsp.rename(target, newPath);
+  } catch (err) {
+    return { ok: false, reason: 'io', error: err.message };
+  }
+  return { ok: true, path: newPath, previousPath: target };
+}
+
 /** @param {{ path: string, scope: any }} args */
 async function stat({ path: target, scope }) {
   if (!target || typeof target !== 'string') {
@@ -311,4 +389,4 @@ function requireElectronShell() {
   }
 }
 
-module.exports = { register, listDir, readFile, writeFile, deleteFile, stat };
+module.exports = { register, listDir, readFile, writeFile, deleteFile, createDir, renamePath, stat };

@@ -117,6 +117,67 @@ html, body {
   display: none;
 }
 
+/* Inline editor panel. Flex sibling of the chat + terminal area; only
+   shown when a file is opened in "tab" mode. Column layout: a thin header
+   (title + actions) above the embedded <file-editor>, which flex-grows.
+   Given a generous basis so it isn't squeezed to a sliver between the
+   chat and terminal; the user can also maximize it (see below). */
+#editor-wrap {
+  flex: 1 1 640px;
+  min-width: 360px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--border, #404040);
+  background: var(--bg, #1e1e1e);
+}
+#editor-wrap.editor-wrap--hidden {
+  flex: 0 0 0;
+  display: none;
+}
+/* Maximized: the editor takes the whole #app-row. The chat and terminal
+   area collapse so the user can focus on just the editor. The file-tree
+   rail stays (it's how you open more files). */
+#app-row.app-row--editor-max .agent-manager,
+#app-row.app-row--editor-max #split-wrap {
+  display: none;
+}
+#app-row.app-row--editor-max #editor-wrap {
+  flex: 1 1 auto;
+  border-left: none;
+}
+#editor-wrap-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 6px 4px 10px;
+  background: var(--surface-2, #2a2a2a);
+  border-bottom: 1px solid var(--border, #404040);
+  font-size: 12px;
+  color: var(--text-dim, #888);
+  user-select: none;
+}
+#editor-wrap-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+#editor-wrap-actions button {
+  background: transparent;
+  border: none;
+  color: var(--text-dim, #888);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+#editor-wrap-max:hover { background: var(--surface-3, #333); color: var(--text, #dcdcdc); }
+#editor-wrap-max[aria-pressed="true"] { color: var(--accent-fg, #d4a14a); }
+#editor-wrap-close { font-size: 16px; }
+#editor-wrap-close:hover { background: var(--warn-bg, #4a3030); color: var(--warn, #f88); }
+
 #split {
   flex: 1 1 auto;
   display: flex;

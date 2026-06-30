@@ -76,6 +76,22 @@
            bubble click-to-insert. -->
       <compose-input id="am-compose"></compose-input>
     </agent-manager>
+    <!-- Inline editor panel — embedded <file-editor> shown when the user
+         opens a file with "Open in tab" mode (editorOpenMode = 'tab').
+         Hidden by default; renderer.js toggles #editor-wrap--hidden. Lives
+         in #app-row as a flex sibling so it sits between the chat and the
+         terminal area, the way the chat surface does. The header's × hides
+         it again. -->
+    <div id="editor-wrap" class="editor-wrap--hidden">
+      <div id="editor-wrap-header">
+        <span id="editor-wrap-title">Editor</span>
+        <span id="editor-wrap-actions">
+          <button id="editor-wrap-max" type="button" title="Maximize editor (hide chat &amp; terminal)" aria-pressed="false">⛶</button>
+          <button id="editor-wrap-close" type="button" title="Close editor panel">×</button>
+        </span>
+      </div>
+      <file-editor embedded id="am-editor"></file-editor>
+    </div>
     <div id="split-wrap" class="split-wrap--hidden">
     <div id="split">
       <!-- Main pane is retained for back-compat with the existing

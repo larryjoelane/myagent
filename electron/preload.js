@@ -57,6 +57,10 @@ const ALL_FORWARDED_CHANNELS = [
   // Subscribed by transport.tokens.onUpdate (worker-chips + future
   // analytics panel).
   { channel: 'tokens:update',         emitAs: 'tokens:update' },
+  // A file was (re)written on disk via fs:write-file. Carries
+  // { path, mtime }. Subscribed by transport.fs.onFileChanged so an
+  // editor surface can reload a file another surface just saved.
+  { channel: 'fs:file-changed',       emitAs: 'fs:file-changed' },
 ];
 
 /**
@@ -144,14 +148,27 @@ function buildTransport({ ipcRenderer, clipboard, listeners }) {
       writeFile: (path, content, opts) =>
         ipcRenderer.invoke('fs:write-file', { path, content, ...(opts || {}) }),
       deleteFile: (path) => ipcRenderer.invoke('fs:delete-file', { path }),
+      createDir: (path) => ipcRenderer.invoke('fs:create-dir', { path }),
+      rename: (path, newPath) => ipcRenderer.invoke('fs:rename', { path, newPath }),
       stat: (path) => ipcRenderer.invoke('fs:stat', { path }),
       scopeList: () => ipcRenderer.invoke('fs:scope-list'),
       scopeAdd: (path) => ipcRenderer.invoke('fs:scope-add', { path }),
       scopeRemove: (path) => ipcRenderer.invoke('fs:scope-remove', { path }),
+      // Fires when any renderer's fs:write-file succeeds. Payload
+      // { path, mtime }. Lets an open editor surface reload a file a
+      // different surface just saved.
+      onFileChanged: (fn) => subscribe('fs:file-changed', fn),
     },
     dialog: {
       chooseDirectory: (opts) => ipcRenderer.invoke('dialog:choose-directory', opts || {}),
       saveFile: (opts) => ipcRenderer.invoke('dialog:save-file', opts || {}),
+    },
+    // Dev-only screenshot capture (for grabbing UI frames for the README /
+    // showcase carousel). isDev gates the topbar camera button; screenshot
+    // writes a PNG to docs/screenshots/. Both are no-ops in a packaged build.
+    capture: {
+      isDev: () => ipcRenderer.invoke('capture:is-dev'),
+      screenshot: (opts) => ipcRenderer.invoke('capture:screenshot', opts || {}),
     },
     settings: {
       get: (key, fallback) => ipcRenderer.invoke('settings:get', { key, fallback }),

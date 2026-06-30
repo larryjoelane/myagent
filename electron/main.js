@@ -67,6 +67,7 @@ const editorHandlers = require('./ipc/editor-handlers');
 const modelHandlers = require('./ipc/model-handlers');
 const ptyHandlers = require('./ipc/pty-handlers');
 const tokenHandlers = require('./ipc/token-handlers');
+const captureHandlers = require('./ipc/capture-handlers');
 const { EditorWindowManager } = require('./editorWindow');
 
 // ---- Paths -----------------------------------------------------------------
@@ -699,6 +700,14 @@ async function startSearchServer() {
 // ---- IPC wiring ------------------------------------------------------------
 
 function registerIpcHandlers() {
+  // Fan an event out to every live renderer (agent window + any editor
+  // windows). Shared by fs + token handlers.
+  const broadcastAll = (event, payload) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue;
+      win.webContents.send(event, payload);
+    }
+  };
   browserHandlers.register({ ipcMain, BrowserWindow, browserManager });
   agentHandlers.register({ ipcMain, agentRegistry });
   memoryHandlers.register({ ipcMain, indexHost, runIngest });
@@ -711,7 +720,7 @@ function registerIpcHandlers() {
     },
     getFlyClient,
   });
-  fsHandlers.register({ ipcMain, scope: editorScope, shell });
+  fsHandlers.register({ ipcMain, scope: editorScope, shell, broadcast: broadcastAll });
   editorHandlers.register({ ipcMain, editorWindow, scope: editorScope, appSettings });
   modelHandlers.register({ ipcMain, getEmbedderBridge });
   ptyHandlers.register({
@@ -719,14 +728,14 @@ function registerIpcHandlers() {
     sessionsDir: SESSIONS_DIR, memoriesDir: MEMORIES_DIR,
     snapshotBefore, summarizeWindow, mirrorAll, groupSessionsByProject,
   });
-  tokenHandlers.register({
-    ipcMain, tokenLedger,
-    broadcast: (event, payload) => {
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (win.isDestroyed()) continue;
-        win.webContents.send(event, payload);
-      }
-    },
+  tokenHandlers.register({ ipcMain, tokenLedger, broadcast: broadcastAll });
+  // Dev-only in-app screenshot button. isDev is true for `npm run dev`
+  // (VITE_DEV_SERVER_URL set) and any unpackaged from-source run; false in
+  // a packaged build, where the handler refuses to capture.
+  captureHandlers.register({
+    ipcMain, BrowserWindow,
+    projectRoot: PROJECT_ROOT,
+    isDev: !app.isPackaged || !!process.env.VITE_DEV_SERVER_URL,
   });
 }
 

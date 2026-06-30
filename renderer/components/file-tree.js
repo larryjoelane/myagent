@@ -55,6 +55,10 @@ export class FileTree extends LitElement {
     _rootLoading: { state: true },
     /** Open right-click context menu: { path, type, name, x, y } or null. */
     _ctx: { state: true },
+    /** Open inline name-prompt overlay, or null. Electron disables the
+     *  native window.prompt(), so we render our own in the shadow DOM:
+     *  { title, value, placeholder, x, y, onSubmit: (name) => void }. */
+    _prompt: { state: true },
   };
 
   static styles = css`
@@ -206,6 +210,74 @@ export class FileTree extends LitElement {
     .ctx-item:hover { background: var(--surface-3); }
     .ctx-danger { color: var(--warn, #ff7a6b); }
     .ctx-danger:hover { background: var(--warn-bg, #3a1d1d); color: #ffb4ab; }
+    .ctx-sep {
+      height: 1px;
+      background: var(--border, #404040);
+      margin: 4px 0;
+    }
+
+    /* Inline name-prompt (window.prompt replacement — Electron disables it). */
+    .np-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+    }
+    .np-box {
+      position: fixed;
+      z-index: 51;
+      width: 220px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      box-shadow: 0 6px 22px #0008;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .np-title {
+      color: var(--text-dim);
+      font-size: 11px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .np-input {
+      width: 100%;
+      box-sizing: border-box;
+      background: var(--surface-1, #1a1a1a);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font: inherit;
+      font-size: 12px;
+      padding: 5px 7px;
+      outline: none;
+    }
+    .np-input:focus { border-color: var(--accent, #5b9dd9); }
+    .np-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+    .np-btn {
+      background: var(--surface-3, #2a2a2a);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      cursor: pointer;
+      font: inherit;
+      font-size: 12px;
+      padding: 4px 10px;
+    }
+    .np-btn:hover { background: var(--surface-4, #333); }
+    .np-ok {
+      background: var(--accent, #3a6ea5);
+      border-color: var(--accent, #3a6ea5);
+      color: #fff;
+    }
+    .np-ok:hover { background: var(--accent-hover, #4a7eb5); }
   `;
 
   constructor() {
@@ -216,6 +288,7 @@ export class FileTree extends LitElement {
     this._tick = 0;
     this._rootLoading = false;
     this._ctx = null;
+    this._prompt = null;
     /** @type {TreeState} */
     this._tree = new TreeState();
   }
@@ -450,13 +523,36 @@ export class FileTree extends LitElement {
     this._bump();
   }
 
-  /** File click: dispatch file-open. Phase 3 wires this to a tab. */
+  /** File click: dispatch file-open. renderer.js routes it to an inline
+   *  tab or a separate editor window per the editorOpenMode setting. */
   _onFileClick(path) {
-    this.dispatchEvent(new CustomEvent('file-open', {
-      detail: { path },
-      bubbles: true,
-      composed: true,
+    this._dispatchOpen('file-open', path);
+  }
+
+  _dispatchOpen(/** @type {string} */ name, /** @type {string} */ path) {
+    if (!path) return;
+    this.dispatchEvent(new CustomEvent(name, {
+      detail: { path }, bubbles: true, composed: true,
     }));
+  }
+
+  /** Context-menu "Open" — honors the editorOpenMode setting (same as a
+   *  plain left-click). */
+  _onOpenFile(ctx) {
+    this._closeContextMenu();
+    this._dispatchOpen('file-open', ctx?.path);
+  }
+
+  /** Context-menu override: always open in a separate editor window. */
+  _onOpenFileInWindow(ctx) {
+    this._closeContextMenu();
+    this._dispatchOpen('file-open-window', ctx?.path);
+  }
+
+  /** Context-menu override: always open as an inline tab. */
+  _onOpenFileInTab(ctx) {
+    this._closeContextMenu();
+    this._dispatchOpen('file-open-tab', ctx?.path);
   }
 
   /** Manual refresh button — drops the cache and reloads the root. */
@@ -476,6 +572,40 @@ export class FileTree extends LitElement {
   }
 
   _closeContextMenu() { this._ctx = null; }
+
+  /** Promise-based replacement for window.prompt() (which Electron disables).
+   *  Renders an inline text input in the shadow DOM anchored near the cursor;
+   *  resolves to the entered string, or null if cancelled (Esc / blur / empty).
+   *  @param {{ title: string, value?: string, placeholder?: string, x: number, y: number }} opts
+   *  @returns {Promise<string|null>} */
+  _askName({ title, value = '', placeholder = '', x, y }) {
+    // Only one prompt at a time — cancel any in flight.
+    if (this._prompt) this._prompt.resolve(null);
+    return new Promise((resolve) => {
+      this._prompt = {
+        title,
+        value,
+        placeholder,
+        x: Math.max(4, Math.min(x, window.innerWidth - 240)),
+        y: Math.max(4, Math.min(y, window.innerHeight - 90)),
+        resolve: (/** @type {string|null} */ result) => {
+          this._prompt = null;
+          resolve(result);
+        },
+      };
+    });
+  }
+
+  _submitPrompt(/** @type {Event} */ ev) {
+    ev?.preventDefault?.();
+    const p = this._prompt;
+    if (!p) return;
+    const input = /** @type {HTMLInputElement|null} */ (this.renderRoot?.querySelector('.np-input'));
+    const val = input ? input.value : p.value;
+    p.resolve(val);
+  }
+
+  _cancelPrompt() { this._prompt?.resolve(null); }
 
   /** Delete (to OS trash) the context-menu target, then reload its parent
    *  folder so the row disappears. Confirms first — destructive + recursive
@@ -516,6 +646,96 @@ export class FileTree extends LitElement {
     }
   }
 
+  /** Reload whichever cached folder is `dir`'s contents, or fall back to a
+   *  full refresh if `dir` was never loaded (e.g. it was the empty root). */
+  async _reloadDir(dir) {
+    if (dir && this._tree.has(dir)) {
+      const existing = this._tree.get(dir);
+      this._tree.forget(dir);
+      await this._loadChildren(dir, !!existing?.expanded);
+    } else {
+      await this._onRefresh();
+    }
+  }
+
+  /** Create a new folder inside ctx's directory (ctx.path itself if it's a
+   *  dir, otherwise its parent), prompting for a name. */
+  async _onNewFolder(ctx) {
+    const dir = ctx && ctx.type === 'dir' ? ctx.path : (ctx ? parentDir(ctx.path) : this._root);
+    const anchor = ctx ? { x: ctx.x, y: ctx.y } : { x: 12, y: 12 };
+    this._closeContextMenu();
+    if (!dir) return;
+    const name = await this._askName({ title: 'New folder name', placeholder: 'folder name', ...anchor });
+    if (!name) return;
+    if (!isSafeEntryName(name)) {
+      // eslint-disable-next-line no-alert
+      window.alert(`"${name}" is not a valid folder name.`);
+      return;
+    }
+    const target = joinPath(dir, name);
+    const res = await transport()?.fs?.createDir?.(target);
+    if (!res || !res.ok) {
+      // eslint-disable-next-line no-alert
+      window.alert(`Could not create folder: ${(res && (res.error || res.reason)) || 'failed'}`);
+      return;
+    }
+    await this._reloadDir(dir);
+  }
+
+  /** Create a new empty file inside ctx's directory, prompting for a name. */
+  async _onNewFile(ctx) {
+    const dir = ctx && ctx.type === 'dir' ? ctx.path : (ctx ? parentDir(ctx.path) : this._root);
+    const anchor = ctx ? { x: ctx.x, y: ctx.y } : { x: 12, y: 12 };
+    this._closeContextMenu();
+    if (!dir) return;
+    const name = await this._askName({ title: 'New file name', placeholder: 'file name', ...anchor });
+    if (!name) return;
+    if (!isSafeEntryName(name)) {
+      // eslint-disable-next-line no-alert
+      window.alert(`"${name}" is not a valid file name.`);
+      return;
+    }
+    const target = joinPath(dir, name);
+    const res = await transport()?.fs?.writeFile?.(target, '');
+    if (!res || !res.ok) {
+      // eslint-disable-next-line no-alert
+      window.alert(`Could not create file: ${(res && (res.error || res.reason)) || 'failed'}`);
+      return;
+    }
+    await this._reloadDir(dir);
+  }
+
+  /** Rename/move the context-menu target within its current parent folder. */
+  async _onRename(ctx) {
+    const anchor = ctx ? { x: ctx.x, y: ctx.y } : { x: 12, y: 12 };
+    this._closeContextMenu();
+    if (!ctx || !ctx.path) return;
+    const name = await this._askName({
+      title: `Rename "${ctx.name}" to`, value: ctx.name, ...anchor,
+    });
+    if (!name || name === ctx.name) return;
+    if (!isSafeEntryName(name)) {
+      // eslint-disable-next-line no-alert
+      window.alert(`"${name}" is not a valid name.`);
+      return;
+    }
+    const parent = parentDir(ctx.path);
+    if (!parent) return;
+    const newPath = joinPath(parent, name);
+    const res = await transport()?.fs?.rename?.(ctx.path, newPath);
+    if (!res || !res.ok) {
+      // eslint-disable-next-line no-alert
+      window.alert(`Could not rename ${ctx.name}: ${(res && (res.error || res.reason)) || 'failed'}`);
+      return;
+    }
+    this.dispatchEvent(new CustomEvent('file-renamed', {
+      detail: { path: ctx.path, newPath, type: ctx.type },
+      bubbles: true,
+      composed: true,
+    }));
+    await this._reloadDir(parent);
+  }
+
   async _onToggleHidden() {
     this.showHidden = !this.showHidden;
     try { await transport()?.settings?.set?.('fileTreeShowHidden', this.showHidden); }
@@ -538,6 +758,15 @@ export class FileTree extends LitElement {
 
   _bump() { this._tick = (this._tick + 1) | 0; }
 
+  updated(changed) {
+    // Focus + select the inline-prompt input the moment it appears, so the
+    // user can type a name immediately (mirrors native prompt() behaviour).
+    if (changed.has('_prompt') && this._prompt) {
+      const input = /** @type {HTMLInputElement|null} */ (this.renderRoot?.querySelector('.np-input'));
+      if (input) { input.focus(); input.select(); }
+    }
+  }
+
   // --- rendering --------------------------------------------------------
 
   render() {
@@ -556,27 +785,93 @@ export class FileTree extends LitElement {
                 title="Refresh"
                 @click=${this._onRefresh}>↻</button>
       </div>
-      <div class="body" id="ft-body">
+      <div class="body" id="ft-body"
+           @contextmenu=${(/** @type {MouseEvent} */ ev) => this._onBodyContextMenu(ev)}>
         ${this._renderTreeBody()}
       </div>
       ${this._renderContextMenu()}
+      ${this._renderPrompt()}
     `;
+  }
+
+  /** Right-click on empty body space (not a row) targets the root folder —
+   *  lets "New folder"/"New file" work even with nothing under the cursor.
+   *  Row-level contextmenu handlers call stopPropagation, so this only
+   *  fires when the click actually missed every row. */
+  _onBodyContextMenu(ev) {
+    if (!this._root) return;
+    this._onContextMenu(ev, this._root, 'dir', shortenRoot(this._root) || this._root);
   }
 
   _renderContextMenu() {
     const ctx = this._ctx;
     if (!ctx) return '';
     const label = ctx.type === 'dir' ? 'folder' : 'file';
+    // A right-click on empty body space targets the root as a stand-in
+    // "current folder" — rename/delete don't make sense against it.
+    const isRootStandIn = ctx.path === this._root;
     return html`
       <div class="ctx-backdrop" @click=${this._closeContextMenu}
            @contextmenu=${(/** @type {Event} */ e) => { e.preventDefault(); this._closeContextMenu(); }}></div>
       <div class="ctx-menu" style=${`left:${ctx.x}px; top:${ctx.y}px;`} role="menu">
         <div class="ctx-title" title=${ctx.path}>${ctx.name}</div>
-        <button class="ctx-item ctx-danger" type="button" role="menuitem"
-                @click=${() => this._onDelete(ctx)}>
-          Delete ${label}…
+        ${ctx.type === 'file' ? html`
+          <button class="ctx-item" type="button" role="menuitem"
+                  @click=${() => this._onOpenFile(ctx)}>
+            Open
+          </button>
+          <button class="ctx-item" type="button" role="menuitem"
+                  @click=${() => this._onOpenFileInWindow(ctx)}>
+            Open in new window
+          </button>
+          <button class="ctx-item" type="button" role="menuitem"
+                  @click=${() => this._onOpenFileInTab(ctx)}>
+            Open in tab
+          </button>
+          <div class="ctx-sep" role="separator"></div>
+        ` : ''}
+        <button class="ctx-item" type="button" role="menuitem"
+                @click=${() => this._onNewFolder(ctx)}>
+          New folder…
         </button>
+        <button class="ctx-item" type="button" role="menuitem"
+                @click=${() => this._onNewFile(ctx)}>
+          New file…
+        </button>
+        ${isRootStandIn ? '' : html`
+          <button class="ctx-item" type="button" role="menuitem"
+                  @click=${() => this._onRename(ctx)}>
+            Rename ${label}…
+          </button>
+          <button class="ctx-item ctx-danger" type="button" role="menuitem"
+                  @click=${() => this._onDelete(ctx)}>
+            Delete ${label}…
+          </button>
+        `}
       </div>
+    `;
+  }
+
+  /** Inline name-prompt overlay — our window.prompt() replacement, since
+   *  Electron throws "prompt() is not supported". Auto-focuses + selects on
+   *  first render; Enter submits, Esc / outside-click cancels. */
+  _renderPrompt() {
+    const p = this._prompt;
+    if (!p) return '';
+    return html`
+      <div class="np-backdrop" @click=${this._cancelPrompt}
+           @contextmenu=${(/** @type {Event} */ e) => { e.preventDefault(); this._cancelPrompt(); }}></div>
+      <form class="np-box" style=${`left:${p.x}px; top:${p.y}px;`}
+            @submit=${(/** @type {Event} */ e) => this._submitPrompt(e)}>
+        <div class="np-title">${p.title}</div>
+        <input class="np-input" type="text" .value=${p.value} placeholder=${p.placeholder}
+               spellcheck="false" autocomplete="off"
+               @keydown=${(/** @type {KeyboardEvent} */ e) => { if (e.key === 'Escape') { e.preventDefault(); this._cancelPrompt(); } }} />
+        <div class="np-actions">
+          <button class="np-btn" type="button" @click=${this._cancelPrompt}>Cancel</button>
+          <button class="np-btn np-ok" type="submit">OK</button>
+        </div>
+      </form>
     `;
   }
 
@@ -661,6 +956,18 @@ export class FileTree extends LitElement {
 }
 
 // --- helpers ----------------------------------------------------------
+
+/** A user-typed new/rename name must be a single path segment — no
+ *  separators, no "." / "..", nothing that could escape the target
+ *  directory. The IPC handlers are scope-gated independently, but this
+ *  keeps obviously-wrong input from ever leaving the renderer. */
+function isSafeEntryName(name) {
+  if (typeof name !== 'string') return false;
+  const trimmed = name.trim();
+  if (!trimmed || trimmed === '.' || trimmed === '..') return false;
+  if (/[\\/]/.test(trimmed)) return false;
+  return true;
+}
 
 function indentStyle(depth) {
   // 12px per depth — enough to make the structure obvious without

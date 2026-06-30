@@ -61,6 +61,11 @@ const EDITOR_EVENTS = ['editor:load-file'];
 // Token-ledger push: full snapshot on every change.
 const TOKEN_EVENTS = ['tokens:update'];
 
+// Filesystem push: a file was (re)written via fs:write-file. Carries
+// { path, mtime }. Lets an open editor surface reload a file another
+// surface just saved. Subscribed by transport.fs.onFileChanged.
+const FS_EVENTS = ['fs:file-changed'];
+
 module.exports = {
   CHAT_EVENTS,
   AGENT_EVENT_MAP,
@@ -69,6 +74,7 @@ module.exports = {
   MODEL_EVENTS,
   EDITOR_EVENTS,
   TOKEN_EVENTS,
+  FS_EVENTS,
   // Flat list of every channel the preload listens to with its
   // emit-as alias. Used by the bridge tests for direct comparison.
   ALL_FORWARDED_CHANNELS: [
@@ -79,5 +85,6 @@ module.exports = {
     ...MODEL_EVENTS.map((e) => ({ channel: e, emitAs: e })),
     ...EDITOR_EVENTS.map((e) => ({ channel: e, emitAs: e })),
     ...TOKEN_EVENTS.map((e) => ({ channel: e, emitAs: e })),
+    ...FS_EVENTS.map((e) => ({ channel: e, emitAs: e })),
   ],
 };
